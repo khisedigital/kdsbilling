@@ -1,0 +1,492 @@
+function formatMoneyThermal(amount) {
+  const n = parseFloat(amount);
+  const value = Number.isFinite(n) ? n.toFixed(2) : '0.00';
+  return `Rs.${value}`;
+}
+
+function formatMoneyHtml(amount, currency = 'INR') {
+  const n = parseFloat(amount);
+  const value = Number.isFinite(n) ? n.toFixed(2) : '0.00';
+  const sym = currency === 'INR' ? '₹' : currency;
+  return `${sym}${value}`;
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function resolveAbsoluteUrl(url, publicBaseUrl) {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (!publicBaseUrl) return url;
+  const base = publicBaseUrl.replace(/\/$/, '');
+  return url.startsWith('/') ? `${base}${url}` : `${base}/${url}`;
+}
+
+function resolveBillDate(bill) {
+  return bill?.createdAt || bill?.created_at || bill?.dataValues?.createdAt || bill?.dataValues?.created_at || null;
+}
+
+/** Fixed ASCII datetime — avoids locale glyphs thermal printers can't print */
+function formatReceiptDate(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '-';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Keep thermal text ESC/POS safe (no rupee glyph, no tag markers) */
+function sanitizeThermalText(value) {
+  return String(value ?? '')
+    .replace(/₹/g, 'Rs.')
+    .replace(/[–—]/g, '-')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[<>]/g, '')
+    .replace(/[^\x20-\x7E\n]/g, '?');
+}
+
+/**
+ * Column widths for common ESC/POS Font A printers.
+ * 58mm ≈ 32 cols, 80mm ≈ 42 cols (48 often overflows / wraps badly).
+ */
+function charsForFormat(format) {
+  if (format === '58') return 32;
+  if (format === '80') return 42;
+  return 42;
+}
+
+function buildReceiptPayload(bill, tenant, shopSettings = {}, publicBaseUrl = null) {
+  const shopName = shopSettings.shopName || tenant.name;
+  const footer = (shopSettings.billFooter || 'Thank you!').trim() || 'Thank you!';
+  const phone = String(shopSettings.phone || tenant.owner_mobile || '').trim();
+  return {
+    shopName,
+    address: shopSettings.address || '',
+    city: shopSettings.city || '',
+    gstin: shopSettings.gstin || '',
+    phone,
+    billFooter: footer,
+    logoUrl: resolveAbsoluteUrl(shopSettings.logoUrl, publicBaseUrl),
+    billNumber: bill.bill_number,
+    date: resolveBillDate(bill),
+    customer: bill.customer?.name || 'Walk-in',
+    items: (bill.items || []).map((i) => ({
+      name: i.product_name,
+      sku: i.sku,
+      qty: parseFloat(i.quantity),
+      price: parseFloat(i.unit_price),
+      total: parseFloat(i.line_total),
+      taxes: i.taxes?.map((t) => ({ name: t.tax_name, amount: parseFloat(t.tax_amount) })),
+    })),
+    subtotal: parseFloat(bill.subtotal),
+    discount: parseFloat(bill.discount_amount),
+    tax: parseFloat(bill.tax_amount),
+    roundOff: parseFloat(bill.round_off_amount || bill.roundOffAmount || 0),
+    total: parseFloat(bill.total_amount),
+    payments: (bill.payments || []).map((p) => ({
+      mode: p.payment_mode,
+      amount: parseFloat(p.amount),
+    })),
+    change: parseFloat(bill.change_amount),
+    currency: tenant.currency_code,
+  };
+}
+
+/** Center a line within paper width using spaces (thermal-safe, no ESC). */
+function centerLine(text, charsPerLine) {
+  const value = sanitizeThermalText(text).trim();
+  if (!value) return '';
+  const body = value.length > charsPerLine ? value.slice(0, charsPerLine) : value;
+  const pad = Math.max(0, Math.floor((charsPerLine - body.length) / 2));
+  return `${' '.repeat(pad)}${body}`;
+}
+
+/**
+ * Word-wrap text to paper width.
+ * Prefers breaks at spaces; only hard-splits overlong tokens.
+ */
+function wrapWords(text, width) {
+  const value = sanitizeThermalText(text).replace(/\s+/g, ' ').trim();
+  if (!value) return [];
+  if (value.length <= width) return [value];
+
+  const lines = [];
+  const tokens = value.split(' ').filter(Boolean);
+  let current = '';
+
+  const flush = () => {
+    if (current) {
+      lines.push(current);
+      current = '';
+    }
+  };
+
+  const pushHard = (token) => {
+    let rest = token;
+    while (rest.length > width) {
+      lines.push(rest.slice(0, width));
+      rest = rest.slice(width);
+    }
+    current = rest;
+  };
+
+  for (const token of tokens) {
+    if (token.length > width) {
+      flush();
+      pushHard(token);
+      continue;
+    }
+    const next = current ? `${current} ${token}` : token;
+    if (next.length <= width) {
+      current = next;
+    } else {
+      flush();
+      current = token;
+    }
+  }
+  flush();
+  return lines;
+}
+
+function pushWrappedLeft(lines, text, charsPerLine) {
+  for (const part of wrapWords(text, charsPerLine)) {
+    lines.push(part);
+  }
+}
+
+/** Wrap and emit as tagged ESC/POS markup (mobile / network encoder understands these). */
+function pushTaggedWrapped(lines, text, width, openTag, closeTag) {
+  for (const part of wrapWords(text, width)) {
+    lines.push(`${openTag}${part}${closeTag}`);
+  }
+}
+
+/** Single address block — avoid repeating city when already present. */
+function formatAddressBlock(address, city) {
+  const addr = sanitizeThermalText(address || '').replace(/\s+/g, ' ').trim();
+  const cityVal = sanitizeThermalText(city || '').replace(/\s+/g, ' ').trim();
+  if (!addr && !cityVal) return '';
+  if (!addr) return cityVal;
+  if (!cityVal) return addr;
+  if (addr.toLowerCase().includes(cityVal.toLowerCase())) return addr;
+  return `${addr}, ${cityVal}`;
+}
+
+function ruleLine(charsPerLine, char = '-') {
+  return char.repeat(charsPerLine);
+}
+
+/**
+ * Shop header for 58mm / 80mm:
+ * - banner + large centered shop name
+ * - address / phone / GSTIN under it
+ * - TAX INVOICE label
+ *
+ * Tags (<CB>, <C>, <B>) are converted to ESC/POS on the mobile / network printer path.
+ */
+function pushShopHeader(lines, payload, charsPerLine) {
+  const star = ruleLine(charsPerLine, '=');
+  lines.push(star);
+
+  // Double-width shop name → wrap at half width so it does not overflow
+  const nameWidth = Math.max(12, Math.floor(charsPerLine / 2));
+  const shopName = sanitizeThermalText(payload.shopName || 'SHOP').trim() || 'SHOP';
+  pushTaggedWrapped(lines, shopName.toUpperCase(), nameWidth, '<CB>', '</CB>');
+
+  lines.push(star);
+
+  const addressBlock = formatAddressBlock(payload.address, payload.city);
+  if (addressBlock) {
+    pushTaggedWrapped(lines, addressBlock, charsPerLine, '<C>', '</C>');
+  }
+  if (payload.phone) {
+    pushTaggedWrapped(lines, `Ph: ${payload.phone}`, charsPerLine, '<C>', '</C>');
+  }
+  if (payload.gstin) {
+    pushTaggedWrapped(lines, `GSTIN: ${payload.gstin}`, charsPerLine, '<C>', '</C>');
+  }
+
+  lines.push(ruleLine(charsPerLine, '-'));
+  lines.push('<C>TAX INVOICE</C>');
+  lines.push(ruleLine(charsPerLine, '-'));
+}
+
+
+function padCell(text, width, align = 'left') {
+  const body = String(text || '').slice(0, width);
+  const gap = width - body.length;
+  if (gap <= 0) return body;
+  return align === 'right' ? `${' '.repeat(gap)}${body}` : `${body}${' '.repeat(gap)}`;
+}
+
+function moneyCell(amount) {
+  const n = parseFloat(amount);
+  return (Number.isFinite(n) ? n : 0).toFixed(2);
+}
+
+function tableCols(charsPerLine) {
+  if (charsPerLine <= 32) return { item: 12, qty: 3, rate: 7, amt: 7 };
+  return { item: 18, qty: 4, rate: 8, amt: 9 };
+}
+
+function tableHeaderLine(charsPerLine) {
+  const c = tableCols(charsPerLine);
+  return (
+    padCell('ITEM', c.item) + ' ' +
+    padCell('QTY', c.qty, 'right') + ' ' +
+    padCell('RATE', c.rate, 'right') + ' ' +
+    padCell('AMT', c.amt, 'right')
+  ).slice(0, charsPerLine);
+}
+
+function tableItemLines(charsPerLine, name, qty, rate, amt) {
+  const c = tableCols(charsPerLine);
+  const qtyNum = parseFloat(qty);
+  const qtyStr = Number.isInteger(qtyNum) ? String(qtyNum) : String(parseFloat(qtyNum.toFixed(3)));
+  const rateStr = moneyCell(rate);
+  const amtStr = moneyCell(amt);
+  const nameLines = wrapWords(sanitizeThermalText(name), c.item);
+  if (!nameLines.length) nameLines.push('-');
+  return nameLines.map((line, idx) => {
+    if (idx === 0) {
+      return (
+        padCell(line, c.item) + ' ' +
+        padCell(qtyStr, c.qty, 'right') + ' ' +
+        padCell(rateStr, c.rate, 'right') + ' ' +
+        padCell(amtStr, c.amt, 'right')
+      ).slice(0, charsPerLine);
+    }
+    return padCell(line, c.item);
+  });
+}
+
+function renderThermal(payload, charsPerLine = 32) {
+  const divider = (ch = '-') => ruleLine(charsPerLine, ch);
+  const row = (left, right) => {
+    const l = sanitizeThermalText(left);
+    const r = sanitizeThermalText(right);
+    const space = charsPerLine - l.length - r.length;
+    return l + ' '.repeat(Math.max(1, space)) + r;
+  };
+
+  const lines = [];
+  pushShopHeader(lines, payload, charsPerLine);
+  lines.push(row('Bill', String(payload.billNumber || '')));
+  lines.push(row('Date', formatReceiptDate(payload.date)));
+  lines.push(row('Customer', sanitizeThermalText(payload.customer).slice(0, Math.max(8, charsPerLine - 10))));
+  lines.push(divider('='));
+  lines.push(`<B>${tableHeaderLine(charsPerLine)}</B>`);
+  lines.push(divider('-'));
+
+  for (const item of payload.items) {
+    lines.push(...tableItemLines(charsPerLine, item.name, item.qty, item.price, item.total));
+  }
+
+  lines.push(divider('='));
+  lines.push(row('Subtotal', formatMoneyThermal(payload.subtotal)));
+  if (payload.discount > 0) {
+    lines.push(row('Discount', `-${formatMoneyThermal(payload.discount)}`));
+  }
+  lines.push(row('Tax', formatMoneyThermal(payload.tax)));
+  if (Math.abs(payload.roundOff || 0) >= 0.005) {
+    const ro = payload.roundOff;
+    lines.push(row('Round off', `${ro > 0 ? '+' : '-'}${formatMoneyThermal(Math.abs(ro))}`));
+  }
+  lines.push(`<B>${row('TOTAL', formatMoneyThermal(payload.total))}</B>`);
+  lines.push(divider('-'));
+  for (const p of payload.payments) {
+    lines.push(row(String(p.mode || '').toUpperCase(), formatMoneyThermal(p.amount)));
+  }
+  if (payload.change > 0) {
+    lines.push(row('Change', formatMoneyThermal(payload.change)));
+  }
+  lines.push(divider('='));
+
+  const customFooter = sanitizeThermalText(payload.billFooter || '').trim();
+  const isThankYouFooter = /thank\s*you/i.test(customFooter);
+  if (customFooter && !isThankYouFooter) {
+    pushTaggedWrapped(lines, customFooter, charsPerLine, '<C>', '</C>');
+  }
+  lines.push('<C>Thank you! Visit Again</C>');
+  lines.push(divider('='));
+
+  return {
+    format: 'thermal',
+    charsPerLine,
+    lines,
+    raw: lines.join('\n'),
+  };
+}
+
+function renderA4(payload) {
+  const itemsHtml = payload.items.map((i) => `
+    <tr>
+      <td>${escapeHtml(i.name)}${i.sku ? `<br><small style="color:#6b7280">${escapeHtml(i.sku)}</small>` : ''}</td>
+      <td style="text-align:center">${i.qty}</td>
+      <td style="text-align:right">${formatMoneyHtml(i.price, payload.currency)}</td>
+      <td style="text-align:right">${formatMoneyHtml(i.total, payload.currency)}</td>
+    </tr>`).join('');
+
+  const logoHtml = payload.logoUrl
+    ? `<img src="${escapeHtml(payload.logoUrl)}" alt="Logo" class="logo" />`
+    : '';
+
+  const addressBlock = formatAddressBlock(payload.address, payload.city);
+  const metaBits = [
+    addressBlock,
+    payload.phone ? `Ph: ${payload.phone}` : '',
+    payload.gstin ? `GSTIN: ${payload.gstin}` : '',
+  ].filter(Boolean).map(escapeHtml);
+
+  const paymentsHtml = (payload.payments || []).map((p) =>
+    `<div class="pay-row"><span>${escapeHtml(String(p.mode || '').toUpperCase())}</span><span>${formatMoneyHtml(p.amount, payload.currency)}</span></div>`
+  ).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <style>
+      *{box-sizing:border-box}
+      body{font-family:Georgia,'Times New Roman',serif;padding:36px 40px;color:#111;max-width:720px;margin:0 auto}
+      .banner{text-align:center;border-top:3px double #111;border-bottom:3px double #111;padding:18px 12px 16px;margin-bottom:22px}
+      .logo{max-height:64px;max-width:200px;object-fit:contain;margin-bottom:10px}
+      .shop{font-size:26px;font-weight:700;letter-spacing:0.04em;margin:0 0 8px;text-transform:uppercase;line-height:1.2}
+      .meta{color:#374151;font-size:13px;margin:3px 0;line-height:1.4;font-family:Arial,Helvetica,sans-serif}
+      .doc-title{margin-top:12px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,sans-serif}
+      .bill-meta{display:flex;justify-content:space-between;gap:16px;margin:0 0 18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#374151}
+      .bill-meta strong{color:#111}
+      table{width:100%;border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      th,td{border-bottom:1px solid #e5e7eb;padding:10px 8px;text-align:left}
+      th{background:#f3f4f6;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#4b5563}
+      .totals{margin-top:16px;margin-left:auto;width:260px;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      .totals .row{display:flex;justify-content:space-between;padding:4px 0}
+      .totals .grand{border-top:2px solid #111;margin-top:8px;padding-top:10px;font-size:16px;font-weight:700}
+      .pay{margin-top:18px;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      .pay-row{display:flex;justify-content:space-between;max-width:260px;margin-left:auto;padding:2px 0}
+      .footer{text-align:center;margin-top:32px;padding-top:14px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+    </style>
+    </head><body>
+    <div class="banner">
+      ${logoHtml}
+      <h1 class="shop">${escapeHtml(payload.shopName || 'Shop')}</h1>
+      ${metaBits.map((m) => `<p class="meta">${m}</p>`).join('')}
+      <p class="doc-title">TAX INVOICE</p>
+    </div>
+    <div class="bill-meta">
+      <div><strong>Bill</strong> ${escapeHtml(payload.billNumber)}<br/><strong>Customer</strong> ${escapeHtml(payload.customer)}</div>
+      <div style="text-align:right"><strong>Date</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
+    </div>
+    <table><thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>${itemsHtml}</tbody></table>
+    <div class="totals">
+      <div class="row"><span>Subtotal</span><span>${formatMoneyHtml(payload.subtotal, payload.currency)}</span></div>
+      ${payload.discount > 0 ? `<div class="row"><span>Discount</span><span>-${formatMoneyHtml(payload.discount, payload.currency)}</span></div>` : ''}
+      <div class="row"><span>Tax</span><span>${formatMoneyHtml(payload.tax, payload.currency)}</span></div>
+      ${Math.abs(payload.roundOff || 0) >= 0.005
+        ? `<div class="row"><span>Round off</span><span>${payload.roundOff > 0 ? '+' : '-'}${formatMoneyHtml(Math.abs(payload.roundOff), payload.currency)}</span></div>`
+        : ''}
+      <div class="row grand"><span>TOTAL</span><span>${formatMoneyHtml(payload.total, payload.currency)}</span></div>
+    </div>
+    ${paymentsHtml ? `<div class="pay">${paymentsHtml}</div>` : ''}
+    <div class="footer">
+      ${payload.billFooter && !/^thank you!?$/i.test(String(payload.billFooter).trim())
+        ? `<p>${escapeHtml(payload.billFooter)}</p>`
+        : ''}
+      <p><strong>Thank you! Visit Again</strong></p>
+    </div>
+    </body></html>`;
+
+  return { format: 'a4', html, mimeType: 'text/html' };
+}
+
+/**
+ * Convert markup tags in thermal raw text to ESC/POS bytes (for server network print).
+ * Tags: <C> <CB> <CD> <CM> <B> <D> <M> <L> <R>
+ */
+function thermalMarkupToEscPos(rawText) {
+  const INIT = Buffer.from([0x1b, 0x40]);
+  const RESET = Buffer.from([0x1b, 0x61, 0x00, 0x1d, 0x21, 0x00, 0x1b, 0x21, 0x00]);
+  const FEED = Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x0a]);
+  const CUT = Buffer.from([0x1d, 0x56, 0x00]);
+
+  const tags = {
+    '<C>': Buffer.from([0x1b, 0x61, 0x01]),
+    '</C>': Buffer.from([]),
+    '<L>': Buffer.from([0x1b, 0x61, 0x00]),
+    '</L>': Buffer.from([]),
+    '<R>': Buffer.from([0x1b, 0x61, 0x02]),
+    '</R>': Buffer.from([]),
+    '<B>': Buffer.from([0x1b, 0x21, 0x08]),
+    '</B>': Buffer.from([0x1b, 0x21, 0x00]),
+    '<D>': Buffer.from([0x1d, 0x21, 0x01]),
+    '</D>': Buffer.from([0x1d, 0x21, 0x00]),
+    '<M>': Buffer.from([0x1b, 0x21, 0x10]),
+    '</M>': Buffer.from([0x1b, 0x21, 0x00]),
+    '<CB>': Buffer.from([0x1b, 0x61, 0x01, 0x1d, 0x21, 0x11, 0x1b, 0x21, 0x08]),
+    '</CB>': Buffer.from([0x1d, 0x21, 0x00, 0x1b, 0x21, 0x00]),
+    '<CD>': Buffer.from([0x1b, 0x61, 0x01, 0x1d, 0x21, 0x01]),
+    '</CD>': Buffer.from([0x1d, 0x21, 0x00]),
+    '<CM>': Buffer.from([0x1b, 0x61, 0x01, 0x1b, 0x21, 0x10]),
+    '</CM>': Buffer.from([0x1b, 0x21, 0x00]),
+  };
+  const tagNames = Object.keys(tags).sort((a, b) => b.length - a.length);
+
+  const chunks = [INIT];
+  let i = 0;
+  const text = String(rawText || '');
+  let buf = '';
+
+  const flushText = () => {
+    if (!buf) return;
+    chunks.push(Buffer.from(buf, 'ascii'));
+    buf = '';
+  };
+
+  while (i < text.length) {
+    if (text[i] === '<') {
+      let matched = null;
+      for (const name of tagNames) {
+        if (text.startsWith(name, i)) {
+          matched = name;
+          break;
+        }
+      }
+      if (matched) {
+        flushText();
+        chunks.push(tags[matched]);
+        i += matched.length;
+        continue;
+      }
+    }
+    if (text[i] === '\n') {
+      buf += '\n';
+      flushText();
+      chunks.push(RESET);
+      i += 1;
+      continue;
+    }
+    const code = text.charCodeAt(i);
+    if (code >= 0x20 && code <= 0x7e) buf += text[i];
+    i += 1;
+  }
+  flushText();
+  chunks.push(FEED, CUT);
+  return Buffer.concat(chunks);
+}
+
+function generatePrint(bill, tenant, format = '80', shopSettings = {}, publicBaseUrl = null) {
+  const payload = buildReceiptPayload(bill, tenant, shopSettings, publicBaseUrl);
+  if (format === 'a4') return renderA4(payload);
+  return renderThermal(payload, charsForFormat(format));
+}
+
+module.exports = {
+  generatePrint,
+  buildReceiptPayload,
+  charsForFormat,
+  thermalMarkupToEscPos,
+  centerLine,
+};

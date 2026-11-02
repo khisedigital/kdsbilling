@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>50x25mm Thermal Labels (3 Items)</title>
+  <style>
+    /* ----------------------------------------------------
+       1. PAGE & PRINT SETUP FOR 50x25mm THERMAL PRINTER
+    ---------------------------------------------------- */
+    @page {
+      size: 50mm 25mm;
+      margin: 0;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* ----------------------------------------------------
+       2. ON-SCREEN DISPLAY STYLES (Browser View)
+    ---------------------------------------------------- */
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f0f2f5;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 15px;
+    }
+
+    /* Sticker Outer Boundary */
+    .label-sticker {
+      width: 50mm;
+      height: 25mm;
+      background-color: #ffffff;
+      border: 1px solid #cccccc; /* Border visible on screen */
+      padding: 4.5mm 2.5mm 1mm;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      page-break-after: always; /* Force new label page when printing */
+      break-after: page;
+    }
+
+    /* Header Row */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #000000;
+      padding-bottom: 0.5mm;
+    }
+
+    .title {
+      font-size: 7.5pt;
+      font-weight: bold;
+      max-width: 32mm;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .price {
+      font-size: 9pt;
+      font-weight: bold;
+    }
+
+    /* Barcode Section */
+    .barcode-container {
+      width: 100%;
+      height: 10mm;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 0.5mm 0;
+    }
+
+    .barcode-container svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Footer Row */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      font-size: 6pt;
+      font-weight: bold;
+      font-family: monospace;
+    }
+
+    /* ----------------------------------------------------
+       3. DIRECT PRINT STYLES
+    ---------------------------------------------------- */
+    @media print {
+      body {
+        background-color: #ffffff;
+        padding: 0;
+      }
+
+      .label-sticker {
+        border: none; /* Remove border line when printing on actual sticker */
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- LABEL 1 -->
+  <div class="label-sticker">
+    <div class="header">
+      <span class="title">Wireless Earbuds</span>
+      <span class="price">₹1,299</span>
+    </div>
+    <div class="barcode-container">
+      <svg id="barcode1"></svg>
+    </div>
+    <div class="footer">
+      <span>SKU: WE-PRO-01</span>
+      <span>1/3</span>
+    </div>
+  </div>
+
+  <!-- LABEL 2 -->
+  <div class="label-sticker">
+    <div class="header">
+      <span class="title">Smart Watch S5</span>
+      <span class="price">₹2,499</span>
+    </div>
+    <div class="barcode-container">
+      <svg id="barcode2"></svg>
+    </div>
+    <div class="footer">
+      <span>SKU: SW-SER5-02</span>
+      <span>2/3</span>
+    </div>
+  </div>
+
+  <!-- LABEL 3 -->
+  <div class="label-sticker">
+    <div class="header">
+      <span class="title">Fast Charger 20W</span>
+      <span class="price">₹499</span>
+    </div>
+    <div class="barcode-container">
+      <svg id="barcode3"></svg>
+    </div>
+    <div class="footer">
+      <span>SKU: FC-20W-03</span>
+      <span>3/3</span>
+    </div>
+  </div>
+
+  <!-- JSBARCODE CDN FOR Crisp SVG BARCODES -->
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+  <script>
+    // Generate barcodes dynamically
+    JsBarcode("#barcode1", "890123456789", { format: "CODE128", displayValue: false, margin: 0, height: 40 });
+    JsBarcode("#barcode2", "890987654321", { format: "CODE128", displayValue: false, margin: 0, height: 40 });
+    JsBarcode("#barcode3", "890112233445", { format: "CODE128", displayValue: false, margin: 0, height: 40 });
+  </script>
+
+</body>
+</html>

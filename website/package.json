@@ -1,0 +1,10 @@
+{
+  "name": "kdspoz-website",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KDSPOZ Retail marketing website",
+  "scripts": {
+    "start": "npx --yes serve -l 5173 .",
+    "dev": "npx --yes serve -l 5173 ."
+  }
+}

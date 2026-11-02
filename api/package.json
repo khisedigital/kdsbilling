@@ -1,0 +1,42 @@
+{
+  "name": "billing-api",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "free:port": "node scripts/free-port.js",
+    "predev": "node scripts/free-port.js",
+    "dev": "nodemon server.js",
+    "admin": "echo Open http://localhost:3000/admin  (or https://khisedigital.info/kdspozr/admin in prod; key: PLATFORM_ADMIN_PASSWORD)",
+    "migrate:master": "sequelize-cli db:migrate --config src/config/sequelize.master.cjs --migrations-path src/migrations/master",
+    "migrate:tenant": "sequelize-cli db:migrate --config src/config/sequelize.tenant.cjs --migrations-path src/migrations/tenant",
+    "migrate:tenant:all": "node scripts/migrate-all-tenants.js",
+    "migrate:tenant:undo": "sequelize-cli db:migrate:undo --config src/config/sequelize.tenant.cjs --migrations-path src/migrations/tenant",
+    "seed:master": "echo 'No master seeders configured' && exit 0",
+    "seed:tenant": "sequelize-cli db:seed:all --config src/config/sequelize.tenant.cjs --seeders-path src/seeders/tenant",
+    "provision:tenant": "node scripts/provision-tenant.js",
+    "setup:master-db": "node scripts/setup-master-db.js",
+    "generate:import-sample": "node scripts/generate-product-import-sample.js",
+    "generate:catalog-import-sample": "node scripts/generate-catalog-import-sample.js",
+    "preflight:production": "node scripts/preflight-production.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.12.0",
+    "sequelize": "^6.37.5",
+    "sequelize-cli": "^6.6.2",
+    "uuid": "^11.0.5",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}

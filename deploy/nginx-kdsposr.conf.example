@@ -1,0 +1,33 @@
+# Paste these location blocks into the existing HTTPS server for khisedigital.info.
+# Trailing slash on proxy_pass STRIPS /kdspozr before Node (same as /payroll).
+#
+#   https://khisedigital.info/kdspozr/api/v1  →  127.0.0.1:3008/api/v1
+#   https://khisedigital.info/kdspozr/admin   →  127.0.0.1:3008/admin
+#
+# Use ^~ so the site-wide static-file regex (js|css|png|...) does not steal
+# /kdspozr/admin/*.js from the proxy.
+
+    # =====================================================
+    # KDSPOZR APPLICATION / API
+    # Backend: 127.0.0.1:3008
+    # =====================================================
+    location = /kdspozr {
+        return 301 /kdspozr/;
+    }
+
+    location ^~ /kdspozr/ {
+        proxy_pass http://127.0.0.1:3008/;
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        client_max_body_size 15M;
+        proxy_read_timeout 90s;
+    }

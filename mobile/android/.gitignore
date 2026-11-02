@@ -1,0 +1,3 @@
+keystore.properties
+app/*.keystore
+!app/debug.keystore

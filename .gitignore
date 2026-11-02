@@ -1,0 +1,10 @@
+node_modules/
+.env
+.DS_Store
+*.log
+npm-debug.log*
+android/app/build/
+ios/build/
+ios/Pods/
+.expo/
+uploads/

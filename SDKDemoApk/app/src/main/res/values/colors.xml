@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary colors based on the logo -->
+    <color name="colorPrimary">#E94A1F</color> <!-- Orange -->
+    <color name="colorPrimaryVariant">#D13F1A</color> <!-- Darker shade of Orange -->
+    <color name="colorOnPrimary">#FFFFFF</color> <!-- White for text on primary color -->
+
+    <color name="colorSecondary">#0A3E67</color> <!-- Dark Blue -->
+    <color name="colorBackground">#FFFFFF</color> <!-- white -->
+    <color name="colorSecondaryVariant">#164A73</color> <!-- Light Blue -->
+    <color name="colorOnSecondary">#FFFFFF</color> <!-- White for text on secondary color -->
+</resources>
