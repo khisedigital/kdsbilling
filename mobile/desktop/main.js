@@ -1,15 +1,113 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, protocol, session, shell } = require('electron');
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
-const { sendRaw, sendRawToSystemPrinter } = require('./rawPrint');
+const { sendRaw, sendRawToSystemPrinter, listWindowsPrinters } = require('./rawPrint');
 
 const APP_SCHEME = 'app';
 const APP_HOST = 'kdspoz';
 const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 const DEV_URL = process.env.KDS_DESKTOP_DEV_URL || '';
-// Packaged builds get the icon from electron-builder; unpackaged runs would otherwise show Electron's.
-const DEV_ICON = path.join(__dirname, 'build', 'icon.png');
+
+/** Prefer .ico on Windows (taskbar/title bar); PNG elsewhere / packaged builder input. */
+function resolveAppIconPath() {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(__dirname, 'build', 'icon.ico'),
+          path.join(__dirname, 'build', 'icon.png'),
+          path.join(process.resourcesPath || '', 'build', 'icon.ico'),
+          path.join(process.resourcesPath || '', 'build', 'icon.png'),
+        ]
+      : [
+          path.join(__dirname, 'build', 'icon.png'),
+          path.join(__dirname, 'build', 'icon.ico'),
+          path.join(process.resourcesPath || '', 'build', 'icon.png'),
+        ];
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fsSync.existsSync(candidate)) return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+function loadAppIcon() {
+  const iconPath = resolveAppIconPath();
+  if (!iconPath) return null;
+  const image = nativeImage.createFromPath(iconPath);
+  return image.isEmpty() ? null : image;
+}
+
+/** Virtual / document “printers” — not physical POS or office devices. */
+const VIRTUAL_PRINTER_RE =
+  /pdf|xps|fax|onenote|send to|document writer|print to file|microsoft print to|adobe pdf|foxit|bullzip|cutepdf|dopdf|nitro pdf|pdfcreator|primopdf|nova.?pdf|redirected|microsoft shared/i;
+
+function isVirtualPrinter(printer) {
+  const label = `${printer?.name || ''} ${printer?.displayName || ''} ${printer?.description || ''}`;
+  return VIRTUAL_PRINTER_RE.test(label);
+}
+
+/**
+ * Keep real, reachable printers only (macOS / Linux via Electron/CUPS).
+ * Windows uses Get-Printer instead — Electron still lists PendingDeletion queues.
+ */
+function isPrinterOnline(printer) {
+  if (!printer) return false;
+  const status = Number(printer.status) || 0;
+  const options = printer.options || {};
+  const reasons = String(options['printer-state-reasons'] || options['printer-state-message'] || '');
+  if (/offline|shutdown|disconnected|connecting-to-device/i.test(reasons)) return false;
+
+  const state = String(options['printer-state'] || '');
+  // IPP: 3 idle, 4 processing, 5 stopped
+  if (state === '5' || /stopped/i.test(state)) return false;
+  if (status === 0 || status === 3 || status === 4) return true;
+  if (!state || state === '3' || state === '4') return true;
+  return status === 0;
+}
+
+function filterListedPrinters(printers) {
+  return (printers || [])
+    .filter((p) => p && (p.name || p.displayName))
+    .filter((p) => !isVirtualPrinter(p))
+    .filter((p) => isPrinterOnline(p));
+}
+
+async function listDesktopPrinters(webContents) {
+  if (process.platform === 'win32') {
+    try {
+      const windowsList = await listWindowsPrinters();
+      // Merge default flag from Chromium when available.
+      let defaults = new Set();
+      try {
+        const electronList = await webContents.getPrintersAsync();
+        for (const p of electronList || []) {
+          if (p?.isDefault && p.name) defaults.add(String(p.name));
+        }
+      } catch {
+        /* ignore */
+      }
+      return windowsList.map((p) => ({
+        name: p.name,
+        displayName: p.displayName || p.name,
+        isDefault: defaults.has(p.name),
+      }));
+    } catch (err) {
+      startupLog(`listWindowsPrinters failed: ${err && err.message ? err.message : err}`);
+      // Fall through to Electron list if PowerShell is blocked.
+    }
+  }
+
+  const printers = await webContents.getPrintersAsync();
+  return filterListedPrinters(printers).map((p) => ({
+    name: p.name,
+    displayName: p.displayName || p.name,
+    isDefault: Boolean(p.isDefault),
+  }));
+}
 
 const MIME_BY_EXT = {
   '.html': 'text/html; charset=utf-8',
@@ -159,6 +257,7 @@ function openExternalSafely(url) {
 }
 
 function createMainWindow(appDir) {
+  const appIcon = loadAppIcon();
   mainWindow = new BrowserWindow({
     width: 1366,
     height: 860,
@@ -168,7 +267,7 @@ function createMainWindow(appDir) {
     title: 'KDSPOZ Retail',
     backgroundColor: '#F4F7FB',
     autoHideMenuBar: process.platform === 'win32',
-    ...(app.isPackaged ? {} : { icon: DEV_ICON }),
+    ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -178,6 +277,13 @@ function createMainWindow(appDir) {
       spellcheck: false,
     },
   });
+  if (appIcon && process.platform === 'win32') {
+    try {
+      mainWindow.setIcon(appIcon);
+    } catch {
+      /* ignore */
+    }
+  }
 
   let shown = false;
   const reveal = () => {
@@ -254,14 +360,7 @@ function buildMenu() {
 }
 
 function registerIpc() {
-  ipcMain.handle('printers:list', async (event) => {
-    const printers = await event.sender.getPrintersAsync();
-    return printers.map((p) => ({
-      name: p.name,
-      displayName: p.displayName || p.name,
-      isDefault: Boolean(p.isDefault),
-    }));
-  });
+  ipcMain.handle('printers:list', async (event) => listDesktopPrinters(event.sender));
 
   ipcMain.handle('printers:print-html', async (_event, options) => {
     const {
@@ -398,7 +497,18 @@ if (!app.requestSingleInstanceLock()) {
       return;
     }
 
-    if (!app.isPackaged && process.platform === 'darwin') app.dock.setIcon(DEV_ICON);
+    // Groups the taskbar entry under KDSPOZ (not generic Electron) on Windows.
+    if (process.platform === 'win32') {
+      app.setAppUserModelId('com.kdspoz.retail.desktop');
+    }
+    const appIcon = loadAppIcon();
+    if (appIcon && process.platform === 'darwin') {
+      try {
+        app.dock.setIcon(appIcon);
+      } catch {
+        /* ignore */
+      }
+    }
     registerAppProtocol(appDir);
     allowOwnApiCors();
     registerIpc();

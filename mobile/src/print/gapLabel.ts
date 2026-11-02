@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import { getDesktopBridge } from '../desktop/bridge';
-import { getPrinterSettings } from '../store/printerStore';
+import { getLabelPrinterSettings } from '../store/printerStore';
 import {
   isNativeLabelPrinterAvailable,
   printNativeGapLabel,
@@ -30,7 +30,8 @@ export function isGapLabelPrintAvailable(): boolean {
 
 async function printDesktopGapLabel(label: GapLabelContent, copies: number): Promise<void> {
   const bytes = buildGapLabelEscPos(label, copies);
-  const settings = await getPrinterSettings();
+  // Label printer only — never reads billing / receipt printer settings.
+  const settings = await getLabelPrinterSettings();
   const { printBytesViaBluetooth, printBytesViaNetwork, printBytesViaSystem } = await import(
     './PrintService'
   );
@@ -38,7 +39,7 @@ async function printDesktopGapLabel(label: GapLabelContent, copies: number): Pro
   if (settings.type === 'network') {
     const host = settings.networkHost?.trim();
     if (!host) {
-      throw new Error('Set the printer IP in Printer Settings, or switch to USB.');
+      throw new Error('Select a network label printer on the Barcode label screen.');
     }
     await printBytesViaNetwork(host, settings.networkPort || 9100, bytes);
     return;
@@ -47,7 +48,7 @@ async function printDesktopGapLabel(label: GapLabelContent, copies: number): Pro
   if (settings.type === 'bluetooth') {
     const address = settings.bluetoothAddress?.trim();
     if (!address) {
-      throw new Error('Select a Bluetooth printer in Printer Settings.');
+      throw new Error('Select a Bluetooth label printer on the Barcode label screen.');
     }
     await printBytesViaBluetooth(address, bytes);
     return;
@@ -55,9 +56,7 @@ async function printDesktopGapLabel(label: GapLabelContent, copies: number): Pro
 
   const printerName = settings.systemPrinterName?.trim();
   if (!printerName) {
-    throw new Error(
-      'Select your USB label printer in Printer Settings (type: USB / installed), then print.',
-    );
+    throw new Error('Select your USB label printer on the Barcode label screen, then print.');
   }
   await printBytesViaSystem(printerName, bytes);
 }
@@ -65,7 +64,7 @@ async function printDesktopGapLabel(label: GapLabelContent, copies: number): Pro
 /**
  * Prints 50×25 mm labels:
  * - Android: Microlan PrinterSDK Bluetooth (bitmap → ESC/POS → GS FF)
- * - Desktop: same ESC/POS raster via USB / installed printer queue
+ * - Desktop: same ESC/POS raster via USB / installed label printer queue
  */
 export async function printGapLabel(label: GapLabelContent, copies: number): Promise<void> {
   if (isNativeLabelPrinterAvailable()) {
@@ -78,7 +77,7 @@ export async function printGapLabel(label: GapLabelContent, copies: number): Pro
   }
   throw new Error(
     Platform.OS === 'web'
-      ? 'Label printing needs the KDSPOZ desktop app with a USB printer selected in Printer Settings.'
-      : 'Gap-label printing needs the Android app. Open KDSPOZ on your phone, connect the Bluetooth printer, then print.',
+      ? 'Label printing needs the KDSPOZ desktop app with a USB label printer selected on the Barcode label screen.'
+      : 'Gap-label printing needs the Android app. Open KDSPOZ on your phone, connect the Bluetooth label printer, then print.',
   );
 }

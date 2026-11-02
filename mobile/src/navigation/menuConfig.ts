@@ -63,7 +63,7 @@ const rawMenuSections: MenuSection[] = [
     items: [
       { label: 'My Profile', icon: 'account-circle-outline', screen: 'Profile' },
       { label: 'Shop & Bill Settings', icon: 'storefront-outline', screen: 'ShopSettings' },
-      { label: 'Printer Settings', icon: 'printer-outline', screen: 'PrinterSettings' },
+      { label: 'Billing Printer', icon: 'printer-outline', screen: 'PrinterSettings' },
       { label: 'Barcode label', icon: 'barcode', screen: 'BarcodeLabel', platforms: LABEL_PLATFORMS },
       // Hidden for now — older Android gap-label screen; Barcode label covers desktop + Android.
       // { label: 'Print Label', icon: 'barcode', screen: 'PrintLabel', platforms: ['android'] },

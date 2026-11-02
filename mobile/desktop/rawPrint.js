@@ -7,6 +7,64 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 
+/** Win32 PrinterStatus flags (Get-Printer). */
+const WIN_PRINTER_PENDING_DELETION = 0x00000004;
+const WIN_PRINTER_OFFLINE = 0x00000080;
+const WIN_PRINTER_NOT_AVAILABLE = 0x00001000;
+
+/** Ports that are never a physical POS / office printer. */
+const VIRTUAL_PORT_RE = /^(PORTPROMPT:|FILE:|NUL:|SHRFAX:|Fax:)/i;
+
+const VIRTUAL_PRINTER_RE =
+  /pdf|xps|fax|onenote|send to|document writer|print to file|microsoft print to|adobe pdf|foxit|bullzip|cutepdf|dopdf|nitro pdf|pdfcreator|primopdf|nova.?pdf|redirected|microsoft shared/i;
+
+/**
+ * Windows source of truth for installed printers.
+ * Electron getPrintersAsync still returns queues marked PendingDeletion after removal.
+ */
+async function listWindowsPrinters() {
+  const script =
+    'Get-Printer | Select-Object Name,PrinterStatus,PortName,DriverName,WorkOffline | ConvertTo-Json -Compress';
+  const { stdout } = await execFileAsync(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    { timeout: 20000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+  );
+  const raw = String(stdout || '').trim();
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  return rows
+    .map((row) => {
+      const name = String(row?.Name || '').trim();
+      if (!name) return null;
+      const status = Number(row?.PrinterStatus) || 0;
+      const portName = String(row?.PortName || '');
+      const driverName = String(row?.DriverName || '');
+      const workOffline = Boolean(row?.WorkOffline);
+      const label = `${name} ${driverName}`;
+      if (VIRTUAL_PRINTER_RE.test(label) || VIRTUAL_PORT_RE.test(portName)) return null;
+      if (workOffline) return null;
+      if (status & (WIN_PRINTER_PENDING_DELETION | WIN_PRINTER_OFFLINE | WIN_PRINTER_NOT_AVAILABLE)) {
+        return null;
+      }
+      return {
+        name,
+        displayName: name,
+        isDefault: false,
+        status,
+        portName,
+        driverName,
+      };
+    })
+    .filter(Boolean);
+}
+
 /**
  * Sends raw bytes (ESC/POS) to a network printer, usually port 9100.
  * Many printers never close their side, so success is "all data written", not "connection closed".
@@ -189,4 +247,4 @@ async function sendRawToSystemPrinter(printerName, data) {
   throw new Error(`Raw POS printing is not supported on ${process.platform}.`);
 }
 
-module.exports = { sendRaw, sendRawToSystemPrinter };
+module.exports = { sendRaw, sendRawToSystemPrinter, listWindowsPrinters };

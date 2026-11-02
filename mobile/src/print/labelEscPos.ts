@@ -13,13 +13,13 @@ export type GapLabelContent = {
 export const LABEL_WIDTH_MM = 50;
 export const LABEL_HEIGHT_MM = 25;
 
-/** 203 dpi. */
-const DOTS_PER_MM = 8;
-const LABEL_WIDTH_PX = LABEL_WIDTH_MM * DOTS_PER_MM;
-const LABEL_HEIGHT_PX = LABEL_HEIGHT_MM * DOTS_PER_MM;
-
-/** 58 mm head ≈ 384 dots — scale down only, never stretch. */
+/**
+ * 58 mm head ≈ 384 dots @ 203 dpi.
+ * Render at this width (not 50×8=400) so we never downscale — that softens text.
+ */
 const PRINTER_WIDTH_PX = 384;
+const LABEL_WIDTH_PX = PRINTER_WIDTH_PX;
+const LABEL_HEIGHT_PX = Math.round((PRINTER_WIDTH_PX * LABEL_HEIGHT_MM) / LABEL_WIDTH_MM); // 192
 
 const ESC_INIT = [0x1b, 0x40];
 /** Gap / black-mark form-feed (same as SDKDemoApk). */
@@ -45,6 +45,26 @@ function ellipsize(
     end -= 1;
   }
   return end <= 0 ? ellipsis : `${text.slice(0, end)}${ellipsis}`;
+}
+
+function setPrinterFont(ctx: CanvasRenderingContext2D, sizePx: number, bold = true) {
+  const size = Math.max(10, Math.round(sizePx));
+  const weight = bold ? '700' : '400';
+  // Digits use light monospace — bold + multi-stroke turns into a dark blob on thermal.
+  const family = bold
+    ? 'Arial, Helvetica, "Segoe UI", sans-serif'
+    : '"Courier New", Courier, monospace';
+  ctx.font = `${weight} ${size}px ${family}`;
+}
+
+/** Single clean draw — avoid double-stroke darkness. */
+function drawCleanText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+) {
+  ctx.fillText(text, Math.round(x), Math.round(y));
 }
 
 function drawBarcodeBars(
@@ -84,7 +104,53 @@ function drawBarcodeBars(
 }
 
 /**
- * Canvas layout matches Android LabelBitmap.kt (50×25 mm thermal sticker).
+ * Pure black/white for shop/product/bars.
+ * Digits are drawn AFTER this so light anti-aliased text is not wiped to white.
+ */
+function hardenToMono(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  const image = ctx.getImageData(0, 0, width, height);
+  const px = image.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const alpha = px[i + 3];
+    if (alpha < 128) {
+      px[i] = 255;
+      px[i + 1] = 255;
+      px[i + 2] = 255;
+      px[i + 3] = 255;
+      continue;
+    }
+    const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    // Only near-black becomes ink — drops gray halo that looks like darkness.
+    const on = lum < 100;
+    const v = on ? 0 : 255;
+    px[i] = v;
+    px[i + 1] = v;
+    px[i + 2] = v;
+    px[i + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+/** Fit human-readable barcode into the footer strip (long Code 128 codes shrink). */
+function fitBarcodeDigits(
+  ctx: CanvasRenderingContext2D,
+  code: string,
+  maxWidth: number,
+  preferredSize: number,
+): { text: string; size: number } {
+  const raw = code.replace(/\s+/g, '');
+  let size = preferredSize;
+  while (size >= 11) {
+    setPrinterFont(ctx, size, true);
+    if (ctx.measureText(raw).width <= maxWidth) return { text: raw, size };
+    size -= 1;
+  }
+  setPrinterFont(ctx, 11, true);
+  return { text: ellipsize(ctx, raw, maxWidth), size: 11 };
+}
+
+/**
+ * Canvas layout matches Android LabelBitmap.kt (50×25 mm thermal sticker @ 384×192).
  */
 export function renderGapLabelCanvas(content: GapLabelContent): HTMLCanvasElement {
   const width = LABEL_WIDTH_PX;
@@ -92,7 +158,7 @@ export function renderGapLabelCanvas(content: GapLabelContent): HTMLCanvasElemen
   const canvas = requireCanvas();
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (!ctx) throw new Error('Could not prepare the label image.');
 
   ctx.fillStyle = '#fff';
@@ -100,62 +166,82 @@ export function renderGapLabelCanvas(content: GapLabelContent): HTMLCanvasElemen
   ctx.fillStyle = '#000';
   ctx.strokeStyle = '#000';
   ctx.imageSmoothingEnabled = false;
-  ctx.font = '16px monospace';
+  (ctx as CanvasRenderingContext2D & { textRendering?: string }).textRendering = 'geometricPrecision';
 
-  const padX = Math.max(4, Math.floor(width / 40));
-  const padY = Math.max(3, Math.floor(height / 28));
+  const padX = Math.max(6, Math.floor(width / 32));
+  const padY = Math.max(4, Math.floor(height / 24));
   let y = padY;
 
-  const shopSize = height * 0.11;
-  ctx.font = `${Math.round(shopSize)}px monospace`;
+  const shopSize = 22;
+  setPrinterFont(ctx, shopSize, true);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  const shop = ellipsize(ctx, content.shopName.trim() || 'Shop', width - padX * 2);
+  const shop = ellipsize(
+    ctx,
+    (content.shopName.trim() || 'Shop').toUpperCase(),
+    width - padX * 2,
+  );
   y += shopSize;
-  ctx.fillText(shop, width / 2, y);
-  y += 10;
+  drawCleanText(ctx, shop, width / 2, y);
+  y += 5;
 
-  const rowSize = height * 0.105;
-  ctx.font = `${Math.round(rowSize)}px monospace`;
+  const productSize = 18;
+  const priceSize = 18;
+  setPrinterFont(ctx, priceSize, true);
   const qtyText = content.detail.trim();
   const priceText = (content.price || content.mrp || '').trim();
   const rightPart = [qtyText, priceText].filter(Boolean).join('  ');
   const rightWidth = rightPart ? ctx.measureText(rightPart).width : 0;
   const gap = 10;
-  const leftMax = Math.max(width * 0.35, width - padX * 2 - rightWidth - gap);
+  const leftMax = Math.max(width * 0.32, width - padX * 2 - rightWidth - gap);
+
+  setPrinterFont(ctx, productSize, true);
   const productText = ellipsize(ctx, content.productName.trim() || 'Product', leftMax);
 
-  y += rowSize;
+  y += Math.max(productSize, priceSize);
   ctx.textAlign = 'left';
-  ctx.fillText(productText, padX, y);
+  setPrinterFont(ctx, productSize, true);
+  drawCleanText(ctx, productText, padX, y);
   if (rightPart) {
     ctx.textAlign = 'right';
-    ctx.fillText(rightPart, width - padX, y);
+    setPrinterFont(ctx, priceSize, true);
+    drawCleanText(ctx, rightPart, width - padX, y);
   }
-  y += 10;
+  y += 5;
 
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(padX, y);
-  ctx.lineTo(width - padX, y);
+  ctx.moveTo(padX, Math.round(y) + 0.5);
+  ctx.lineTo(width - padX, Math.round(y) + 0.5);
   ctx.stroke();
-  y += 10;
+  y += 5;
 
-  const footerSize = height * 0.075;
-  const footerReserve = footerSize + padY + 2;
+  // Leave a clear footer so the barcode number stays on the sticker.
+  const footerSize = 18;
+  const footerReserve = footerSize + padY + 6;
   const barTop = Math.floor(y);
   const maxBarH = Math.floor(height * 0.26);
   const barBottom = Math.max(
-    barTop + 16,
+    barTop + 24,
     Math.min(Math.floor(height - footerReserve), barTop + maxBarH),
   );
   const code = content.barcode.trim() || '2000000000008';
   drawBarcodeBars(ctx, code, padX, barTop, width - padX * 2, barBottom - barTop);
 
-  ctx.font = `${Math.round(footerSize)}px monospace`;
-  ctx.textAlign = 'center';
-  ctx.fillText(code, width / 2, height - padY);
+  // Harden bars/text first, then paint solid black digits (anti-alias was making them vanish).
+  hardenToMono(ctx, width, height);
 
+  const digitTop = barBottom + 2;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, digitTop, width, height - digitTop);
+  ctx.fillStyle = '#000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  const fitted = fitBarcodeDigits(ctx, code, width - padX * 2, footerSize);
+  setPrinterFont(ctx, fitted.size, true);
+  // Baseline sits inside the footer strip, not on the label edge.
+  const digitY = Math.min(height - Math.max(2, padY - 1), digitTop + fitted.size);
+  drawCleanText(ctx, fitted.text, width / 2, digitY);
   return canvas;
 }
 
@@ -189,7 +275,7 @@ function canvasToRaster(canvas: HTMLCanvasElement): { widthBytes: number; height
       const alpha = px[i + 3];
       if (alpha < 128) continue;
       const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-      if (lum >= 160) continue;
+      if (lum >= 128) continue;
       data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
     }
   }

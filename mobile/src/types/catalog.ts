@@ -36,6 +36,7 @@ export interface ProductVariant {
   selling_price: string | number;
   mrp?: string | number;
   wholesale_price?: string | number;
+  status?: string;
   /** `quantity` set = scanning this barcode adds that quantity (in the product's unit). */
   barcodes?: { barcode: string; is_primary: boolean; quantity?: string | number | null }[];
   stockQty?: number;

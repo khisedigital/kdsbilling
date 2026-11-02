@@ -174,8 +174,10 @@ export default function PrinterSettingsScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       >
-        <Text style={styles.title}>Printer Settings</Text>
-        <Text style={styles.subtitle}>Configure receipt printer for billing</Text>
+        <Text style={styles.title}>Billing Printer</Text>
+        <Text style={styles.subtitle}>
+          Receipt / bill printer only. Barcode labels use a separate printer on the Barcode label screen.
+        </Text>
 
         <SectionCard title="Printer type" icon="printer">
           <SegmentedButtons

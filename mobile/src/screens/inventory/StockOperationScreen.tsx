@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -16,12 +17,18 @@ import EmptyState from '../../components/ui/EmptyState';
 import SurfaceCard from '../../components/ui/SurfaceCard';
 import { fetchStockHistory, postStockMovement } from '../../services/inventoryService';
 import type { StockLedgerEntry } from '../../services/inventoryService';
-import type { SearchProductResult } from '../../services/catalogService';
+import {
+  fetchProduct,
+  productVariantToSearchResult,
+  type SearchProductResult,
+} from '../../services/catalogService';
 import { apiError } from '../../utils/apiError';
 import { formatQuantity } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
+
+type VariantQtyRow = SearchProductResult & { quantity: string };
 
 type Props = NativeStackScreenProps<MainStackParamList, 'StockOperation'>;
 type Mode = 'opening' | 'in' | 'out' | 'adjust' | 'damage';
@@ -120,6 +127,9 @@ export default function StockOperationScreen({ route, navigation }: Props) {
   const [mode, setMode] = useState<Mode>(initialMode);
 
   const [selected, setSelected] = useState<SearchProductResult | null>(null);
+  const [variantRows, setVariantRows] = useState<VariantQtyRow[]>([]);
+  const [productTitle, setProductTitle] = useState('');
+  const [loadingVariants, setLoadingVariants] = useState(false);
   const [quantity, setQuantity] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
@@ -128,6 +138,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
   const [history, setHistory] = useState<StockLedgerEntry[]>([]);
 
   const meta = MODE_META[mode] || MODE_META.in;
+  const isMultiVariant = variantRows.length > 0;
 
   useEffect(() => {
     const p = route.params;
@@ -143,6 +154,8 @@ export default function StockOperationScreen({ route, navigation }: Props) {
       stockQty: p.stockQty ?? 0,
       uom: p.uomCode ? { code: p.uomCode } : null,
     });
+    setVariantRows([]);
+    setProductTitle(p.productName);
   }, [route.params]);
 
   const loadHistory = useCallback(async (variantId?: string) => {
@@ -158,10 +171,10 @@ export default function StockOperationScreen({ route, navigation }: Props) {
     loadHistory(selected?.variantId);
   }, [loadHistory, selected?.variantId]);
 
-  const onSelect = (product: SearchProductResult) => {
+  const applySingle = (product: SearchProductResult) => {
     setSelected(product);
-    setError('');
-    setSuccess('');
+    setVariantRows([]);
+    setProductTitle(product.productName);
     if (mode === 'adjust') {
       setQuantity('');
     } else if (!quantity) {
@@ -169,11 +182,74 @@ export default function StockOperationScreen({ route, navigation }: Props) {
     }
   };
 
+  const onSelect = async (product: SearchProductResult) => {
+    setError('');
+    setSuccess('');
+    if (!product.productId) {
+      applySingle(product);
+      return;
+    }
+
+    setLoadingVariants(true);
+    setProductTitle(product.productName);
+    try {
+      const full = await fetchProduct(product.productId);
+      const variants = (full.variants || [])
+        .filter((v) => v?.id && (!v.status || v.status === 'active'))
+        .map((v) => productVariantToSearchResult(full, v));
+      const hasMulti =
+        Boolean(full.has_variants)
+        || variants.length > 1
+        || variants.some((v) => Boolean(v.size || v.color));
+
+      if (hasMulti && variants.length) {
+        setSelected(null);
+        setQuantity('');
+        setVariantRows(
+          variants.map((v) => ({
+            ...v,
+            quantity: '',
+          })),
+        );
+        setProductTitle(full.name || product.productName);
+        loadHistory();
+      } else {
+        applySingle(variants[0] || product);
+      }
+    } catch {
+      applySingle(product);
+    } finally {
+      setLoadingVariants(false);
+    }
+  };
+
   const clearProduct = () => {
     setSelected(null);
+    setVariantRows([]);
+    setProductTitle('');
     setQuantity('');
     setSuccess('');
     loadHistory();
+  };
+
+  const updateVariantQty = (variantId: string, value: string) => {
+    setVariantRows((prev) =>
+      prev.map((row) => (row.variantId === variantId ? { ...row, quantity: value } : row)),
+    );
+    setError('');
+    setSuccess('');
+  };
+
+  const normalizeQty = (raw: number) => {
+    if (mode === 'out' || mode === 'damage') return Math.abs(raw);
+    if ((mode === 'in' || mode === 'opening') && raw < 0) return Math.abs(raw);
+    return raw;
+  };
+
+  const nextStockFor = (current: number, qty: number) => {
+    if (mode === 'adjust') return current + qty;
+    if (mode === 'out' || mode === 'damage') return current - Math.abs(qty);
+    return current + Math.abs(qty);
   };
 
   const previewAfter = useMemo(() => {
@@ -183,12 +259,60 @@ export default function StockOperationScreen({ route, navigation }: Props) {
     if (Number.isNaN(raw) || raw === 0) return null;
     if (mode === 'in' || mode === 'opening') return current + Math.abs(raw);
     if (mode === 'out' || mode === 'damage') return current - Math.abs(raw);
-    return current + raw; // adjust delta
+    return current + raw;
   }, [selected, quantity, mode]);
 
   const save = async () => {
     setError('');
     setSuccess('');
+
+    if (isMultiVariant) {
+      const filled = variantRows
+        .map((row) => {
+          const raw = parseFloat(row.quantity);
+          if (Number.isNaN(raw) || raw === 0) return null;
+          return { row, qty: normalizeQty(raw) };
+        })
+        .filter(Boolean) as { row: VariantQtyRow; qty: number }[];
+
+      if (!filled.length) {
+        setError(
+          mode === 'adjust'
+            ? 'Enter a non-zero adjustment for at least one size'
+            : 'Enter quantity for at least one size',
+        );
+        return;
+      }
+
+      const endpoint = mode === 'opening' ? 'opening' : mode;
+      setLoading(true);
+      try {
+        await postStockMovement(endpoint, {
+          items: filled.map(({ row, qty }) => ({ variantId: row.variantId, quantity: qty })),
+          notes: notes.trim() || undefined,
+        });
+
+        setVariantRows((prev) =>
+          prev.map((row) => {
+            const hit = filled.find((f) => f.row.variantId === row.variantId);
+            if (!hit) return { ...row, quantity: '' };
+            const next = Math.max(0, nextStockFor(row.stockQty ?? 0, hit.qty));
+            return { ...row, stockQty: next, quantity: '' };
+          }),
+        );
+        setSuccess(
+          `${meta.label} saved · ${filled.length} size${filled.length > 1 ? 's' : ''} updated for ${productTitle}`,
+        );
+        setNotes('');
+        await loadHistory();
+      } catch (err) {
+        setError(apiError(err, 'Could not update stock'));
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (!selected) {
       setError('Search and select a product first');
       return;
@@ -203,8 +327,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
       setError(mode === 'adjust' ? 'Enter a non-zero adjustment' : 'Enter a valid quantity');
       return;
     }
-    if (mode === 'out' || mode === 'damage') qty = Math.abs(qty);
-    if ((mode === 'in' || mode === 'opening') && qty < 0) qty = Math.abs(qty);
+    qty = normalizeQty(qty);
 
     const endpoint = mode === 'opening' ? 'opening' : mode;
     setLoading(true);
@@ -214,20 +337,15 @@ export default function StockOperationScreen({ route, navigation }: Props) {
         notes: notes.trim() || undefined,
       });
 
-      const nextStock =
-        mode === 'adjust'
-          ? (selected.stockQty ?? 0) + qty
-          : mode === 'out' || mode === 'damage'
-            ? (selected.stockQty ?? 0) - Math.abs(qty)
-            : (selected.stockQty ?? 0) + Math.abs(qty);
+      const nextStock = Math.max(0, nextStockFor(selected.stockQty ?? 0, qty));
 
       setSuccess(
         `${meta.label} saved · ${selected.productName} now ${formatQuantity(
-          Math.max(0, Math.round(nextStock * 1000) / 1000),
+          Math.round(nextStock * 1000) / 1000,
           selected.uom || undefined,
         )}`,
       );
-      setSelected({ ...selected, stockQty: Math.max(0, nextStock) });
+      setSelected({ ...selected, stockQty: nextStock });
       setQuantity(mode === 'adjust' ? '' : '1');
       setNotes('');
       await loadHistory(selected.variantId);
@@ -239,6 +357,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
   };
 
   const size = selected ? variantLabel(selected.size, selected.color) : '';
+  const hasProduct = Boolean(selected || isMultiVariant);
 
   return (
     <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -271,12 +390,39 @@ export default function StockOperationScreen({ route, navigation }: Props) {
         <SurfaceCard>
           <ProductSearchField
             onSelect={onSelect}
+            groupByProduct
             selectedLabel={
-              selected
-                ? `${selected.productName}${size ? ` · ${size}` : ''} (${selected.sku})`
-                : undefined
+              isMultiVariant
+                ? `${productTitle} · ${variantRows.length} sizes`
+                : selected
+                  ? `${selected.productName}${size ? ` · ${size}` : ''} (${selected.sku})`
+                  : undefined
             }
           />
+          {loadingVariants ? (
+            <View style={styles.variantLoading}>
+              <ActivityIndicator color={meta.color} />
+              <Text style={styles.fieldHint}>Loading sizes…</Text>
+            </View>
+          ) : null}
+          {isMultiVariant ? (
+            <View style={styles.productCard}>
+              <View style={styles.productTop}>
+                <View style={[styles.productIcon, { backgroundColor: meta.bg }]}>
+                  <Icon name="package-variant" size={22} color={meta.color} />
+                </View>
+                <View style={styles.productBody}>
+                  <Text style={styles.productName} numberOfLines={2}>{productTitle}</Text>
+                  <Text style={styles.productMeta}>
+                    {variantRows.length} sizes · enter qty for each
+                  </Text>
+                </View>
+                <Pressable onPress={clearProduct} hitSlop={10} style={styles.clearBtn}>
+                  <Icon name="close" size={16} color={colors.textMuted} />
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
           {selected ? (
             <View style={styles.productCard}>
               <View style={styles.productTop}>
@@ -319,44 +465,87 @@ export default function StockOperationScreen({ route, navigation }: Props) {
 
         <Text style={styles.sectionLabel}>2. Quantity</Text>
         <SurfaceCard>
-          <Text style={styles.fieldHint}>{meta.qtyHint}</Text>
-          <TextInput
-            label={meta.qtyLabel}
-            value={quantity}
-            onChangeText={(v) => {
-              setQuantity(v);
-              setError('');
-              setSuccess('');
-            }}
-            keyboardType="numbers-and-punctuation"
-            mode="outlined"
-            style={styles.input}
-            left={<TextInput.Icon icon="numeric" />}
-            outlineColor={colors.border}
-            activeOutlineColor={meta.color}
-          />
-          {mode !== 'adjust' ? (
-            <View style={styles.quickRow}>
-              {QUICK_QTY.map((q) => (
-                <Pressable
-                  key={q}
-                  onPress={() => setQuantity(q)}
-                  style={[styles.quickChip, quantity === q && { backgroundColor: meta.bg, borderColor: meta.color }]}>
-                  <Text style={[styles.quickText, quantity === q && { color: meta.color }]}>{q}</Text>
-                </Pressable>
-              ))}
-            </View>
+          {isMultiVariant ? (
+            <>
+              <Text style={styles.fieldHint}>
+                {meta.qtyHint} Leave a size blank to skip it.
+              </Text>
+              {variantRows.map((row) => {
+                const rowSize = variantLabel(row.size, row.color) || 'Default';
+                const raw = parseFloat(row.quantity);
+                const after =
+                  !Number.isNaN(raw) && raw !== 0
+                    ? Math.max(0, nextStockFor(row.stockQty ?? 0, normalizeQty(raw)))
+                    : null;
+                return (
+                  <View key={row.variantId} style={styles.variantRow}>
+                    <View style={styles.variantInfo}>
+                      <Text style={styles.variantSize}>{rowSize}</Text>
+                      <Text style={styles.variantSku}>{row.sku}</Text>
+                      <Text style={styles.variantStock}>
+                        Stock {formatQuantity(row.stockQty ?? 0, row.uom || undefined)}
+                        {after != null
+                          ? ` → ${formatQuantity(Math.round(after * 1000) / 1000, row.uom || undefined)}`
+                          : ''}
+                      </Text>
+                    </View>
+                    <TextInput
+                      label={mode === 'adjust' ? '+/−' : 'Qty'}
+                      value={row.quantity}
+                      onChangeText={(v) => updateVariantQty(row.variantId, v)}
+                      keyboardType="numbers-and-punctuation"
+                      mode="outlined"
+                      dense
+                      style={styles.variantQty}
+                      outlineColor={colors.border}
+                      activeOutlineColor={meta.color}
+                    />
+                  </View>
+                );
+              })}
+            </>
           ) : (
-            <View style={styles.quickRow}>
-              {['-10', '-5', '-1', '+1', '+5', '+10'].map((q) => (
-                <Pressable
-                  key={q}
-                  onPress={() => setQuantity(q)}
-                  style={[styles.quickChip, quantity === q && { backgroundColor: meta.bg, borderColor: meta.color }]}>
-                  <Text style={[styles.quickText, quantity === q && { color: meta.color }]}>{q}</Text>
-                </Pressable>
-              ))}
-            </View>
+            <>
+              <Text style={styles.fieldHint}>{meta.qtyHint}</Text>
+              <TextInput
+                label={meta.qtyLabel}
+                value={quantity}
+                onChangeText={(v) => {
+                  setQuantity(v);
+                  setError('');
+                  setSuccess('');
+                }}
+                keyboardType="numbers-and-punctuation"
+                mode="outlined"
+                style={styles.input}
+                left={<TextInput.Icon icon="numeric" />}
+                outlineColor={colors.border}
+                activeOutlineColor={meta.color}
+              />
+              {mode !== 'adjust' ? (
+                <View style={styles.quickRow}>
+                  {QUICK_QTY.map((q) => (
+                    <Pressable
+                      key={q}
+                      onPress={() => setQuantity(q)}
+                      style={[styles.quickChip, quantity === q && { backgroundColor: meta.bg, borderColor: meta.color }]}>
+                      <Text style={[styles.quickText, quantity === q && { color: meta.color }]}>{q}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.quickRow}>
+                  {['-10', '-5', '-1', '+1', '+5', '+10'].map((q) => (
+                    <Pressable
+                      key={q}
+                      onPress={() => setQuantity(q)}
+                      style={[styles.quickChip, quantity === q && { backgroundColor: meta.bg, borderColor: meta.color }]}>
+                      <Text style={[styles.quickText, quantity === q && { color: meta.color }]}>{q}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </>
           )}
           <TextInput
             label="Notes (optional)"
@@ -382,7 +571,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
           mode="contained"
           onPress={save}
           loading={loading}
-          disabled={loading || !selected}
+          disabled={loading || loadingVariants || !hasProduct}
           icon={meta.icon}
           buttonColor={meta.color}
           style={styles.saveBtn}
@@ -562,4 +751,25 @@ const styles = StyleSheet.create({
   histName: { fontSize: 14, fontWeight: '600', color: colors.text },
   histMeta: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   histQty: { fontSize: 15, fontWeight: '700' },
+  variantLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  variantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderLight,
+  },
+  variantInfo: { flex: 1, minWidth: 0 },
+  variantSize: { fontSize: 15, fontWeight: '700', color: colors.text },
+  variantSku: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  variantStock: { fontSize: 12, color: colors.textSecondary, marginTop: 4, fontWeight: '600' },
+  variantQty: { width: 96, backgroundColor: colors.surface },
 });

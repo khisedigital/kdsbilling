@@ -125,7 +125,7 @@ export default function PrinterSettingsScreen() {
         );
       })}
       {!printers.length && !loadingPrinters ? (
-        <Text style={styles.hint}>No printers found on this computer.</Text>
+        <Text style={styles.hint}>No online printers found. Turn the printer on, then Refresh.</Text>
       ) : null}
       <Button
         mode="outlined"
@@ -141,8 +141,10 @@ export default function PrinterSettingsScreen() {
 
   return (
     <ScrollView style={common.screen} contentContainerStyle={[common.screenPad, styles.page]}>
-      <Text style={styles.title}>Printer Settings</Text>
-      <Text style={styles.subtitle}>Configure the receipt printer for this computer</Text>
+      <Text style={styles.title}>Billing Printer</Text>
+      <Text style={styles.subtitle}>
+        Receipt / bill printer only. Barcode labels use a separate printer on the Barcode label screen.
+      </Text>
 
       <SectionCard title="Paper size" icon="file-outline">
         <Text style={styles.paperHint}>
@@ -241,7 +243,7 @@ export default function PrinterSettingsScreen() {
             );
           })}
           {!printers.length && !loadingPrinters ? (
-            <Text style={styles.hint}>No printers found. Pair the POS printer, then Refresh.</Text>
+            <Text style={styles.hint}>No online printers found. Turn the POS printer on, then Refresh.</Text>
           ) : null}
           <Button
             mode="outlined"

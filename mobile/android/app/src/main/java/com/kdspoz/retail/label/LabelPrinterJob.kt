@@ -29,8 +29,9 @@ object LabelPrinterJob {
   const val LABEL_HEIGHT_MM = 25
 
   /**
-   * Printable dots across the print head (NOT the sticker width).
+   * Printable dots across the print head (same as LabelBitmap).
    * 58 mm ≈ 384 px @ 203 dpi · 80 mm ≈ 576 px
+   * LabelBitmap already draws at this width so fitToPrinterWidth is a no-op.
    */
   private const val PRINTER_WIDTH_PX = 384
 

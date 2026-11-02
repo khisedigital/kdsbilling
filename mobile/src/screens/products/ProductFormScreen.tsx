@@ -1,6 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Dialog, HelperText, Portal, Switch, Text, TextInput } from 'react-native-paper';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import {
+  ActivityIndicator,
+  Button,
+  Checkbox,
+  Dialog,
+  HelperText,
+  Portal,
+  Switch,
+  Text,
+  TextInput,
+} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -33,6 +52,7 @@ type SizeRow = {
   barcode: string;
   sellingPrice: string;
   costPrice: string;
+  mrp: string;
   stockQty: string;
 };
 
@@ -157,6 +177,8 @@ function apiError(err: unknown, fallback: string) {
 }
 
 export default function ProductFormScreen({ navigation, route }: Props) {
+  const { width: windowWidth } = useWindowDimensions();
+  const twoColumn = windowWidth >= 860;
   const productId = route.params?.productId;
   const isEdit = !!productId;
 
@@ -204,7 +226,8 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const profit = selling - cost;
   const margin = selling > 0 ? (profit / selling) * 100 : 0;
   const nameMissing = !name.trim();
-  const priceMissing = !sellingPrice.trim() || selling <= 0;
+  // Product-level price only for single-item mode; multi-size prices live on each variant.
+  const priceMissing = !multiSizes && (!sellingPrice.trim() || selling <= 0);
   const selectedSizes = useMemo(() => new Set(sizeRows.map((row) => row.size.toUpperCase())), [sizeRows]);
 
   useEffect(() => {
@@ -263,6 +286,12 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
           if (useSizes) {
             setShowOptional(true);
+            // Clear product-level prices — only variants carry price when multi-size.
+            setSellingPrice('');
+            setCostPrice('');
+            setMrp('');
+            setSku('');
+            setBarcode('');
             setSizeRows(
               variants.map((v) => ({
                 key: v.id,
@@ -272,6 +301,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                 barcode: mainBarcodeOf(v),
                 sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
                 costPrice: String(parseFloat(String(v.cost_price)) || ''),
+                mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
                 stockQty: String(v.stockQty ?? 0),
               })),
             );
@@ -300,10 +330,10 @@ export default function ProductFormScreen({ navigation, route }: Props) {
     if (!size) return;
     if (selectedSizes.has(size.toUpperCase())) return;
 
-    const defaultPrice = sellingPrice || '0';
-    const defaultCost = costPrice || '';
     setSizeRows((rows) => {
       const reuseExisting = rows.length === 0 && !!variantId;
+      // When converting a single item into sizes, carry its prices onto the first size only.
+      const seedFromSingle = reuseExisting || (rows.length === 0 && !multiSizes);
       const next: SizeRow[] = [
         ...rows,
         {
@@ -312,8 +342,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           size,
           sku: makeSizeSku(sku || name.slice(0, 8).toUpperCase(), size),
           barcode: reuseExisting ? barcode : '',
-          sellingPrice: defaultPrice,
-          costPrice: defaultCost,
+          sellingPrice: seedFromSingle ? sellingPrice : '',
+          costPrice: seedFromSingle ? costPrice : '',
+          mrp: seedFromSingle ? mrp : '',
           stockQty: '0',
         },
       ];
@@ -321,6 +352,11 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       const total = totalFromRows > 0 ? totalFromRows : mainStockQty;
       return rebalanceRowStock(next, total, isWeightBased);
     });
+    if (!multiSizes) {
+      setSellingPrice('');
+      setCostPrice('');
+      setMrp('');
+    }
     setMultiSizes(true);
   };
 
@@ -363,6 +399,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                 setBarcode(first.barcode);
                 setSellingPrice(first.sellingPrice);
                 setCostPrice(first.costPrice);
+                setMrp(first.mrp);
                 setMainStockQty(parseFloat(first.stockQty) || 0);
               }
               setMultiSizes(false);
@@ -389,9 +426,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       color: sharedColor,
       sku: row.sku.trim() || undefined,
       barcode: row.barcode.trim() || undefined,
-      costPrice: row.costPrice ? parseFloat(row.costPrice) : cost,
-      sellingPrice: parseFloat(row.sellingPrice) || selling,
-      mrp: mrp ? parseFloat(mrp) : undefined,
+      costPrice: row.costPrice ? parseFloat(row.costPrice) : 0,
+      sellingPrice: parseFloat(row.sellingPrice),
+      mrp: row.mrp ? parseFloat(row.mrp) : undefined,
       stockQty: parseFloat(row.stockQty) || 0,
     }));
   };
@@ -428,7 +465,11 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   const handleSubmit = async () => {
     setError('');
-    if (nameMissing || priceMissing || !uomId) {
+    if (nameMissing || !uomId) {
+      setError('Please complete the highlighted required fields');
+      return;
+    }
+    if (!multiSizes && priceMissing) {
       setError('Please complete the highlighted required fields');
       return;
     }
@@ -495,6 +536,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           });
         }
       } else if (variants) {
+        // Pricing is only on variants — no product-level sellingPrice/cost/mrp.
         await createProduct({
           name: name.trim(),
           description: description.trim() || undefined,
@@ -505,9 +547,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           taxCode: taxCode.trim() || undefined,
           isWeightBased,
           allowDecimalQty: isWeightBased,
-          sellingPrice: parseFloat(sellingPrice),
-          costPrice: costPrice ? parseFloat(costPrice) : 0,
-          mrp: mrp ? parseFloat(mrp) : undefined,
+          sellingPrice: variants[0].sellingPrice,
           variants,
         });
       } else {
@@ -560,76 +600,123 @@ export default function ProductFormScreen({ navigation, route }: Props) {
     );
   }
 
-  return (
-    <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
-        <View style={styles.hero}>
-          <View style={styles.heroIcon}>
-            <Icon name={isEdit ? 'pencil-outline' : 'package-variant'} size={26} color={colors.primary} />
-          </View>
-          <View style={styles.heroText}>
-            <Text style={styles.heading}>{isEdit ? 'Edit Product' : 'New Product'}</Text>
-            <Text style={styles.subheading}>
-              {isEdit ? 'Keep your product information up to date' : 'Only name, unit and selling price are required'}
-            </Text>
-          </View>
-        </View>
+  const taxChips = (
+    <>
+      <Text style={styles.label}>Tax</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.taxRow}>
+        <Pressable
+          onPress={() => setTaxGroupId(zeroTaxGroup?.id || '')}
+          style={[
+            styles.taxChip,
+            (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipActive,
+          ]}>
+          <Text
+            style={[
+              styles.taxChipRate,
+              (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipTextActive,
+            ]}>
+            0%
+          </Text>
+          <Text
+            style={[
+              styles.taxChipName,
+              (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipTextActive,
+            ]}>
+            No tax
+          </Text>
+        </Pressable>
+        {taxableGroups.map((t) => {
+          const active = taxGroupId === t.id;
+          return (
+            <Pressable
+              key={t.id}
+              onPress={() => setTaxGroupId(t.id)}
+              style={[styles.taxChip, active && styles.taxChipActive]}>
+              <Text style={[styles.taxChipRate, active && styles.taxChipTextActive]}>{taxLabel(t)}</Text>
+              <Text style={[styles.taxChipName, active && styles.taxChipTextActive]} numberOfLines={1}>
+                {t.name.replace(/^GST\s*/i, '')}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </>
+  );
 
-        <SectionCard
-          title="Product details"
-          subtitle="What you sell and how it is measured"
-          icon="package-variant">
-          <TextInput
-            label="Product name *"
-            value={name}
-            onChangeText={setName}
-            mode="outlined"
-            style={styles.input}
-            error={!!error && nameMissing}
-            autoCapitalize="words"
-            returnKeyType="next"
-          />
-          {!!error && nameMissing ? <HelperText type="error">Enter a product name</HelperText> : null}
+  const productColumn = (
+    <SectionCard title="Product" subtitle="Basic info and pricing" icon="package-variant">
+      <TextInput
+        label="Product name *"
+        value={name}
+        onChangeText={setName}
+        mode="outlined"
+        style={styles.input}
+        error={!!error && nameMissing}
+        autoCapitalize="words"
+        returnKeyType="next"
+      />
+      {!!error && nameMissing ? <HelperText type="error">Enter a product name</HelperText> : null}
 
+      <View style={styles.priceRow}>
+        <View style={styles.halfInput}>
           <ChoiceField
             label="Category"
             value={categoryId}
             choices={[{ value: '', label: 'No category' }, ...categoryChoices]}
-            placeholder="Select category"
+            placeholder="Category"
             onChange={setCategoryId}
           />
+        </View>
+        <View style={styles.halfInput}>
           <ChoiceField
             label="Brand"
             value={brandId}
             choices={[{ value: '', label: 'No brand' }, ...brandChoices]}
-            placeholder="Select brand"
+            placeholder="Brand"
             onChange={setBrandId}
           />
-          <ChoiceField
-            label="Unit of measure *"
-            value={uomId}
-            choices={uomChoices}
-            placeholder="Select unit"
-            onChange={setUomId}
-          />
+        </View>
+      </View>
 
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={styles.switchTitle}>Sold by weight or decimal</Text>
-              <Text style={styles.switchHint}>Enable for kg, litre, metre and partial quantities</Text>
-            </View>
-            <Switch value={isWeightBased} onValueChange={setIsWeightBased} color={colors.primary} />
-          </View>
-        </SectionCard>
+      <ChoiceField
+        label="Unit *"
+        value={uomId}
+        choices={uomChoices}
+        placeholder="Select unit"
+        onChange={setUomId}
+      />
 
-        <SectionCard
-          title="Price & tax"
-          subtitle={multiSizes ? 'Default price for new sizes · GST applies to all' : 'Set selling price and applicable GST'}
-          icon="currency-inr"
-          iconColor={colors.secondary}
-          iconBg={colors.secondaryLight}>
+      <View style={styles.switchRow}>
+        <View style={styles.switchText}>
+          <Text style={styles.switchTitle}>Sold by weight / decimal</Text>
+          <Text style={styles.switchHint}>kg, litre, metre, partial qty</Text>
+        </View>
+        <Switch value={isWeightBased} onValueChange={setIsWeightBased} color={colors.primary} />
+      </View>
+
+      {taxChips}
+
+      <Pressable
+        onPress={() => toggleMultiSizes(!multiSizes)}
+        style={[styles.variantCheckRow, multiSizes && styles.variantCheckRowOn]}>
+        <Checkbox
+          status={multiSizes ? 'checked' : 'unchecked'}
+          onPress={() => toggleMultiSizes(!multiSizes)}
+          color={colors.primary}
+        />
+        <View style={styles.switchText}>
+          <Text style={styles.switchTitle}>This product has variants</Text>
+          <Text style={styles.switchHint}>
+            Check to enable sizes (S, M, L…) in the right column. Pricing moves to each size.
+          </Text>
+        </View>
+      </Pressable>
+
+      {!multiSizes ? (
+        <>
+          <Text style={styles.sectionDivider}>Price</Text>
           <TextInput
-            label={multiSizes ? 'Default selling price *' : 'Selling price *'}
+            label="Selling price *"
             value={sellingPrice}
             onChangeText={setSellingPrice}
             keyboardType="decimal-pad"
@@ -642,7 +729,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
           <View style={styles.priceRow}>
             <TextInput
-              label="Cost price"
+              label="Cost"
               value={costPrice}
               onChangeText={setCostPrice}
               keyboardType="decimal-pad"
@@ -675,290 +762,301 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             </View>
           ) : null}
 
-          <Text style={styles.label}>Tax rate</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.taxRow}>
-            <Pressable
-              onPress={() => setTaxGroupId(zeroTaxGroup?.id || '')}
-              style={[
-                styles.taxChip,
-                (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipActive,
-              ]}>
-              <Text style={[
-                styles.taxChipRate,
-                (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipTextActive,
-              ]}>0%</Text>
-              <Text style={[
-                styles.taxChipName,
-                (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipTextActive,
-              ]}>No tax</Text>
-            </Pressable>
-            {taxableGroups.map((t) => {
-              const active = taxGroupId === t.id;
-              return (
-                <Pressable
-                  key={t.id}
-                  onPress={() => setTaxGroupId(t.id)}
-                  style={[styles.taxChip, active && styles.taxChipActive]}>
-                  <Text style={[styles.taxChipRate, active && styles.taxChipTextActive]}>{taxLabel(t)}</Text>
-                  <Text style={[styles.taxChipName, active && styles.taxChipTextActive]} numberOfLines={1}>
-                    {t.name.replace(/^GST\s*/i, '')}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </SectionCard>
-
-        <SectionCard
-          title="Size variants"
-          subtitle="Stock is per size — product total = sum of all sizes"
-          icon="ruler">
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={styles.switchTitle}>Multiple sizes</Text>
-              <Text style={styles.switchHint}>Add S, M, L, XL or your own sizes</Text>
-            </View>
-            <Switch value={multiSizes} onValueChange={toggleMultiSizes} color={colors.primary} />
+          <View style={styles.priceRow}>
+            <TextInput
+              label="SKU"
+              value={sku}
+              onChangeText={setSku}
+              mode="outlined"
+              style={[styles.input, styles.halfInput]}
+            />
+            <TextInput
+              label="Barcode"
+              value={barcode}
+              onChangeText={setBarcode}
+              mode="outlined"
+              style={[styles.input, styles.halfInput]}
+            />
           </View>
 
-          {multiSizes ? (
-            <>
-              {(mainStockQty > 0 || sizeStockTotal > 0) ? (
-                <View style={styles.stockSplitBox}>
-                  <Icon name="warehouse" size={18} color={colors.secondary} />
-                  <View style={styles.stockSplitText}>
-                    <Text style={styles.stockSplitTitle}>
-                      Total stock {sizeStockTotal || mainStockQty} pcs across sizes
-                    </Text>
-                    <Text style={styles.stockSplitHint}>
-                      When you add sizes, existing stock is divided evenly. You can edit each size before saving.
-                    </Text>
-                  </View>
-                  <Button mode="text" compact onPress={splitStockEvenly}>
-                    Split evenly
-                  </Button>
-                </View>
-              ) : null}
-
-              <TextInput
-                label="Colour (optional)"
-                value={color}
-                onChangeText={setColor}
-                mode="outlined"
-                style={styles.input}
-                placeholder="e.g. Navy, Black"
-              />
-
-              <Text style={styles.label}>Quick add</Text>
-              <View style={styles.sizeChipWrap}>
-                {SIZE_PRESETS.map((preset) => {
-                  const active = selectedSizes.has(preset.toUpperCase());
-                  return (
-                    <Pressable
-                      key={preset}
-                      onPress={() => (active ? null : addSize(preset))}
-                      disabled={active}
-                      style={[styles.sizeChip, active && styles.sizeChipOn]}>
-                      <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>{preset}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              <View style={styles.customSizeRow}>
-                <TextInput
-                  label="Custom size"
-                  value={customSize}
-                  onChangeText={setCustomSize}
-                  mode="outlined"
-                  style={[styles.input, styles.customSizeInput]}
-                  placeholder="e.g. 32, 34, Kids"
-                />
-                <Button
-                  mode="outlined"
-                  onPress={() => {
-                    addSize(customSize);
-                    setCustomSize('');
-                  }}
-                  style={styles.addSizeBtn}
-                  contentStyle={styles.addSizeBtnContent}>
-                  Add
-                </Button>
-              </View>
-
-              {sizeRows.length === 0 ? (
-                <Text style={styles.emptySizes}>Tap a size above to start</Text>
-              ) : (
-                sizeRows.map((row) => (
-                  <View key={row.key} style={styles.sizeCard}>
-                    <View style={styles.sizeCardHead}>
-                      <View style={styles.sizeBadge}>
-                        <Text style={styles.sizeBadgeText}>{row.size}</Text>
-                      </View>
-                      <Pressable onPress={() => removeSizeRow(row.key)} hitSlop={10} style={styles.removeSize}>
-                        <Icon name="close" size={18} color={colors.textMuted} />
-                      </Pressable>
-                    </View>
-                    <View style={styles.priceRow}>
-                      <TextInput
-                        label="Selling price *"
-                        value={row.sellingPrice}
-                        onChangeText={(value) => updateSizeRow(row.key, { sellingPrice: value })}
-                        keyboardType="decimal-pad"
-                        mode="outlined"
-                        style={[styles.input, styles.halfInput]}
-                        left={<TextInput.Affix text="₹" />}
-                      />
-                      <TextInput
-                        label="Stock"
-                        value={row.stockQty}
-                        onChangeText={(value) => updateSizeRow(row.key, { stockQty: value })}
-                        keyboardType="decimal-pad"
-                        mode="outlined"
-                        style={[styles.input, styles.halfInput]}
-                      />
-                    </View>
-                    <View style={styles.priceRow}>
-                      <TextInput
-                        label="Cost"
-                        value={row.costPrice}
-                        onChangeText={(value) => updateSizeRow(row.key, { costPrice: value })}
-                        keyboardType="decimal-pad"
-                        mode="outlined"
-                        style={[styles.input, styles.halfInput]}
-                        left={<TextInput.Affix text="₹" />}
-                      />
-                      <TextInput
-                        label="SKU"
-                        value={row.sku}
-                        onChangeText={(value) => updateSizeRow(row.key, { sku: value })}
-                        mode="outlined"
-                        style={[styles.input, styles.halfInput]}
-                      />
-                    </View>
+          <View style={styles.packHeader}>
+            <Text style={styles.packTitle}>Pack barcodes</Text>
+            <Text style={styles.packHint}>Optional · e.g. 500 g pack scans as that qty</Text>
+          </View>
+          {qtyRows.map((row) => {
+            const raw = row.quantity.trim();
+            const qty = raw ? parseQuantityForUom(raw, selectedUom) : null;
+            const hint = !raw
+              ? ''
+              : qty
+                ? `Adds ${formatQuantity(qty, selectedUom)}${selling > 0 ? ` · ₹${(selling * qty).toFixed(2)}` : ''}`
+                : 'Not a valid quantity';
+            return (
+              <View key={row.key} style={styles.qtyRow}>
+                <View style={styles.qtyFields}>
+                  <View style={styles.priceRow}>
+                    <TextInput
+                      label={`Qty${selectedUom ? ` (${selectedUom.code})` : ''}`}
+                      value={row.quantity}
+                      onChangeText={(value) => updateQtyRow(row.key, { quantity: value })}
+                      mode="outlined"
+                      dense
+                      autoCapitalize="none"
+                      placeholder={selectedUom?.code === 'kg' ? '500g' : '2'}
+                      style={[styles.qtyInput, styles.halfInput]}
+                    />
                     <TextInput
                       label="Barcode"
                       value={row.barcode}
-                      onChangeText={(value) => updateSizeRow(row.key, { barcode: value })}
+                      onChangeText={(value) => updateQtyRow(row.key, { barcode: value })}
                       mode="outlined"
-                      style={styles.input}
+                      dense
+                      placeholder="Auto"
+                      style={[styles.qtyInput, styles.halfInput]}
                     />
                   </View>
-                ))
-              )}
-            </>
-          ) : (
-            <Text style={styles.singleHint}>
-              Turn on multiple sizes for trousers, shirts, and similar items. Existing stock will be divided across the sizes you add.
-            </Text>
-          )}
-        </SectionCard>
-
-        {!multiSizes ? (
-          <SectionCard
-            title="Quantity barcodes"
-            subtitle="Scanning one adds that quantity to the bill, e.g. a 500 g pack"
-            icon="barcode-scan">
-            {qtyRows.map((row) => {
-              const raw = row.quantity.trim();
-              const qty = raw ? parseQuantityForUom(raw, selectedUom) : null;
-              const hint = !raw
-                ? ''
-                : qty
-                  ? `Adds ${formatQuantity(qty, selectedUom)}${selling > 0 ? ` · ₹${(selling * qty).toFixed(2)}` : ''}`
-                  : 'Not a valid quantity';
-              return (
-                <View key={row.key} style={styles.qtyRow}>
-                  <View style={styles.qtyFields}>
-                    <View style={styles.priceRow}>
-                      <TextInput
-                        label={`Quantity${selectedUom ? ` (${selectedUom.code})` : ''}`}
-                        value={row.quantity}
-                        onChangeText={(value) => updateQtyRow(row.key, { quantity: value })}
-                        mode="outlined"
-                        dense
-                        autoCapitalize="none"
-                        placeholder={selectedUom?.code === 'kg' ? 'e.g. 500g, 1, 2.5' : 'e.g. 2'}
-                        style={[styles.qtyInput, styles.halfInput]}
-                      />
-                      <TextInput
-                        label="Barcode"
-                        value={row.barcode}
-                        onChangeText={(value) => updateQtyRow(row.key, { barcode: value })}
-                        mode="outlined"
-                        dense
-                        placeholder="Auto"
-                        style={[styles.qtyInput, styles.halfInput]}
-                      />
-                    </View>
-                    {hint ? (
-                      <Text style={[styles.qtyHint, !qty && styles.qtyHintErr]}>{hint}</Text>
-                    ) : null}
-                  </View>
-                  <Pressable
-                    onPress={() => setQtyRows((rows) => rows.filter((r) => r.key !== row.key))}
-                    hitSlop={10}
-                    style={styles.removeSize}>
-                    <Icon name="close" size={18} color={colors.textMuted} />
-                  </Pressable>
+                  {hint ? (
+                    <Text style={[styles.qtyHint, !qty && styles.qtyHintErr]}>{hint}</Text>
+                  ) : null}
                 </View>
-              );
-            })}
-            <Text style={styles.singleHint}>
-              Leave the barcode empty to create one when you save. Print these on the Barcode labels screen.
+                <Pressable
+                  onPress={() => setQtyRows((rows) => rows.filter((r) => r.key !== row.key))}
+                  hitSlop={10}
+                  style={styles.removeSize}>
+                  <Icon name="close" size={18} color={colors.textMuted} />
+                </Pressable>
+              </View>
+            );
+          })}
+          <Button
+            mode="outlined"
+            icon="plus"
+            onPress={() => setQtyRows((rows) => [...rows, { key: newRowKey(), quantity: '', barcode: '' }])}
+            style={styles.addQtyBtn}>
+            Add pack barcode
+          </Button>
+        </>
+      ) : (
+        <Text style={styles.variantPriceNote}>
+          Product pricing is off. Set price on each size in the Variants column.
+        </Text>
+      )}
+
+      <Pressable style={styles.moreToggle} onPress={() => setShowOptional((v) => !v)}>
+        <Text style={styles.moreToggleText}>
+          {showOptional ? 'Hide' : 'More'} · description & HSN
+        </Text>
+        <Icon name={showOptional ? 'chevron-up' : 'chevron-down'} size={20} color={colors.primary} />
+      </Pressable>
+      {showOptional ? (
+        <View style={styles.moreBox}>
+          <TextInput
+            label="Description"
+            value={description}
+            onChangeText={setDescription}
+            mode="outlined"
+            style={styles.input}
+            multiline
+            numberOfLines={2}
+          />
+          <TextInput
+            label="HSN / SAC"
+            value={taxCode}
+            onChangeText={setTaxCode}
+            mode="outlined"
+            style={styles.input}
+          />
+        </View>
+      ) : null}
+    </SectionCard>
+  );
+
+  const variantsColumn = (
+    <View style={[styles.variantsCol, !multiSizes && styles.variantsColDisabled]} pointerEvents={multiSizes ? 'auto' : 'none'}>
+      <SectionCard
+        title="Variants"
+        subtitle={multiSizes ? 'Each size has its own price & barcode' : 'Check “has variants” to enable'}
+        icon="shape-outline"
+        iconColor={multiSizes ? colors.secondary : colors.textMuted}
+        iconBg={multiSizes ? colors.secondaryLight : colors.surfaceVariant}>
+        {!multiSizes ? (
+          <View style={styles.variantsLocked}>
+            <Icon name="lock-outline" size={36} color={colors.textMuted} />
+            <Text style={styles.variantsLockedTitle}>Variants locked</Text>
+            <Text style={styles.variantsLockedHint}>
+              Tick “This product has variants” in the Product column to add sizes here.
             </Text>
-            <Button
-              mode="outlined"
-              icon="plus"
-              onPress={() => setQtyRows((rows) => [...rows, { key: newRowKey(), quantity: '', barcode: '' }])}
-              style={styles.addQtyBtn}>
-              Add quantity barcode
-            </Button>
-          </SectionCard>
-        ) : null}
-
-        <Pressable style={styles.optionalToggle} onPress={() => setShowOptional((value) => !value)}>
-          <View style={styles.optionalLeft}>
-            <Icon name="tune-variant" size={20} color={colors.primary} />
-            <View>
-              <Text style={styles.optionalTitle}>Optional details</Text>
-              <Text style={styles.optionalHint}>
-                {multiSizes ? 'Description and HSN' : 'Barcode, SKU, description'}
-              </Text>
-            </View>
           </View>
-          <Icon name={showOptional ? 'chevron-up' : 'chevron-down'} size={22} color={colors.textMuted} />
-        </Pressable>
-
-        {showOptional ? (
-          <SectionCard title="Optional details" subtitle="Useful for inventory and reporting" icon="tune-variant">
+        ) : (
+          <>
             <TextInput
-              label="Description"
-              value={description}
-              onChangeText={setDescription}
+              label="Colour (shared)"
+              value={color}
+              onChangeText={setColor}
               mode="outlined"
               style={styles.input}
-              multiline
-              numberOfLines={3}
+              placeholder="e.g. Navy"
             />
-            {!multiSizes ? (
-              <View style={styles.priceRow}>
-                <TextInput label="SKU" value={sku} onChangeText={setSku} mode="outlined" style={[styles.input, styles.halfInput]} />
-                <TextInput label="Barcode" value={barcode} onChangeText={setBarcode} mode="outlined" style={[styles.input, styles.halfInput]} />
+            <TextInput
+              label="SKU prefix"
+              value={sku}
+              onChangeText={setSku}
+              mode="outlined"
+              style={styles.input}
+              placeholder="Used when adding sizes"
+            />
+
+            {(mainStockQty > 0 || sizeStockTotal > 0) ? (
+              <View style={styles.stockSplitBox}>
+                <Icon name="warehouse" size={18} color={colors.secondary} />
+                <View style={styles.stockSplitText}>
+                  <Text style={styles.stockSplitTitle}>
+                    Total stock {sizeStockTotal || mainStockQty}
+                  </Text>
+                  <Text style={styles.stockSplitHint}>Split across sizes — edit each before save</Text>
+                </View>
+                <Button mode="text" compact onPress={splitStockEvenly}>
+                  Even
+                </Button>
               </View>
-            ) : (
+            ) : null}
+
+            <Text style={styles.label}>Add sizes</Text>
+            <View style={styles.sizeChipWrap}>
+              {SIZE_PRESETS.map((preset) => {
+                const active = selectedSizes.has(preset.toUpperCase());
+                return (
+                  <Pressable
+                    key={preset}
+                    onPress={() => (active ? null : addSize(preset))}
+                    disabled={active}
+                    style={[styles.sizeChip, active && styles.sizeChipOn]}>
+                    <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>{preset}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.customSizeRow}>
               <TextInput
-                label="SKU prefix"
-                value={sku}
-                onChangeText={setSku}
+                label="Custom size"
+                value={customSize}
+                onChangeText={setCustomSize}
                 mode="outlined"
-                style={styles.input}
-                placeholder="Used when adding new sizes"
+                style={[styles.input, styles.customSizeInput]}
+                placeholder="32, Kids…"
               />
+              <Button
+                mode="outlined"
+                onPress={() => {
+                  addSize(customSize);
+                  setCustomSize('');
+                }}
+                style={styles.addSizeBtn}
+                contentStyle={styles.addSizeBtnContent}>
+                Add
+              </Button>
+            </View>
+
+            {sizeRows.length === 0 ? (
+              <Text style={styles.emptySizes}>Tap a size above to add a variant</Text>
+            ) : (
+              sizeRows.map((row) => (
+                <View key={row.key} style={styles.sizeCard}>
+                  <View style={styles.sizeCardHead}>
+                    <View style={styles.sizeBadge}>
+                      <Text style={styles.sizeBadgeText}>{row.size}</Text>
+                    </View>
+                    <Pressable onPress={() => removeSizeRow(row.key)} hitSlop={10} style={styles.removeSize}>
+                      <Icon name="close" size={18} color={colors.textMuted} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.priceRow}>
+                    <TextInput
+                      label="Selling price *"
+                      value={row.sellingPrice}
+                      onChangeText={(value) => updateSizeRow(row.key, { sellingPrice: value })}
+                      keyboardType="decimal-pad"
+                      mode="outlined"
+                      style={[styles.input, styles.halfInput]}
+                      left={<TextInput.Affix text="₹" />}
+                    />
+                    <TextInput
+                      label="Cost"
+                      value={row.costPrice}
+                      onChangeText={(value) => updateSizeRow(row.key, { costPrice: value })}
+                      keyboardType="decimal-pad"
+                      mode="outlined"
+                      style={[styles.input, styles.halfInput]}
+                      left={<TextInput.Affix text="₹" />}
+                    />
+                  </View>
+                  <View style={styles.priceRow}>
+                    <TextInput
+                      label="MRP"
+                      value={row.mrp}
+                      onChangeText={(value) => updateSizeRow(row.key, { mrp: value })}
+                      keyboardType="decimal-pad"
+                      mode="outlined"
+                      style={[styles.input, styles.halfInput]}
+                      left={<TextInput.Affix text="₹" />}
+                    />
+                    <TextInput
+                      label="Stock"
+                      value={row.stockQty}
+                      onChangeText={(value) => updateSizeRow(row.key, { stockQty: value })}
+                      keyboardType="decimal-pad"
+                      mode="outlined"
+                      style={[styles.input, styles.halfInput]}
+                    />
+                  </View>
+                  <TextInput
+                    label="SKU"
+                    value={row.sku}
+                    onChangeText={(value) => updateSizeRow(row.key, { sku: value })}
+                    mode="outlined"
+                    style={styles.input}
+                  />
+                  <TextInput
+                    label="Barcode for this size"
+                    value={row.barcode}
+                    onChangeText={(value) => updateSizeRow(row.key, { barcode: value })}
+                    mode="outlined"
+                    style={styles.input}
+                    placeholder="Leave blank to auto-create"
+                    autoCapitalize="characters"
+                  />
+                  <Text style={styles.sizeBarcodeHint}>
+                    Each size needs its own barcode for billing and labels.
+                  </Text>
+                </View>
+              ))
             )}
-            <TextInput label="HSN / SAC code" value={taxCode} onChangeText={setTaxCode} mode="outlined" style={styles.input} />
-          </SectionCard>
-        ) : null}
+          </>
+        )}
+      </SectionCard>
+    </View>
+  );
+
+  return (
+    <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
+        <View style={styles.hero}>
+          <View style={styles.heroIcon}>
+            <Icon name={isEdit ? 'pencil-outline' : 'package-variant'} size={26} color={colors.primary} />
+          </View>
+          <View style={styles.heroText}>
+            <Text style={styles.heading}>{isEdit ? 'Edit Product' : 'New Product'}</Text>
+            <Text style={styles.subheading}>
+              Product on the left · variants on the right when enabled
+            </Text>
+          </View>
+        </View>
+
+        <View style={[styles.columns, twoColumn && styles.columnsWide]}>
+          <View style={[styles.column, twoColumn && styles.columnLeft]}>{productColumn}</View>
+          <View style={[styles.column, twoColumn && styles.columnRight]}>{variantsColumn}</View>
+        </View>
 
         {error ? (
           <View style={styles.errorBox}>
@@ -976,7 +1074,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           contentStyle={styles.buttonContent}>
           {isEdit ? 'Save Changes' : 'Save Product'}
         </Button>
-        <Text style={styles.requiredNote}>* Required fields</Text>
+        <Text style={styles.requiredNote}>
+          * Required · name, unit{multiSizes ? ', and a price on each size' : ', selling price'}
+        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -987,7 +1087,7 @@ const styles = StyleSheet.create({
   hero: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: spacing.xl,
+    marginBottom: spacing.md,
   },
   heroIcon: {
     width: 52,
@@ -1001,6 +1101,50 @@ const styles = StyleSheet.create({
   heroText: { flex: 1 },
   heading: { ...typography.h1, fontSize: 22 },
   subheading: { ...typography.bodySm, marginTop: 2, lineHeight: 18 },
+  columns: { gap: spacing.md, marginBottom: spacing.md },
+  columnsWide: { flexDirection: 'row', alignItems: 'flex-start' },
+  column: { width: '100%' },
+  columnLeft: { flex: 1, minWidth: 0 },
+  columnRight: { flex: 1, minWidth: 0 },
+  variantsCol: { width: '100%' },
+  variantsColDisabled: { opacity: 0.55 },
+  variantsLocked: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    gap: spacing.sm,
+  },
+  variantsLockedTitle: { fontSize: 16, fontWeight: '700', color: colors.textMuted },
+  variantsLockedHint: {
+    ...typography.bodySm,
+    textAlign: 'center',
+    color: colors.textMuted,
+    lineHeight: 20,
+    maxWidth: 280,
+  },
+  variantCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.surfaceVariant,
+    borderRadius: radius.md,
+    paddingVertical: spacing.sm,
+    paddingRight: spacing.md,
+    paddingLeft: spacing.xs,
+    marginBottom: spacing.md,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+  },
+  variantCheckRowOn: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  sectionDivider: {
+    ...typography.label,
+    marginBottom: spacing.sm,
+    marginTop: spacing.xs,
+  },
   input: { marginBottom: spacing.md, backgroundColor: colors.surface },
   label: { ...typography.label, marginBottom: spacing.sm, marginTop: spacing.xs },
   choiceDialog: { borderRadius: radius.lg, backgroundColor: colors.surface },
@@ -1025,11 +1169,32 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceVariant,
     borderRadius: radius.md,
     padding: spacing.md,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.md,
   },
   switchText: { flex: 1, paddingRight: spacing.md },
   switchTitle: { ...typography.body, fontWeight: '600' },
   switchHint: { ...typography.caption, marginTop: 3, lineHeight: 16 },
+  moreToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  moreToggleText: { fontSize: 14, fontWeight: '600', color: colors.primary },
+  moreBox: { marginTop: spacing.xs },
+  packHeader: { marginTop: spacing.sm, marginBottom: spacing.sm },
+  packTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  packHint: { ...typography.caption, marginTop: 2 },
+  variantPriceNote: {
+    ...typography.bodySm,
+    color: colors.textSecondary,
+    backgroundColor: colors.surfaceVariant,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    lineHeight: 20,
+  },
   priceRow: { flexDirection: 'row', gap: spacing.md },
   halfInput: { flex: 1 },
   profitBox: {
@@ -1043,7 +1208,7 @@ const styles = StyleSheet.create({
   },
   lossBox: { backgroundColor: colors.errorLight },
   profitText: { fontSize: 13, fontWeight: '700', color: colors.secondary },
-  taxRow: { gap: spacing.sm, paddingVertical: spacing.xs },
+  taxRow: { gap: spacing.sm, paddingVertical: spacing.xs, marginBottom: spacing.sm },
   taxChip: {
     minWidth: 72,
     paddingHorizontal: spacing.md,
@@ -1098,7 +1263,12 @@ const styles = StyleSheet.create({
   addSizeBtn: { marginTop: 6, borderRadius: radius.md },
   addSizeBtnContent: { minHeight: 48 },
   emptySizes: { ...typography.bodySm, marginBottom: spacing.md, color: colors.textMuted },
-  singleHint: { ...typography.bodySm, lineHeight: 20, color: colors.textMuted },
+  sizeBarcodeHint: {
+    ...typography.caption,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.md,
+    color: colors.textMuted,
+  },
   sizeCard: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -1131,21 +1301,7 @@ const styles = StyleSheet.create({
   qtyInput: { backgroundColor: colors.surface },
   qtyHint: { ...typography.caption, marginTop: 4 },
   qtyHintErr: { color: colors.error },
-  addQtyBtn: { marginTop: spacing.md, borderRadius: radius.md },
-  optionalToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    marginBottom: spacing.lg,
-  },
-  optionalLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  optionalTitle: { ...typography.h3 },
-  optionalHint: { ...typography.caption, marginTop: 2 },
+  addQtyBtn: { marginTop: spacing.sm, borderRadius: radius.md },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',

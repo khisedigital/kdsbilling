@@ -4,6 +4,8 @@ import { Platform } from 'react-native';
 /**
  * POS (58/80 mm): bluetooth | network | system (USB/installed).
  * A4 office: system only.
+ *
+ * Billing / receipt printer only — never used for gap labels.
  */
 export type PrinterType = 'bluetooth' | 'network' | 'system';
 /** A4 is desktop / web only. */
@@ -25,7 +27,21 @@ export interface PrinterSettings {
   serverPrinterId?: string;
 }
 
-const KEY = 'billing_printer_settings';
+/**
+ * Gap-label / barcode sticker printer — stored separately from billing.
+ * No paper size; connection only.
+ */
+export interface LabelPrinterSettings {
+  type: PrinterType;
+  bluetoothAddress?: string;
+  bluetoothName?: string;
+  systemPrinterName?: string;
+  networkHost?: string;
+  networkPort?: number;
+}
+
+const BILLING_KEY = 'billing_printer_settings';
+const LABEL_KEY = 'label_printer_settings';
 
 export const IS_DESKTOP = Platform.OS === 'web';
 
@@ -33,6 +49,10 @@ export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
   type: IS_DESKTOP ? 'system' : 'bluetooth',
   // Web/desktop defaults to 80mm (common POS roll); phones default 58mm Bluetooth rolls.
   paperSize: IS_DESKTOP ? '80' : '58',
+};
+
+export const DEFAULT_LABEL_PRINTER_SETTINGS: LabelPrinterSettings = {
+  type: IS_DESKTOP ? 'system' : 'bluetooth',
 };
 
 function normalizePrinterSettings(raw: string | null): PrinterSettings {
@@ -55,10 +75,38 @@ function normalizePrinterSettings(raw: string | null): PrinterSettings {
   return saved;
 }
 
+function normalizeLabelPrinterSettings(raw: string | null): LabelPrinterSettings {
+  if (!raw) return { ...DEFAULT_LABEL_PRINTER_SETTINGS };
+  const stored = { ...DEFAULT_LABEL_PRINTER_SETTINGS, ...JSON.parse(raw) } as LabelPrinterSettings & {
+    type?: PrinterType | 'a4';
+    paperSize?: PaperSize;
+  };
+  const type: PrinterType = stored.type === 'a4' ? 'system' : stored.type || DEFAULT_LABEL_PRINTER_SETTINGS.type;
+  const saved: LabelPrinterSettings = {
+    type: !IS_DESKTOP && type === 'system' ? 'bluetooth' : type,
+    bluetoothAddress: stored.bluetoothAddress,
+    bluetoothName: stored.bluetoothName,
+    systemPrinterName: stored.systemPrinterName,
+    networkHost: stored.networkHost,
+    networkPort: stored.networkPort === 9100 ? undefined : stored.networkPort,
+  };
+  return saved;
+}
+
+/** Billing / receipt printer (bills, test print). Independent of label printer. */
 export async function getPrinterSettings(): Promise<PrinterSettings> {
-  return normalizePrinterSettings(await AsyncStorage.getItem(KEY));
+  return normalizePrinterSettings(await AsyncStorage.getItem(BILLING_KEY));
 }
 
 export async function savePrinterSettings(settings: PrinterSettings): Promise<void> {
-  await AsyncStorage.setItem(KEY, JSON.stringify(settings));
+  await AsyncStorage.setItem(BILLING_KEY, JSON.stringify(settings));
+}
+
+/** Gap-label / barcode sticker printer. Independent of billing printer. */
+export async function getLabelPrinterSettings(): Promise<LabelPrinterSettings> {
+  return normalizeLabelPrinterSettings(await AsyncStorage.getItem(LABEL_KEY));
+}
+
+export async function saveLabelPrinterSettings(settings: LabelPrinterSettings): Promise<void> {
+  await AsyncStorage.setItem(LABEL_KEY, JSON.stringify(settings));
 }

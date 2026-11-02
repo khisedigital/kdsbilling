@@ -98,7 +98,7 @@ const screenTitles: Partial<Record<keyof MainStackParamList, string>> = {
   BarcodeScanner: 'Scan Barcode',
   Profile: 'My Profile',
   ShopSettings: 'Shop & Bill Settings',
-  PrinterSettings: 'Printer Settings',
+  PrinterSettings: 'Billing Printer',
   PrintLabel: 'Print Label',
   BarcodeLabel: 'Barcode label',
   Integrations: 'Integrations',

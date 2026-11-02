@@ -9,7 +9,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Dialog, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, Checkbox, Dialog, Portal, Text, TextInput } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import ProductSearchField from '../../components/ProductSearchField';
 import { encodeBarcode } from '../../print/barcodeEncode';
@@ -29,30 +29,34 @@ import {
 } from '../../print/labelPrinterNative';
 import { listSystemPrinters } from '../../print/PrintService';
 import {
-  ensureQuantityBarcodes,
+  fetchProductBarcodeStatus,
+  generateBarcodes,
+  type ProductBarcodeStatus,
   type SearchProductResult,
+  type VariantBarcodeStatus,
+  type VariantBarcodeStatusKind,
 } from '../../services/catalogService';
 import { getShopSettings } from '../../services/shopSettingsService';
 import {
-  getPrinterSettings,
-  savePrinterSettings,
-  type PrinterSettings,
+  getLabelPrinterSettings,
+  saveLabelPrinterSettings,
+  type LabelPrinterSettings,
 } from '../../store/printerStore';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
-import { productDisplayName } from '../../utils/variantLabel';
+import { productDisplayName, variantLabel } from '../../utils/variantLabel';
 
 type ListedPrinter = { name: string; address: string };
 
-const QTY_CHIPS = ['1', '2', '5', '10'];
-const LABEL_CHIPS = ['1', '2', '5', '10'];
+type VariantRow = VariantBarcodeStatus & {
+  selected: boolean;
+  labelQty: string;
+};
 
-/** Clear thermal-style face for preview (matches printed monospace). */
-const PRINTER_FONT = Platform.select({
-  ios: 'Courier',
-  android: 'monospace',
-  default: 'monospace',
-}) as string;
+type LastPrintJob = {
+  labels: GapLabelContent[];
+  copiesPerLabel: number[];
+};
 
 function formatMoney(value?: number | null): string {
   if (value == null || Number.isNaN(Number(value))) return '';
@@ -63,20 +67,19 @@ function formatMoney(value?: number | null): string {
   })}`;
 }
 
-function parseQty(raw: string): number {
-  const n = Number(raw);
-  if (!raw.trim() || Number.isNaN(n) || n <= 0) return 0;
-  return n;
-}
-
-function unitOf(product: SearchProductResult | null): string {
-  if (!product?.uom) return '';
-  return (product.uom.code || product.uom.name || '').trim();
-}
-
-function priceForQty(unitPrice: number | null | undefined, qty: number): number | null {
-  if (unitPrice == null || Number.isNaN(Number(unitPrice)) || qty <= 0) return null;
-  return Number(unitPrice) * qty;
+function statusMeta(status: VariantBarcodeStatusKind): {
+  label: string;
+  color: string;
+  bg: string;
+  printable: boolean;
+} {
+  if (status === 'available') {
+    return { label: 'Available', color: colors.secondary, bg: colors.secondaryLight, printable: true };
+  }
+  if (status === 'duplicate') {
+    return { label: 'Duplicate', color: colors.warning, bg: colors.warningLight, printable: false };
+  }
+  return { label: 'Missing', color: colors.error, bg: colors.errorLight, printable: false };
 }
 
 function LabelPreview({
@@ -153,27 +156,6 @@ function LabelPreview({
   );
 }
 
-function SoftChip({
-  label,
-  active,
-  onPress,
-  disabled,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      style={[styles.chip, active && styles.chipActive, disabled && styles.dim]}>
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-    </Pressable>
-  );
-}
-
 export default function BarcodeLabelScreen() {
   const useSdk = isNativeLabelPrinterAvailable();
   const useDesktop = isDesktopLabelPrintAvailable();
@@ -183,10 +165,12 @@ export default function BarcodeLabelScreen() {
   const previewH = previewW * (LABEL_HEIGHT_MM / LABEL_WIDTH_MM);
 
   const [shopName, setShopName] = useState('My Shop');
-  const [product, setProduct] = useState<SearchProductResult | null>(null);
-  const [productQty, setProductQty] = useState('1');
-  const [labelQty, setLabelQty] = useState('1');
-  const [previewBarcode, setPreviewBarcode] = useState('');
+  const [productMeta, setProductMeta] = useState<ProductBarcodeStatus | null>(null);
+  const [rows, setRows] = useState<VariantRow[]>([]);
+  const [loadingProduct, setLoadingProduct] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [previewVariantId, setPreviewVariantId] = useState<string | null>(null);
+  const [lastJob, setLastJob] = useState<LastPrintJob | null>(null);
 
   const [printerName, setPrinterName] = useState('Tap to select');
   const [printerAddress, setPrinterAddress] = useState('');
@@ -198,7 +182,7 @@ export default function BarcodeLabelScreen() {
   const [printing, setPrinting] = useState(false);
   const [status, setStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
-  const applyDesktopPrinter = useCallback((settings: PrinterSettings) => {
+  const applyDesktopLabelPrinter = useCallback((settings: LabelPrinterSettings) => {
     if (settings.type === 'network' && settings.networkHost?.trim()) {
       const host = settings.networkHost.trim();
       const port = settings.networkPort || 9100;
@@ -221,27 +205,61 @@ export default function BarcodeLabelScreen() {
       return;
     }
     setConnected(false);
-    setPrinterName('Select USB printer');
+    setPrinterName('Select label printer');
     setPrinterAddress('');
   }, []);
-
-  const selectedLabel = useMemo(() => {
-    if (!product) return undefined;
-    return productDisplayName(product.productName, product.size, product.color);
-  }, [product]);
-
-  const qty = parseQty(productQty);
-  const unit = unitOf(product);
-  const linePrice = priceForQty(product?.sellingPrice ?? null, qty);
-  const priceText = formatMoney(linePrice);
-  const qtyLabel = useMemo(() => {
-    if (!product || qty <= 0) return '';
-    return unit ? `${qty} ${unit}` : String(qty);
-  }, [product, qty, unit]);
 
   const showStatus = useCallback((type: 'ok' | 'err', text: string) => {
     setStatus({ type, text });
   }, []);
+
+  const applyBarcodeStatus = useCallback((data: ProductBarcodeStatus, preferSelectAvailable = true) => {
+    setProductMeta(data);
+    setRows(
+      data.variants.map((v) => {
+        const printable = v.status === 'available' && Boolean(v.barcode);
+        return {
+          ...v,
+          selected: preferSelectAvailable ? printable : false,
+          labelQty: '1',
+        };
+      }),
+    );
+    const firstPrintable = data.variants.find((v) => v.status === 'available' && v.barcode);
+    setPreviewVariantId(firstPrintable?.variantId || data.variants[0]?.variantId || null);
+  }, []);
+
+  const loadBarcodeStatus = useCallback(
+    async (productId: string) => {
+      setLoadingProduct(true);
+      setStatus(null);
+      try {
+        const data = await fetchProductBarcodeStatus(productId);
+        applyBarcodeStatus(data, true);
+      } catch (err) {
+        setProductMeta(null);
+        setRows([]);
+        showStatus('err', err instanceof Error ? err.message : 'Could not load variants.');
+      } finally {
+        setLoadingProduct(false);
+      }
+    },
+    [applyBarcodeStatus, showStatus],
+  );
+
+  const onSelectProduct = async (item: SearchProductResult) => {
+    if (!item.productId) {
+      showStatus('err', 'Selected product has no id.');
+      return;
+    }
+    await loadBarcodeStatus(item.productId);
+  };
+
+  const clearProduct = () => {
+    setProductMeta(null);
+    setRows([]);
+    setPreviewVariantId(null);
+  };
 
   useEffect(() => {
     getShopSettings()
@@ -265,24 +283,87 @@ export default function BarcodeLabelScreen() {
     }
 
     if (useDesktop) {
-      getPrinterSettings()
-        .then(applyDesktopPrinter)
+      getLabelPrinterSettings()
+        .then(applyDesktopLabelPrinter)
         .catch(() => {});
     }
-  }, [useSdk, useDesktop, applyDesktopPrinter]);
+  }, [useSdk, useDesktop, applyDesktopLabelPrinter]);
 
-  useEffect(() => {
-    if (!product) {
-      setPreviewBarcode('');
+  const printableRows = useMemo(
+    () => rows.filter((r) => r.selected && r.status === 'available' && r.barcode),
+    [rows],
+  );
+
+  const totalLabels = useMemo(
+    () =>
+      printableRows.reduce((sum, row) => {
+        const n = Number(row.labelQty);
+        return sum + (Number.isNaN(n) || n <= 0 ? 0 : Math.floor(n));
+      }, 0),
+    [printableRows],
+  );
+
+  const missingCount = useMemo(
+    () => rows.filter((r) => r.status === 'missing').length,
+    [rows],
+  );
+
+  const previewRow = useMemo(() => {
+    if (!rows.length) return null;
+    return rows.find((r) => r.variantId === previewVariantId) || printableRows[0] || rows[0];
+  }, [rows, previewVariantId, printableRows]);
+
+  const previewName = useMemo(() => {
+    if (!productMeta || !previewRow) return 'Product';
+    return productDisplayName(productMeta.productName, previewRow.size, previewRow.color);
+  }, [productMeta, previewRow]);
+
+  const previewPrice = formatMoney(previewRow?.sellingPrice ?? null);
+  const previewMrp = formatMoney(previewRow?.mrp ?? null);
+  const previewRight = [previewMrp ? `MRP ${previewMrp}` : '', previewPrice].filter(Boolean).join('  ');
+
+  const updateRow = (variantId: string, patch: Partial<VariantRow>) => {
+    setRows((prev) => prev.map((row) => (row.variantId === variantId ? { ...row, ...patch } : row)));
+  };
+
+  const selectAllPrintable = () => {
+    setRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        selected: row.status === 'available' && Boolean(row.barcode),
+      })),
+    );
+  };
+
+  const selectNone = () => {
+    setRows((prev) => prev.map((row) => ({ ...row, selected: false })));
+  };
+
+  const onGenerateMissing = async () => {
+    if (!productMeta || generating) return;
+    const missingIds = rows.filter((r) => r.status === 'missing').map((r) => r.variantId);
+    if (!missingIds.length) {
+      showStatus('ok', 'All variants already have barcodes.');
       return;
     }
-    if (qty === 1 || qty <= 0) {
-      setPreviewBarcode((product.barcodes || []).find((b) => b?.trim()) || '');
-      return;
+    setGenerating(true);
+    setStatus(null);
+    try {
+      const result = await generateBarcodes(missingIds);
+      const created = result.filter((r) => r.generated).length;
+      await loadBarcodeStatus(productMeta.productId);
+      showStatus(
+        'ok',
+        created
+          ? `Generated ${created} internal Code 128 barcode${created === 1 ? '' : 's'}`
+          : 'No new barcodes needed',
+      );
+    } catch (err) {
+      showStatus('err', err instanceof Error ? err.message : 'Could not generate barcodes.');
+    } finally {
+      setGenerating(false);
     }
-    const match = (product.quantityBarcodes || []).find((b) => Number(b.quantity) === qty);
-    setPreviewBarcode(match?.barcode || (product.barcodes || [])[0] || '');
-  }, [product, qty]);
+  };
 
   const loadPrinters = useCallback(async () => {
     if (!canPrint) {
@@ -333,16 +414,14 @@ export default function BarcodeLabelScreen() {
         return;
       }
 
-      const current = await getPrinterSettings();
-      const next: PrinterSettings = {
-        ...current,
+      const next: LabelPrinterSettings = {
         type: 'system',
         systemPrinterName: printer.address,
       };
-      await savePrinterSettings(next);
-      applyDesktopPrinter(next);
+      await saveLabelPrinterSettings(next);
+      applyDesktopLabelPrinter(next);
       setPrinterOpen(false);
-      showStatus('ok', `USB printer · ${printer.name}`);
+      showStatus('ok', `Label printer · ${printer.name}`);
     } catch (err) {
       setConnected(false);
       showStatus('err', err instanceof Error ? err.message : 'Connect failed.');
@@ -351,50 +430,41 @@ export default function BarcodeLabelScreen() {
     }
   };
 
-  const parsePositive = (raw: string, label: string, max = 999): number | null => {
-    const n = Number(raw);
-    if (!raw.trim() || Number.isNaN(n) || n <= 0 || n > max) {
-      showStatus('err', `${label}: use 1–${max}`);
-      return null;
-    }
-    return n;
+  const buildLabelContent = (row: VariantRow): GapLabelContent => {
+    if (!productMeta) throw new Error('Select a product first.');
+    const barcode = (row.barcode || '').trim();
+    if (!barcode) throw new Error(`Barcode missing for ${variantLabel(row.size, row.color) || row.sku}`);
+    return {
+      shopName,
+      productName: productDisplayName(productMeta.productName, row.size, row.color),
+      detail: row.mrp != null && row.mrp > 0 ? `MRP ${formatMoney(row.mrp)}` : '',
+      barcode,
+      mrp: row.mrp != null && row.mrp > 0 ? formatMoney(row.mrp) : '',
+      price: formatMoney(row.sellingPrice),
+    };
   };
 
-  const resolveBarcode = async (selected: SearchProductResult, amount: number): Promise<string> => {
-    if (amount !== 1) {
-      const match = (selected.quantityBarcodes || []).find((b) => Number(b.quantity) === amount);
-      if (match?.barcode) return match.barcode;
-      const ensured = await ensureQuantityBarcodes([
-        { variantId: selected.variantId, quantity: amount },
-      ]);
-      const code = ensured[0]?.barcode?.trim();
-      if (!code) throw new Error('Could not create barcode for this qty.');
-      return code;
+  const runPrintJob = async (job: LastPrintJob) => {
+    for (let i = 0; i < job.labels.length; i += 1) {
+      const copies = job.copiesPerLabel[i] || 1;
+      await printGapLabel(job.labels[i], copies);
     }
-    const primary = (selected.barcodes || []).find((b) => b?.trim());
-    if (primary) return primary.trim();
-    const unitQty = (selected.quantityBarcodes || []).find((b) => Number(b.quantity) === 1);
-    if (unitQty?.barcode) return unitQty.barcode.trim();
-    const ensured = await ensureQuantityBarcodes([{ variantId: selected.variantId, quantity: 1 }]);
-    const code = ensured[0]?.barcode?.trim();
-    if (!code) throw new Error('Product has no barcode.');
-    return code;
   };
 
   const onPrint = async () => {
-    if (printing || connecting) return;
-    if (!product) {
+    if (printing || connecting || generating) return;
+    if (!productMeta) {
       showStatus('err', 'Select a product first.');
       return;
     }
-    const pQty = parsePositive(
-      productQty,
-      'Product qty',
-      product.allowDecimalQty ? 9999 : 999,
-    );
-    if (pQty == null) return;
-    const lQty = parsePositive(labelQty, 'Copies', 99);
-    if (lQty == null) return;
+    if (!printableRows.length) {
+      showStatus('err', 'Select at least one variant with an available barcode.');
+      return;
+    }
+    if (totalLabels <= 0) {
+      showStatus('err', 'Set label quantity (1–99) for selected variants.');
+      return;
+    }
     if (!canPrint) {
       showStatus(
         'err',
@@ -407,36 +477,58 @@ export default function BarcodeLabelScreen() {
     if (!connected) {
       showStatus(
         'err',
-        useDesktop
-          ? 'Select your USB label printer first.'
-          : 'Connect a printer first.',
+        useDesktop ? 'Select your USB label printer first.' : 'Connect a printer first.',
       );
+      return;
+    }
+
+    const blocked = rows.filter((r) => r.selected && r.status !== 'available');
+    if (blocked.length) {
+      showStatus('err', 'Resolve missing/duplicate barcodes before printing selected variants.');
       return;
     }
 
     setPrinting(true);
     setStatus(null);
     try {
-      const barcode = await resolveBarcode(product, pQty);
-      setPreviewBarcode(barcode);
-      const totalPrice = priceForQty(product.sellingPrice, pQty);
-      const totalMrp = priceForQty(product.mrp ?? null, pQty);
-      const uom = unitOf(product);
-
-      await printGapLabel(
-        {
-          shopName,
-          productName: product.productName,
-          detail: uom ? `${pQty} ${uom}` : String(pQty),
-          barcode,
-          mrp: totalMrp != null ? formatMoney(totalMrp) : '',
-          price: formatMoney(totalPrice),
-        } satisfies GapLabelContent,
-        lQty,
+      const labels: GapLabelContent[] = [];
+      const copiesPerLabel: number[] = [];
+      for (const row of printableRows) {
+        const copies = Math.floor(Number(row.labelQty));
+        if (!(copies > 0) || copies > 99) {
+          throw new Error(`Invalid label qty for ${variantLabel(row.size, row.color) || row.sku}`);
+        }
+        labels.push(buildLabelContent(row));
+        copiesPerLabel.push(copies);
+      }
+      const job = { labels, copiesPerLabel };
+      await runPrintJob(job);
+      setLastJob(job);
+      showStatus(
+        'ok',
+        `Printed ${totalLabels} label${totalLabels === 1 ? '' : 's'} · inventory unchanged`,
       );
-      showStatus('ok', `Printed ${lQty} label${lQty === 1 ? '' : 's'}`);
     } catch (err) {
       showStatus('err', err instanceof Error ? err.message : 'Print failed.');
+    } finally {
+      setPrinting(false);
+    }
+  };
+
+  const onReprint = async () => {
+    if (!lastJob || printing) return;
+    if (!connected) {
+      showStatus('err', 'Connect / select a label printer first.');
+      return;
+    }
+    setPrinting(true);
+    setStatus(null);
+    try {
+      await runPrintJob(lastJob);
+      const total = lastJob.copiesPerLabel.reduce((a, b) => a + b, 0);
+      showStatus('ok', `Reprinted ${total} label${total === 1 ? '' : 's'}`);
+    } catch (err) {
+      showStatus('err', err instanceof Error ? err.message : 'Reprint failed.');
     } finally {
       setPrinting(false);
     }
@@ -445,13 +537,19 @@ export default function BarcodeLabelScreen() {
   const printLabel =
     printing
       ? 'Printing…'
-      : !product
+      : !productMeta
         ? 'Select product'
         : !connected
           ? useDesktop
             ? 'Select USB printer'
             : 'Connect printer'
-          : `Print · ${labelQty} label${labelQty === '1' ? '' : 's'}`;
+          : totalLabels > 0
+            ? `Print · ${totalLabels} label${totalLabels === 1 ? '' : 's'}`
+            : 'Select variants';
+
+  const selectedLabel = productMeta
+    ? `${productMeta.productName}${productMeta.hasVariants ? ` · ${rows.length} variants` : ''}`
+    : undefined;
 
   return (
     <KeyboardAvoidingView
@@ -473,99 +571,147 @@ export default function BarcodeLabelScreen() {
         <View style={styles.previewBlock}>
           <LabelPreview
             shopName={shopName}
-            productName={product?.productName || 'Product'}
-            qtyLabel={qtyLabel}
-            price={priceText}
-            barcode={previewBarcode}
+            productName={previewName}
+            qtyLabel={previewMrp ? `MRP ${previewMrp}` : ''}
+            price={previewPrice}
+            barcode={previewRow?.barcode || ''}
             width={previewW}
             height={previewH}
           />
           <Text style={styles.previewCaption}>
-            {LABEL_WIDTH_MM}×{LABEL_HEIGHT_MM} mm · live preview
+            {LABEL_WIDTH_MM}×{LABEL_HEIGHT_MM} mm · preview only (no barcode is auto-generated)
           </Text>
+          {previewRight ? <Text style={styles.previewCaption}>{previewRight}</Text> : null}
         </View>
 
         <View style={styles.block}>
           <Text style={styles.blockTitle}>1 · Product</Text>
           <ProductSearchField
-            onSelect={(item) => {
-              setProduct(item);
-              setProductQty(
-                item.scannedQuantity && item.scannedQuantity > 0
-                  ? String(item.scannedQuantity)
-                  : '1',
-              );
-            }}
+            groupByProduct
+            onSelect={onSelectProduct}
             selectedLabel={selectedLabel}
           />
-          {product ? (
-            <Text style={styles.metaLine}>
-              {[
-                unit ? `Unit: ${unit}` : null,
-                product.sellingPrice != null
-                  ? `Rate: ${formatMoney(product.sellingPrice)}${unit ? `/${unit}` : ''}`
-                  : null,
-                linePrice != null ? `Label: ${priceText}` : null,
-              ]
-                .filter(Boolean)
-                .join('   ·   ')}
-            </Text>
+          {productMeta ? (
+            <View style={styles.productActions}>
+              <Text style={styles.metaLine}>
+                {productMeta.hasVariants
+                  ? `${rows.length} active variant${rows.length === 1 ? '' : 's'} · each needs its own barcode`
+                  : 'Single product · uses its variant barcode'}
+              </Text>
+              <Pressable onPress={clearProduct} hitSlop={8}>
+                <Text style={styles.link}>Clear</Text>
+              </Pressable>
+            </View>
           ) : (
             <Text style={styles.muted}>Search by name, SKU or barcode</Text>
           )}
+          {loadingProduct ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator color={colors.primary} />
+              <Text style={styles.muted}>Loading variants…</Text>
+            </View>
+          ) : null}
         </View>
 
-        <View style={styles.twoCol}>
-          <View style={[styles.block, styles.col]}>
-            <Text style={styles.blockTitle}>
-              2 · Qty{unit ? ` (${unit})` : ''}
+        {rows.length ? (
+          <View style={styles.block}>
+            <View style={styles.tableHeader}>
+              <Text style={styles.blockTitle}>2 · Variants</Text>
+              <View style={styles.headerActions}>
+                <Pressable onPress={selectAllPrintable} disabled={printing || generating}>
+                  <Text style={styles.link}>Select all</Text>
+                </Pressable>
+                <Text style={styles.dot}>·</Text>
+                <Pressable onPress={selectNone} disabled={printing || generating}>
+                  <Text style={styles.link}>Select none</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            {missingCount > 0 ? (
+              <Button
+                mode="outlined"
+                icon="barcode"
+                onPress={onGenerateMissing}
+                loading={generating}
+                disabled={generating || printing}
+                style={styles.generateBtn}>
+                Generate Missing Barcodes ({missingCount})
+              </Button>
+            ) : null}
+
+            <Text style={styles.tableHint}>
+              Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.
             </Text>
-            <View style={styles.chipRow}>
-              {QTY_CHIPS.map((v) => (
-                <SoftChip
-                  key={v}
-                  label={v}
-                  active={productQty === v}
-                  onPress={() => setProductQty(v)}
-                  disabled={printing}
-                />
-              ))}
-            </View>
-            <TextInput
-              value={productQty}
-              onChangeText={setProductQty}
-              keyboardType={product?.allowDecimalQty ? 'decimal-pad' : 'number-pad'}
-              mode="outlined"
-              dense
-              placeholder="Custom"
-              style={styles.input}
-            />
-          </View>
 
-          <View style={[styles.block, styles.col]}>
-            <Text style={styles.blockTitle}>3 · Copies</Text>
-            <View style={styles.chipRow}>
-              {LABEL_CHIPS.map((v) => (
-                <SoftChip
-                  key={v}
-                  label={v}
-                  active={labelQty === v}
-                  onPress={() => setLabelQty(v)}
-                  disabled={printing}
-                />
-              ))}
+            {rows.map((row) => {
+              const meta = statusMeta(row.status);
+              const name = variantLabel(row.size, row.color) || 'Default';
+              const disabledSelect = !meta.printable;
+              return (
+                <Pressable
+                  key={row.variantId}
+                  onPress={() => setPreviewVariantId(row.variantId)}
+                  style={[
+                    styles.variantCard,
+                    previewVariantId === row.variantId && styles.variantCardActive,
+                  ]}>
+                  <View style={styles.variantTop}>
+                    <Checkbox
+                      status={row.selected ? 'checked' : 'unchecked'}
+                      disabled={disabledSelect || printing || generating}
+                      onPress={() => {
+                        if (disabledSelect) return;
+                        updateRow(row.variantId, { selected: !row.selected });
+                      }}
+                    />
+                    <View style={styles.flex}>
+                      <Text style={styles.variantName}>{name}</Text>
+                      <Text style={styles.variantSku}>SKU {row.sku}</Text>
+                      <Text style={styles.variantPrice}>
+                        MRP {row.mrp != null && row.mrp > 0 ? formatMoney(row.mrp) : '—'}
+                        {'  ·  '}
+                        Sell {formatMoney(row.sellingPrice)}
+                      </Text>
+                      <Text style={styles.variantBarcode} numberOfLines={1}>
+                        {row.barcode || 'No barcode'}
+                        {row.barcodeType ? ` · ${row.barcodeType.toUpperCase()}` : ''}
+                      </Text>
+                    </View>
+                    <View style={[styles.statusPill, { backgroundColor: meta.bg }]}>
+                      <Text style={[styles.statusText, { color: meta.color }]}>{meta.label}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.qtyRow}>
+                    <Text style={styles.qtyLabel}>Labels</Text>
+                    <TextInput
+                      value={row.labelQty}
+                      onChangeText={(v) => updateRow(row.variantId, { labelQty: v })}
+                      keyboardType="number-pad"
+                      mode="outlined"
+                      dense
+                      disabled={disabledSelect || !row.selected || printing}
+                      style={styles.qtyInput}
+                    />
+                  </View>
+                  {row.status === 'missing' ? (
+                    <Text style={styles.warnLine}>Generate a barcode before printing this variant.</Text>
+                  ) : null}
+                  {row.status === 'duplicate' ? (
+                    <Text style={styles.warnLine}>
+                      Duplicate barcode detected — fix the assignment before printing.
+                    </Text>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Total labels</Text>
+              <Text style={styles.totalValue}>{totalLabels}</Text>
             </View>
-            <TextInput
-              value={labelQty}
-              onChangeText={setLabelQty}
-              keyboardType="number-pad"
-              mode="outlined"
-              dense
-              placeholder="1–99"
-              style={styles.input}
-            />
           </View>
-        </View>
+        ) : null}
 
         <Pressable
           onPress={openPrinter}
@@ -584,7 +730,7 @@ export default function BarcodeLabelScreen() {
           </View>
           <View style={styles.flex}>
             <Text style={styles.printerTitle}>
-              {connected ? 'Printer ready' : useDesktop ? '4 · USB printer' : '4 · Printer'}
+              {connected ? 'Label printer ready' : '3 · Label printer'}
             </Text>
             <Text style={styles.printerName} numberOfLines={1}>
               {printerName}
@@ -597,7 +743,18 @@ export default function BarcodeLabelScreen() {
           )}
         </Pressable>
 
-        <View style={{ height: 100 }} />
+        {lastJob ? (
+          <Button
+            mode="text"
+            icon="printer-outline"
+            onPress={onReprint}
+            disabled={printing || connecting}
+            style={styles.reprintBtn}>
+            Reprint last labels
+          </Button>
+        ) : null}
+
+        <View style={{ height: 110 }} />
       </ScrollView>
 
       <View style={styles.footer}>
@@ -605,7 +762,7 @@ export default function BarcodeLabelScreen() {
           mode="contained"
           onPress={onPrint}
           loading={printing}
-          disabled={printing || connecting}
+          disabled={printing || connecting || generating || !totalLabels}
           style={styles.printBtn}
           contentStyle={styles.printBtnContent}
           labelStyle={styles.printBtnLabel}
@@ -619,12 +776,12 @@ export default function BarcodeLabelScreen() {
           visible={printerOpen}
           onDismiss={() => !connecting && setPrinterOpen(false)}
           style={styles.dialog}>
-          <Dialog.Title>Printers</Dialog.Title>
+          <Dialog.Title>Label printer</Dialog.Title>
           <Dialog.Content>
             <Text style={styles.muted}>
               {useDesktop
-                ? 'USB / installed POS printers (same list as Printer Settings)'
-                : 'Paired Bluetooth label printers'}
+                ? 'Choose the sticker / gap-label printer only. Billing uses a separate printer under Billing Printer.'
+                : 'Paired Bluetooth label printers (separate from the billing printer).'}
             </Text>
             {loadingPrinters || connecting ? (
               <View style={styles.loadingRow}>
@@ -658,8 +815,8 @@ export default function BarcodeLabelScreen() {
               {!loadingPrinters && !printers.length ? (
                 <Text style={styles.muted}>
                   {useDesktop
-                    ? 'No printers found. Install/add the USB POS printer in macOS or Windows, then Refresh.'
-                    : 'No printers found. Pair in Bluetooth settings.'}
+                    ? 'No printers found. Install/add the USB label printer in macOS or Windows, then Refresh.'
+                    : 'No printers found. Pair the label printer in Bluetooth settings.'}
                 </Text>
               ) : null}
             </ScrollView>
@@ -690,6 +847,8 @@ const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   muted: { fontSize: 13, fontWeight: '400', color: colors.textMuted },
   dim: { opacity: 0.55 },
+  link: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  dot: { color: colors.textMuted, marginHorizontal: 4 },
 
   banner: {
     flexDirection: 'row',
@@ -714,50 +873,38 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   previewShop: {
-    fontFamily: PRINTER_FONT,
-    fontSize: 14,
-    fontWeight: '400',
+    fontSize: 16,
+    fontWeight: '700',
     color: '#000',
     textAlign: 'center',
-    marginBottom: 10,
+    marginBottom: 8,
+    letterSpacing: 0.3,
   },
   previewRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: 8,
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  previewProduct: {
-    flex: 1,
-    fontFamily: PRINTER_FONT,
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#000',
-  },
-  previewRight: {
-    fontFamily: PRINTER_FONT,
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#000',
-    textAlign: 'right',
-  },
-  previewDivider: { height: 1, backgroundColor: '#000', marginBottom: 10 },
-  previewBarcode: { flexDirection: 'row', height: 26, width: '100%', backgroundColor: '#fff' },
+  previewProduct: { flex: 1, fontSize: 15, fontWeight: '700', color: '#000' },
+  previewRight: { fontSize: 16, fontWeight: '700', color: '#000', textAlign: 'right' },
+  previewDivider: { height: 2, backgroundColor: '#000', marginBottom: 8 },
+  previewBarcode: { flexDirection: 'row', height: 30, width: '100%', backgroundColor: '#fff' },
   previewBarcodeEmpty: {
-    height: 26,
+    height: 30,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surfaceVariant,
     borderRadius: 3,
   },
   previewDigits: {
-    fontFamily: PRINTER_FONT,
-    fontSize: 10,
-    fontWeight: '400',
+    fontSize: 14,
+    fontWeight: '700',
+    fontFamily: 'monospace',
     color: '#000',
     textAlign: 'center',
-    marginTop: 3,
+    marginTop: 6,
     letterSpacing: 0.5,
   },
   previewCaption: {
@@ -765,6 +912,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '400',
     color: colors.textMuted,
+    textAlign: 'center',
   },
 
   block: {
@@ -782,35 +930,69 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     letterSpacing: 0.2,
   },
-  metaLine: {
-    marginTop: spacing.sm,
-    fontSize: 12,
-    fontWeight: '400',
-    color: colors.textMuted,
-    lineHeight: 18,
-  },
-
-  twoCol: { flexDirection: 'row', gap: spacing.md },
-  col: { flex: 1, marginBottom: spacing.md },
-
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: spacing.sm },
-  chip: {
-    minWidth: 40,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceVariant,
+  metaLine: { flex: 1, fontSize: 12, fontWeight: '400', color: colors.textMuted, lineHeight: 18 },
+  productActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm },
+  loadingRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
   },
-  chipActive: {
-    borderColor: colors.primary,
-    backgroundColor: colors.primaryLight,
+
+  tableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
   },
-  chipText: { fontSize: 14, fontWeight: '400', color: colors.text },
-  chipTextActive: { color: colors.primary },
-  input: { backgroundColor: colors.surface },
+  headerActions: { flexDirection: 'row', alignItems: 'center' },
+  generateBtn: { marginBottom: spacing.sm, borderRadius: radius.md },
+  tableHint: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 17 },
+
+  variantCard: {
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+    backgroundColor: colors.surface,
+  },
+  variantCardActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  variantTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
+  variantName: { fontSize: 15, fontWeight: '700', color: colors.text },
+  variantSku: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  variantPrice: { fontSize: 12, color: colors.textSecondary, marginTop: 4, fontWeight: '600' },
+  variantBarcode: { fontSize: 11, color: colors.secondary, marginTop: 2, fontWeight: '600' },
+  statusPill: {
+    borderRadius: radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+  },
+  statusText: { fontSize: 11, fontWeight: '700' },
+  qtyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    paddingLeft: 40,
+  },
+  qtyLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
+  qtyInput: { width: 88, backgroundColor: colors.surface },
+  warnLine: { marginTop: 6, marginLeft: 40, fontSize: 11, color: colors.error, fontWeight: '600' },
+
+  totalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  totalLabel: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  totalValue: { fontSize: 20, fontWeight: '800', color: colors.primary },
 
   printerCard: {
     flexDirection: 'row',
@@ -836,6 +1018,7 @@ const styles = StyleSheet.create({
   },
   printerTitle: { fontSize: 12, fontWeight: '400', color: colors.textMuted },
   printerName: { fontSize: 15, fontWeight: '400', color: colors.text, marginTop: 1 },
+  reprintBtn: { marginTop: spacing.sm },
 
   footer: {
     position: 'absolute',
@@ -858,12 +1041,6 @@ const styles = StyleSheet.create({
     maxWidth: '94%',
     alignSelf: 'center',
     borderRadius: radius.lg,
-  },
-  loadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginVertical: spacing.sm,
   },
   printerList: { maxHeight: 260, marginTop: spacing.sm },
   printerRow: {

@@ -108,9 +108,38 @@ export interface GeneratedBarcode {
   generated: boolean;
 }
 
-/** Assigns an in-store EAN-13 barcode to each variant that has none. */
+export type VariantBarcodeStatusKind = 'available' | 'missing' | 'duplicate';
+
+export interface VariantBarcodeStatus {
+  variantId: string;
+  sku: string;
+  size?: string | null;
+  color?: string | null;
+  mrp?: number | null;
+  sellingPrice: number;
+  costPrice?: number;
+  barcode?: string | null;
+  barcodeType?: 'ean13' | 'code128' | 'other' | null;
+  status: VariantBarcodeStatusKind;
+  stockQty?: number | null;
+}
+
+export interface ProductBarcodeStatus {
+  productId: string;
+  productName: string;
+  hasVariants: boolean;
+  variants: VariantBarcodeStatus[];
+}
+
+/** Assigns an internal Code 128 (KDSPOZ…) barcode to each listed variant that has none. Never overwrites existing. */
 export async function generateBarcodes(variantIds: string[]): Promise<GeneratedBarcode[]> {
   const { data } = await api.post('/products/barcodes/generate', { variantIds });
+  return data.data;
+}
+
+/** Active variants + Available / Missing / Duplicate barcode status. Does not generate. */
+export async function fetchProductBarcodeStatus(productId: string): Promise<ProductBarcodeStatus> {
+  const { data } = await api.get(`/products/${productId}/barcode-status`);
   return data.data;
 }
 

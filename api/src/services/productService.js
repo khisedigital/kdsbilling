@@ -3,6 +3,12 @@ const { v4: uuidv4 } = require('uuid');
 const AppError = require('../utils/AppError');
 const { getPagination, paginatedResponse } = require('../utils/pagination');
 const { MOVEMENT_TYPES, toDecimal, getOrCreateBalance, applyStockMovement } = require('./stockEngine');
+const {
+  isValidBarcodeValue,
+  randomInternalCode128,
+  pickPlainBarcode,
+  classifyBarcodeStatus,
+} = require('./barcodeValidation');
 
 const productIncludes = (db) => [
   { model: db.Category, as: 'category', attributes: ['id', 'name'] },
@@ -310,12 +316,21 @@ async function createVariantRecords(db, product, variants, transaction) {
       { transaction }
     );
 
-    const barcodes = v.barcodes?.length ? v.barcodes : v.barcode ? [v.barcode] : [];
+    // Every size/variant needs its own primary barcode (auto-generate if blank).
+    let barcodes = v.barcodes?.length
+      ? v.barcodes.map((b) => String(b).trim()).filter(Boolean)
+      : v.barcode
+        ? [String(v.barcode).trim()].filter(Boolean)
+        : [];
+    if (!barcodes.length) {
+      barcodes = [await uniqueInStoreBarcode(db, transaction)];
+    }
     for (let i = 0; i < barcodes.length; i++) {
+      await assertBarcodeFree(db, barcodes[i], null, transaction);
       await Barcode.create(
         {
           variant_id: variant.id,
-          barcode: String(barcodes[i]).trim(),
+          barcode: barcodes[i],
           is_primary: i === 0,
         },
         { transaction }
@@ -422,11 +437,15 @@ async function upsertVariantBarcode(db, variantId, barcodeValue, transaction) {
   });
 
   if (barcodeValue) {
+    const code = String(barcodeValue).trim();
+    // Never silently replace with an empty/invalid/taken value.
+    await assertBarcodeFree(db, code, primary?.id || null, transaction);
     if (primary) {
-      await primary.update({ barcode: barcodeValue }, { transaction });
+      // Keep manufacturer barcodes unless the caller explicitly supplies a new value.
+      await primary.update({ barcode: code }, { transaction });
     } else {
       await Barcode.create(
-        { variant_id: variantId, barcode: barcodeValue, is_primary: true },
+        { variant_id: variantId, barcode: code, is_primary: true },
         { transaction }
       );
     }
@@ -436,15 +455,21 @@ async function upsertVariantBarcode(db, variantId, barcodeValue, transaction) {
 }
 
 async function assertBarcodeFree(db, barcode, ownId, transaction) {
-  const taken = await db.Barcode.findOne({ where: { barcode }, transaction });
+  const code = String(barcode || '').trim();
+  if (!code) throw new AppError('Barcode cannot be empty', 400, 'VALIDATION_ERROR');
+  if (!isValidBarcodeValue(code)) {
+    throw new AppError(`Invalid barcode format: ${code}`, 400, 'VALIDATION_ERROR');
+  }
+  const taken = await db.Barcode.findOne({ where: { barcode: code }, transaction });
   if (taken && taken.id !== ownId) {
-    throw new AppError(`Barcode ${barcode} is already used by another product`, 409, 'BARCODE_TAKEN');
+    throw new AppError(`Barcode ${code} is already used by another product`, 409, 'BARCODE_TAKEN');
   }
 }
 
+/** Unique internal Code 128 value in the reserved KDSPOZ namespace. */
 async function uniqueInStoreBarcode(db, transaction) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const candidate = randomInStoreEan13();
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const candidate = randomInternalCode128();
     const taken = await db.Barcode.findOne({ where: { barcode: candidate }, transaction });
     if (!taken) return candidate;
   }
@@ -517,7 +542,7 @@ async function syncQuantityBarcodes(db, variantId, entries, transaction) {
 }
 
 async function syncProductVariants(db, product, variants, transaction, options = {}) {
-  const { ProductVariant } = db;
+  const { ProductVariant, Barcode } = db;
   if (!variants?.length) {
     throw new AppError('At least one size/variant is required', 400, 'VALIDATION_ERROR');
   }
@@ -560,8 +585,21 @@ async function syncProductVariants(db, product, variants, transaction, options =
         { transaction }
       );
 
-      if (v.barcode !== undefined) {
-        await upsertVariantBarcode(db, variant.id, v.barcode?.trim() || null, transaction);
+      if (v.barcode !== undefined && String(v.barcode || '').trim()) {
+        await upsertVariantBarcode(db, variant.id, String(v.barcode).trim(), transaction);
+      } else {
+        // Keep existing barcode, or assign one so every size is scannable.
+        const primary = await Barcode.findOne({
+          where: { variant_id: variant.id, is_primary: true },
+          transaction,
+        });
+        if (!primary) {
+          const code = await uniqueInStoreBarcode(db, transaction);
+          await Barcode.create(
+            { variant_id: variant.id, barcode: code, is_primary: true },
+            { transaction },
+          );
+        }
       }
       if (Array.isArray(v.quantityBarcodes)) {
         await syncQuantityBarcodes(db, variant.id, v.quantityBarcodes, transaction);
@@ -960,22 +998,11 @@ async function listUnits(db) {
   return UnitOfMeasure.findAll({ order: [['type', 'ASC'], ['name', 'ASC']] });
 }
 
-function ean13CheckDigit(first12) {
-  let sum = 0;
-  for (let i = 0; i < 12; i += 1) sum += Number(first12[i]) * (i % 2 === 0 ? 1 : 3);
-  return String((10 - (sum % 10)) % 10);
-}
-
-/** EAN-13 in the GS1 in-store range (prefix 2), so it never collides with manufacturer barcodes. */
-function randomInStoreEan13() {
-  let body = '2';
-  while (body.length < 12) body += String(Math.floor(Math.random() * 10));
-  return body + ean13CheckDigit(body);
-}
-
 /**
- * Gives every listed variant that has no barcode a unique in-store EAN-13 (saved as its primary barcode).
- * Variants that already have a barcode keep it. Returns { variantId, barcode, generated } per variant.
+ * Gives every listed variant that has no plain barcode a unique internal Code 128 (KDSPOZ…).
+ * Existing manufacturer / primary barcodes are never overwritten.
+ * Concurrent requests lock variant rows so two generators cannot create two primaries.
+ * Returns { variantId, barcode, generated } per variant.
  */
 async function generateBarcodes(db, variantIds) {
   const ids = [...new Set((Array.isArray(variantIds) ? variantIds : []).filter((id) => typeof id === 'string'))];
@@ -983,29 +1010,35 @@ async function generateBarcodes(db, variantIds) {
   if (ids.length > 500) throw new AppError('Too many products in one request (max 500)', 400, 'VALIDATION_ERROR');
 
   const { ProductVariant, Barcode } = db;
-  const variants = await ProductVariant.findAll({
-    where: { id: { [Op.in]: ids }, deleted_at: null },
-    include: [{ model: Barcode, as: 'barcodes', attributes: ['barcode', 'is_primary', 'quantity'] }],
-  });
-  if (variants.length !== ids.length) throw new AppError('Some products were not found', 404, 'NOT_FOUND');
-
   const results = [];
   const transaction = await db.sequelize.transaction();
   try {
+    // Lock variants so concurrent "Generate Missing" requests serialize.
+    const variants = await ProductVariant.findAll({
+      where: { id: { [Op.in]: ids }, deleted_at: null },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (variants.length !== ids.length) {
+      throw new AppError('Some products were not found', 404, 'NOT_FOUND');
+    }
+
     for (const variant of variants) {
-      const existing = sortBarcodes(variant.barcodes).find((b) => b.quantity == null);
+      const rows = await Barcode.findAll({
+        where: { variant_id: variant.id },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      const existing = pickPlainBarcode(rows);
       if (existing) {
-        results.push({ variantId: variant.id, barcode: existing.barcode, generated: false });
+        results.push({ variantId: variant.id, barcode: existing, generated: false });
         continue;
       }
-      let code = null;
-      for (let attempt = 0; attempt < 20 && !code; attempt += 1) {
-        const candidate = randomInStoreEan13();
-        const taken = await Barcode.findOne({ where: { barcode: candidate }, transaction });
-        if (!taken) code = candidate;
-      }
-      if (!code) throw new AppError('Could not generate a unique barcode, try again', 500, 'BARCODE_GENERATION_FAILED');
-      await Barcode.create({ variant_id: variant.id, barcode: code, is_primary: true }, { transaction });
+      const code = await uniqueInStoreBarcode(db, transaction);
+      await Barcode.create(
+        { variant_id: variant.id, barcode: code, is_primary: true, quantity: null },
+        { transaction }
+      );
       results.push({ variantId: variant.id, barcode: code, generated: true });
     }
     await transaction.commit();
@@ -1014,6 +1047,88 @@ async function generateBarcodes(db, variantIds) {
     throw err;
   }
   return results;
+}
+
+/**
+ * Active variants for a product with barcode status for label printing.
+ * status: available | missing | duplicate
+ * Does not generate barcodes.
+ */
+async function getProductBarcodeStatus(db, productId) {
+  const { Product, ProductVariant, Barcode } = db;
+  if (!productId) throw new AppError('Product id is required', 400, 'VALIDATION_ERROR');
+
+  const product = await Product.findOne({
+    where: { id: productId, deleted_at: null },
+    attributes: ['id', 'name', 'has_variants'],
+  });
+  if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
+
+  const variants = await ProductVariant.findAll({
+    where: { product_id: productId, deleted_at: null, status: 'active' },
+    include: [{ model: Barcode, as: 'barcodes' }],
+    order: [['sku', 'ASC']],
+  });
+
+  const plainCodes = variants
+    .map((v) => pickPlainBarcode(v.barcodes))
+    .filter(Boolean);
+
+  const occupancyByCode = {};
+  if (plainCodes.length) {
+    const rows = await Barcode.findAll({
+      where: { barcode: { [Op.in]: [...new Set(plainCodes)] } },
+      attributes: ['barcode', 'variant_id'],
+    });
+    const byCode = new Map();
+    for (const row of rows) {
+      const code = String(row.barcode).trim();
+      if (!byCode.has(code)) byCode.set(code, new Set());
+      byCode.get(code).add(row.variant_id);
+    }
+    for (const [code, set] of byCode.entries()) {
+      occupancyByCode[code] = set.size;
+    }
+  }
+
+  // Also flag same barcode reused across this product's variants (defensive).
+  const seenInProduct = new Map();
+  for (const v of variants) {
+    const code = pickPlainBarcode(v.barcodes);
+    if (!code) continue;
+    seenInProduct.set(code, (seenInProduct.get(code) || 0) + 1);
+  }
+  for (const [code, count] of seenInProduct.entries()) {
+    if (count > 1) occupancyByCode[code] = Math.max(occupancyByCode[code] || 0, count);
+  }
+
+  const hasVariants = Boolean(
+    product.has_variants
+      || variants.length > 1
+      || variants.some((v) => Boolean(v.size || v.color)),
+  );
+
+  return {
+    productId: product.id,
+    productName: product.name,
+    hasVariants,
+    variants: variants.map((v) => {
+      const classified = classifyBarcodeStatus(v.barcodes, occupancyByCode);
+      return {
+        variantId: v.id,
+        sku: v.sku,
+        size: v.size,
+        color: v.color,
+        mrp: v.mrp != null ? parseFloat(String(v.mrp)) : null,
+        sellingPrice: parseFloat(String(v.selling_price)) || 0,
+        costPrice: parseFloat(String(v.cost_price)) || 0,
+        barcode: classified.barcode || null,
+        barcodeType: classified.barcodeType,
+        status: classified.status,
+        stockQty: v.stockQty ?? null,
+      };
+    }),
+  };
 }
 
 /**
@@ -1065,6 +1180,7 @@ async function ensureQuantityBarcodes(db, items) {
 module.exports = {
   generateBarcodes,
   ensureQuantityBarcodes,
+  getProductBarcodeStatus,
   listProducts,
   getProduct,
   createProduct,

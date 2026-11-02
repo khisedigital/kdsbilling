@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const AppError = require('../utils/AppError');
 const { getPagination, paginatedResponse } = require('../utils/pagination');
 const { MOVEMENT_TYPES, applyStockMovement, generateDocNumber } = require('./stockEngine');
+const { validatePurchaseItems } = require('./purchaseValidation');
 
 const variantInclude = (db) => ({
   model: db.ProductVariant,
@@ -56,16 +57,41 @@ async function deleteSupplier(db, id) {
 }
 
 async function createPurchaseBill(db, branchId, userId, data) {
-  const { PurchaseBill, PurchaseBillItem, Supplier } = db;
+  const { PurchaseBill, PurchaseBillItem, ProductVariant, Supplier } = db;
 
   if (!data.supplierId) throw new AppError('Supplier is required', 400, 'VALIDATION_ERROR');
-  if (!data.items?.length) throw new AppError('At least one item is required', 400, 'VALIDATION_ERROR');
+
+  const validated = validatePurchaseItems(data.items);
+  if (!validated.ok) {
+    throw new AppError(validated.message, 400, 'VALIDATION_ERROR');
+  }
+  const items = validated.items;
 
   const supplier = await Supplier.findOne({ where: { id: data.supplierId, deleted_at: null } });
   if (!supplier) throw new AppError('Supplier not found', 404, 'NOT_FOUND');
 
   const transaction = await db.sequelize.transaction();
   try {
+    // Stock and pricing live only on variants — never update parent product rows.
+    const uniqueVariantIds = [...new Set(items.map((item) => item.variantId))];
+    const activeVariants = await ProductVariant.findAll({
+      where: {
+        id: { [Op.in]: uniqueVariantIds },
+        deleted_at: null,
+        status: 'active',
+      },
+      attributes: ['id'],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (activeVariants.length !== uniqueVariantIds.length) {
+      throw new AppError(
+        'One or more products/variants are missing or inactive',
+        400,
+        'VALIDATION_ERROR'
+      );
+    }
+
     let subtotal = 0;
     let taxAmount = 0;
 
@@ -83,16 +109,13 @@ async function createPurchaseBill(db, branchId, userId, data) {
       { transaction }
     );
 
-    for (const item of data.items) {
-      const qty = parseFloat(item.quantity);
-      const unitCost = parseFloat(item.unitCost);
-      const itemTax = parseFloat(item.taxAmount || 0);
+    for (const item of items) {
+      const qty = item.quantity;
+      const unitCost = item.unitCost;
+      const itemTax = item.taxAmount;
       const lineTotal = qty * unitCost + itemTax;
 
-      if (!item.variantId || Number.isNaN(qty) || qty <= 0 || Number.isNaN(unitCost)) {
-        throw new AppError('Invalid purchase item', 400, 'VALIDATION_ERROR');
-      }
-
+      // Each purchase line is stored against product_variants.id (variant_id).
       await PurchaseBillItem.create(
         {
           purchase_bill_id: bill.id,

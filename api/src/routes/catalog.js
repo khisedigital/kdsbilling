@@ -36,6 +36,7 @@ router.get('/master-catalog/products', requirePermission(PERMISSIONS.PRODUCT_VIE
 router.post('/products/import-from-master', requirePermission(PERMISSIONS.PRODUCT_CREATE), asyncHandler(catalog.importFromMasterCatalog));
 router.get('/products', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.listProducts));
 router.post('/products', requirePermission(PERMISSIONS.PRODUCT_CREATE), asyncHandler(catalog.createProduct));
+router.get('/products/:id/barcode-status', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.productBarcodeStatus));
 router.get('/products/:id', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.getProduct));
 router.put('/products/:id', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.updateProduct));
 router.delete('/products/:id', requirePermission(PERMISSIONS.PRODUCT_DELETE), asyncHandler(catalog.deleteProduct));

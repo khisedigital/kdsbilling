@@ -90,6 +90,11 @@ async function generateBarcodes(req, res) {
   res.json({ success: true, data });
 }
 
+async function productBarcodeStatus(req, res) {
+  const data = await productService.getProductBarcodeStatus(req.db, req.params.id);
+  res.json({ success: true, data });
+}
+
 async function quantityBarcodes(req, res) {
   const data = await productService.ensureQuantityBarcodes(req.db, req.body?.items);
   res.json({ success: true, data });
@@ -180,6 +185,7 @@ module.exports = {
   deleteProduct,
   searchProducts,
   generateBarcodes,
+  productBarcodeStatus,
   quantityBarcodes,
   bulkImport,
   listTaxGroups,
