@@ -9,9 +9,15 @@ import android.graphics.Typeface
 /**
  * Render at the 58 mm head width (384 dots @ 203 dpi), not 50 mm × 8 = 400.
  * Downscaling 400→384 softens glyph edges on thermal paper.
+ * Height must match the physical roll (25 or 28 mm) or GS FF skips a sticker.
  */
 private const val LABEL_WIDTH_PX = 384
-private const val LABEL_HEIGHT_PX = LABEL_WIDTH_PX * 25 / 50 // 192 — keep 50×25 aspect
+private const val LABEL_WIDTH_MM = 50
+
+private fun labelHeightPx(heightMm: Int): Int {
+  val h = if (heightMm == 25) 25 else 28
+  return LABEL_WIDTH_PX * h / LABEL_WIDTH_MM
+}
 
 private val TITLE_FONT: Typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
 /** Readable monospace for the human-readable barcode under the bars. */
@@ -33,9 +39,9 @@ data class LabelContent(
  *  [              BARCODE                     ]
  *  [              barcode digits              ]
  */
-fun renderLabelBitmap(content: LabelContent): Bitmap {
+fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   val width = LABEL_WIDTH_PX
-  val height = LABEL_HEIGHT_PX
+  val height = labelHeightPx(heightMm)
   val padX = maxOf(6, width / 32)
   val padY = maxOf(4, height / 24)
 

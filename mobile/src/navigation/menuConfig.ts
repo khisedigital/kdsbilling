@@ -25,7 +25,7 @@ const rawMenuSections: MenuSection[] = [
   {
     title: 'Billing',
     items: [
-      { label: 'New Bill', icon: 'point-of-sale', screen: 'Billing', params: { fresh: true }, highlight: true },
+      { label: 'New Bill', icon: 'point-of-sale', screen: 'Billing', params: { fresh: true } },
       { label: 'Sales', icon: 'receipt', screen: 'SalesList' },
       { label: 'Held Bills', icon: 'pause-circle-outline', screen: 'HeldBills' },
       { label: 'Returns', icon: 'keyboard-return', screen: 'ReturnsList' },

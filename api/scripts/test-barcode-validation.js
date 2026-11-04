@@ -5,10 +5,12 @@
 const assert = require('assert');
 const {
   INTERNAL_PREFIX,
+  IN_STORE_PREFIX,
   isValidEan13,
   isInternalCode128,
+  isNumericBarcode,
   isValidBarcodeValue,
-  randomInternalCode128,
+  randomInStoreEan13,
   pickPlainBarcode,
   classifyBarcodeStatus,
   detectBarcodeType,
@@ -22,14 +24,24 @@ assert.ok(isValidEan13(ean));
 assert.ok(!isValidEan13('123'));
 assert.ok(!isValidEan13('2000000000000'));
 
-const internal = randomInternalCode128();
-assert.ok(internal.startsWith(INTERNAL_PREFIX));
-assert.ok(isInternalCode128(internal));
+const internal = randomInStoreEan13();
+assert.ok(internal.startsWith(IN_STORE_PREFIX));
+assert.ok(/^\d{13}$/.test(internal));
+assert.ok(isValidEan13(internal));
+assert.ok(!isInternalCode128(internal));
 assert.ok(isValidBarcodeValue(internal));
-assert.strictEqual(detectBarcodeType(internal), 'code128');
+assert.strictEqual(detectBarcodeType(internal), 'ean13');
 assert.strictEqual(detectBarcodeType(ean), 'ean13');
 
-assert.ok(isValidBarcodeValue('ABC-12345'));
+const legacy = `${INTERNAL_PREFIX}12345678`;
+assert.ok(isInternalCode128(legacy));
+assert.ok(!isNumericBarcode(legacy));
+assert.ok(!isValidBarcodeValue(legacy));
+assert.strictEqual(detectBarcodeType(legacy), 'code128');
+
+assert.ok(isNumericBarcode('8901234567890'));
+assert.ok(isValidBarcodeValue('8901234567890'));
+assert.ok(!isValidBarcodeValue('ABC-12345'));
 assert.ok(!isValidBarcodeValue(''));
 assert.ok(!isValidBarcodeValue('ab'));
 
@@ -58,8 +70,9 @@ assert.strictEqual(
 
 const seen = new Set();
 for (let i = 0; i < 200; i += 1) {
-  const code = randomInternalCode128();
-  assert.ok(!seen.has(code), 'collision in randomInternalCode128');
+  const code = randomInStoreEan13();
+  assert.ok(isValidEan13(code), 'generated barcode must be a valid EAN-13');
+  assert.ok(!seen.has(code), 'collision in randomInStoreEan13');
   seen.add(code);
 }
 

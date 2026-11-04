@@ -140,7 +140,11 @@ class KdsLabelPrinterModule(
           mrp = payload.getStringOrEmpty("mrp"),
           price = payload.getStringOrEmpty("price"),
         )
-        val bitmap = renderLabelBitmap(content)
+        val heightMm = when {
+          payload.hasKey("heightMm") && !payload.isNull("heightMm") -> payload.getInt("heightMm")
+          else -> 28
+        }.let { if (it == 25) 25 else 28 }
+        val bitmap = renderLabelBitmap(content, heightMm)
         try {
           // Same as SDKDemoApk: ESC/POS raster + GS FF (not TSPL / not continuous feed).
           LabelPrinterJob.print(socket, bitmap, content, copies)

@@ -8,17 +8,22 @@ import {
 import {
   buildGapLabelEscPos,
   LABEL_HEIGHT_MM as ESC_LABEL_HEIGHT_MM,
+  LABEL_HEIGHT_OPTIONS as ESC_LABEL_HEIGHT_OPTIONS,
   LABEL_WIDTH_MM as ESC_LABEL_WIDTH_MM,
+  normalizeLabelHeightMm,
   type GapLabelContent,
+  type LabelHeightMm,
 } from './labelEscPos';
 
 /** Preview size shown on screen (thermal sticker layout). */
 export const LABEL_WIDTH_MM = ESC_LABEL_WIDTH_MM;
 export const LABEL_HEIGHT_MM = ESC_LABEL_HEIGHT_MM;
+export const LABEL_HEIGHT_OPTIONS = ESC_LABEL_HEIGHT_OPTIONS;
 
 export const DEMO_BARCODE = '2000000000008';
 
-export type { GapLabelContent };
+export type { GapLabelContent, LabelHeightMm };
+export { normalizeLabelHeightMm };
 
 export function isDesktopLabelPrintAvailable(): boolean {
   return Platform.OS === 'web' && Boolean(getDesktopBridge()?.printRawSystem);
@@ -29,9 +34,10 @@ export function isGapLabelPrintAvailable(): boolean {
 }
 
 async function printDesktopGapLabel(label: GapLabelContent, copies: number): Promise<void> {
-  const bytes = buildGapLabelEscPos(label, copies);
   // Label printer only — never reads billing / receipt printer settings.
   const settings = await getLabelPrinterSettings();
+  const heightMm = normalizeLabelHeightMm(settings.labelHeightMm);
+  const bytes = buildGapLabelEscPos(label, copies, heightMm);
   const { printBytesViaBluetooth, printBytesViaNetwork, printBytesViaSystem } = await import(
     './PrintService'
   );
@@ -62,13 +68,14 @@ async function printDesktopGapLabel(label: GapLabelContent, copies: number): Pro
 }
 
 /**
- * Prints 50×25 mm labels:
+ * Prints 50×H mm labels (H from label printer settings, default 28):
  * - Android: Microlan PrinterSDK Bluetooth (bitmap → ESC/POS → GS FF)
  * - Desktop: same ESC/POS raster via USB / installed label printer queue
  */
 export async function printGapLabel(label: GapLabelContent, copies: number): Promise<void> {
   if (isNativeLabelPrinterAvailable()) {
-    await printNativeGapLabel(label, copies);
+    const settings = await getLabelPrinterSettings();
+    await printNativeGapLabel(label, copies, normalizeLabelHeightMm(settings.labelHeightMm));
     return;
   }
   if (isDesktopLabelPrintAvailable()) {

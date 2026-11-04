@@ -24,6 +24,8 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import SectionCard from '../../components/ui/SectionCard';
+import VariantTable from './VariantTable';
+import { barcodeOrGenerated } from '../../utils/barcode';
 import {
   createProduct,
   fetchBrands,
@@ -62,7 +64,15 @@ type QtyBarcodeRow = {
   barcode: string;
 };
 
-const SIZE_PRESETS = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'Free Size'];
+function digitsOnly(value: string) {
+  return value.replace(/\D/g, '').slice(0, 18);
+}
+
+/** Keep a barcode only when it is already all digits. Letter codes are left blank so a number is created. */
+function numericBarcode(value: string) {
+  const code = String(value || '').trim();
+  return /^\d{4,18}$/.test(code) ? code : '';
+}
 
 function newRowKey() {
   return `row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -193,7 +203,6 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const [taxCode, setTaxCode] = useState('');
   const [multiSizes, setMultiSizes] = useState(false);
   const [sizeRows, setSizeRows] = useState<SizeRow[]>([]);
-  const [customSize, setCustomSize] = useState('');
   const [mainStockQty, setMainStockQty] = useState(0);
   const [isWeightBased, setIsWeightBased] = useState(false);
   const [variantId, setVariantId] = useState<string | null>(null);
@@ -269,13 +278,13 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
           if (first) {
             setSku(first.sku || '');
-            setBarcode(mainBarcodeOf(first));
+            setBarcode(numericBarcode(mainBarcodeOf(first)));
             const productUom = u.find((x) => x.id === product.uom_id);
             setQtyRows(
               quantityBarcodesOf(first).map((b) => ({
                 key: newRowKey(),
                 quantity: formatQuantity(b.quantity, productUom),
-                barcode: b.barcode,
+                barcode: numericBarcode(b.barcode),
               })),
             );
             setCostPrice(String(parseFloat(String(first.cost_price)) || ''));
@@ -298,7 +307,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                 id: v.id,
                 size: v.size || 'Default',
                 sku: v.sku || '',
-                barcode: mainBarcodeOf(v),
+                barcode: numericBarcode(mainBarcodeOf(v)),
                 sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
                 costPrice: String(parseFloat(String(v.cost_price)) || ''),
                 mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
@@ -396,7 +405,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               if (first) {
                 setVariantId(first.id || null);
                 setSku(first.sku);
-                setBarcode(first.barcode);
+                setBarcode(numericBarcode(first.barcode));
                 setSellingPrice(first.sellingPrice);
                 setCostPrice(first.costPrice);
                 setMrp(first.mrp);
@@ -420,12 +429,13 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const buildVariantPayload = () => {
     if (!multiSizes || sizeRows.length === 0) return null;
     const sharedColor = color.trim() || undefined;
+    const used = new Set<string>();
     return sizeRows.map((row) => ({
       id: row.id,
       size: row.size.trim(),
       color: sharedColor,
       sku: row.sku.trim() || undefined,
-      barcode: row.barcode.trim() || undefined,
+      barcode: barcodeOrGenerated(row.barcode, used),
       costPrice: row.costPrice ? parseFloat(row.costPrice) : 0,
       sellingPrice: parseFloat(row.sellingPrice),
       mrp: row.mrp ? parseFloat(row.mrp) : undefined,
@@ -440,10 +450,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   };
 
   /** Returns the payload, or an error message for the first bad row. */
-  const buildQuantityBarcodes = (): QuantityBarcodeInput[] | string => {
+  const buildQuantityBarcodes = (seenCodes: Set<string>): QuantityBarcodeInput[] | string => {
     const out: QuantityBarcodeInput[] = [];
     const seenQty = new Set<string>();
-    const seenCodes = new Set<string>(barcode.trim() ? [barcode.trim()] : []);
     for (const row of qtyRows) {
       const raw = row.quantity.trim();
       const code = row.barcode.trim();
@@ -454,11 +463,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       const qtyKey = qty.toFixed(4);
       if (seenQty.has(qtyKey)) return `Quantity ${raw} is listed twice`;
       seenQty.add(qtyKey);
-      if (code) {
-        if (seenCodes.has(code)) return `Barcode ${code} is used twice`;
-        seenCodes.add(code);
-      }
-      out.push({ quantity: qty, barcode: code || undefined });
+      if (code && seenCodes.has(code)) return `Barcode ${code} is used twice`;
+      const assigned = barcodeOrGenerated(code, seenCodes);
+      out.push({ quantity: qty, barcode: assigned });
     }
     return out;
   };
@@ -473,7 +480,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       setError('Please complete the highlighted required fields');
       return;
     }
-    const quantityBarcodes = multiSizes ? undefined : buildQuantityBarcodes();
+    const usedCodes = new Set<string>();
+    const productBarcode = multiSizes ? '' : barcodeOrGenerated(barcode, usedCodes);
+    const quantityBarcodes = multiSizes ? undefined : buildQuantityBarcodes(usedCodes);
     if (typeof quantityBarcodes === 'string') {
       setError(quantityBarcodes);
       return;
@@ -524,7 +533,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               {
                 id: variantId || undefined,
                 sku: sku.trim() || undefined,
-                barcode: barcode.trim() || undefined,
+                barcode: productBarcode,
                 size: '',
                 color: '',
                 costPrice: costPrice ? parseFloat(costPrice) : 0,
@@ -562,7 +571,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           isWeightBased,
           allowDecimalQty: isWeightBased,
           sku: sku.trim() || undefined,
-          barcode: barcode.trim() || undefined,
+          barcode: productBarcode,
           quantityBarcodes,
           costPrice: costPrice ? parseFloat(costPrice) : 0,
           sellingPrice: parseFloat(sellingPrice),
@@ -773,8 +782,10 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             <TextInput
               label="Barcode"
               value={barcode}
-              onChangeText={setBarcode}
+              onChangeText={(value) => setBarcode(digitsOnly(value))}
+              keyboardType="number-pad"
               mode="outlined"
+              placeholder="Auto number"
               style={[styles.input, styles.halfInput]}
             />
           </View>
@@ -808,10 +819,11 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                     <TextInput
                       label="Barcode"
                       value={row.barcode}
-                      onChangeText={(value) => updateQtyRow(row.key, { barcode: value })}
+                      onChangeText={(value) => updateQtyRow(row.key, { barcode: digitsOnly(value) })}
+                      keyboardType="number-pad"
                       mode="outlined"
                       dense
-                      placeholder="Auto"
+                      placeholder="Auto number"
                       style={[styles.qtyInput, styles.halfInput]}
                     />
                   </View>
@@ -890,14 +902,6 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         ) : (
           <>
             <TextInput
-              label="Colour (shared)"
-              value={color}
-              onChangeText={setColor}
-              mode="outlined"
-              style={styles.input}
-              placeholder="e.g. Navy"
-            />
-            <TextInput
               label="SKU prefix"
               value={sku}
               onChangeText={setSku}
@@ -921,117 +925,25 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               </View>
             ) : null}
 
-            <Text style={styles.label}>Add sizes</Text>
-            <View style={styles.sizeChipWrap}>
-              {SIZE_PRESETS.map((preset) => {
-                const active = selectedSizes.has(preset.toUpperCase());
-                return (
-                  <Pressable
-                    key={preset}
-                    onPress={() => (active ? null : addSize(preset))}
-                    disabled={active}
-                    style={[styles.sizeChip, active && styles.sizeChipOn]}>
-                    <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>{preset}</Text>
-                  </Pressable>
+            <VariantTable
+              rows={sizeRows}
+              color={color}
+              onColorChange={setColor}
+              onChange={(key, patch) => {
+                if (patch.size && selectedSizes.has(patch.size.toUpperCase())) {
+                  const own = sizeRows.find((row) => row.key === key);
+                  if (!own || own.size.toUpperCase() !== patch.size.toUpperCase()) return;
+                }
+                updateSizeRow(key, patch);
+              }}
+              onRemove={removeSizeRow}
+              onAdd={() => {
+                const next = ['S', 'M', 'L', 'XL', 'XXL', 'XS', 'Free Size'].find(
+                  (preset) => !selectedSizes.has(preset.toUpperCase()),
                 );
-              })}
-            </View>
-
-            <View style={styles.customSizeRow}>
-              <TextInput
-                label="Custom size"
-                value={customSize}
-                onChangeText={setCustomSize}
-                mode="outlined"
-                style={[styles.input, styles.customSizeInput]}
-                placeholder="32, Kids…"
-              />
-              <Button
-                mode="outlined"
-                onPress={() => {
-                  addSize(customSize);
-                  setCustomSize('');
-                }}
-                style={styles.addSizeBtn}
-                contentStyle={styles.addSizeBtnContent}>
-                Add
-              </Button>
-            </View>
-
-            {sizeRows.length === 0 ? (
-              <Text style={styles.emptySizes}>Tap a size above to add a variant</Text>
-            ) : (
-              sizeRows.map((row) => (
-                <View key={row.key} style={styles.sizeCard}>
-                  <View style={styles.sizeCardHead}>
-                    <View style={styles.sizeBadge}>
-                      <Text style={styles.sizeBadgeText}>{row.size}</Text>
-                    </View>
-                    <Pressable onPress={() => removeSizeRow(row.key)} hitSlop={10} style={styles.removeSize}>
-                      <Icon name="close" size={18} color={colors.textMuted} />
-                    </Pressable>
-                  </View>
-                  <View style={styles.priceRow}>
-                    <TextInput
-                      label="Selling price *"
-                      value={row.sellingPrice}
-                      onChangeText={(value) => updateSizeRow(row.key, { sellingPrice: value })}
-                      keyboardType="decimal-pad"
-                      mode="outlined"
-                      style={[styles.input, styles.halfInput]}
-                      left={<TextInput.Affix text="₹" />}
-                    />
-                    <TextInput
-                      label="Cost"
-                      value={row.costPrice}
-                      onChangeText={(value) => updateSizeRow(row.key, { costPrice: value })}
-                      keyboardType="decimal-pad"
-                      mode="outlined"
-                      style={[styles.input, styles.halfInput]}
-                      left={<TextInput.Affix text="₹" />}
-                    />
-                  </View>
-                  <View style={styles.priceRow}>
-                    <TextInput
-                      label="MRP"
-                      value={row.mrp}
-                      onChangeText={(value) => updateSizeRow(row.key, { mrp: value })}
-                      keyboardType="decimal-pad"
-                      mode="outlined"
-                      style={[styles.input, styles.halfInput]}
-                      left={<TextInput.Affix text="₹" />}
-                    />
-                    <TextInput
-                      label="Stock"
-                      value={row.stockQty}
-                      onChangeText={(value) => updateSizeRow(row.key, { stockQty: value })}
-                      keyboardType="decimal-pad"
-                      mode="outlined"
-                      style={[styles.input, styles.halfInput]}
-                    />
-                  </View>
-                  <TextInput
-                    label="SKU"
-                    value={row.sku}
-                    onChangeText={(value) => updateSizeRow(row.key, { sku: value })}
-                    mode="outlined"
-                    style={styles.input}
-                  />
-                  <TextInput
-                    label="Barcode for this size"
-                    value={row.barcode}
-                    onChangeText={(value) => updateSizeRow(row.key, { barcode: value })}
-                    mode="outlined"
-                    style={styles.input}
-                    placeholder="Leave blank to auto-create"
-                    autoCapitalize="characters"
-                  />
-                  <Text style={styles.sizeBarcodeHint}>
-                    Each size needs its own barcode for billing and labels.
-                  </Text>
-                </View>
-              ))
-            )}
+                addSize(next || `Size ${sizeRows.length + 1}`);
+              }}
+            />
           </>
         )}
       </SectionCard>

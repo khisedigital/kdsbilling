@@ -124,6 +124,8 @@ export interface UpdateProductPayload {
   costPrice?: number;
   sellingPrice?: number;
   mrp?: number;
+  /** append = create/update listed sizes only; never soft-delete others */
+  variantSyncMode?: 'replace' | 'append';
   variants?: Array<{
     id?: string;
     sku?: string;

@@ -10,8 +10,8 @@ import com.microlan.printersdk2.Utils
 import java.io.IOException
 
 /**
- * 50 × 25 mm label print — same approach as SDKDemoApk:
- * - canvas sized from physical mm
+ * 50 × H mm label print — same approach as SDKDemoApk:
+ * - canvas sized from physical mm (H = 25 or 28 from settings)
  * - fit to print-head width without stretching
  * - PrinterSDK.prepareImageForPrint + Utils.decodeBitmap (ESC/POS raster)
  * - GS FF form-feed for gap / black-mark (not continuous \n / FEED_LINE)
@@ -22,11 +22,11 @@ object LabelPrinterJob {
   private const val TAG = "KdsLabelPrinter"
 
   // ============================================================
-  // HARDCODE PHYSICAL LABEL + PRINTER WIDTH HERE (same as SDKDemoApk)
+  // PHYSICAL LABEL + PRINTER WIDTH (same as SDKDemoApk)
   // ============================================================
-  /** Physical sticker size in millimetres. */
+  /** Physical sticker size in millimetres (height comes from the loaded roll). */
   const val LABEL_WIDTH_MM = 50
-  const val LABEL_HEIGHT_MM = 25
+  const val LABEL_HEIGHT_MM = 28
 
   /**
    * Printable dots across the print head (same as LabelBitmap).

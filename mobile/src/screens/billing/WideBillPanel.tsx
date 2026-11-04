@@ -11,7 +11,6 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import QtyStepper from '../../components/ui/QtyStepper';
 import { printDraftReceipt } from '../../print/receiptPrinter';
 import {
   createBill,
@@ -22,14 +21,11 @@ import {
   previewBill,
   type BillDetail,
 } from '../../services/businessService';
-import type { SearchProductResult } from '../../services/catalogService';
 import { useCartStore, type CartItem } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
-import { formatQuantity } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
-import QuantityEntryDialog from './QuantityEntryDialog';
 
 type DiscountMode = 'amount' | 'percent';
 type PanelView = 'bill' | 'customer' | 'hold';
@@ -96,7 +92,6 @@ export default function WideBillPanel() {
   const offerId = useCartStore((s) => s.offerId);
 
   const [view, setView] = useState<PanelView>('bill');
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [preview, setPreview] = useState<BillPreview | null>(null);
   const [exactTotal, setExactTotal] = useState(0);
   const [roundOffAmount, setRoundOffAmount] = useState(0);
@@ -121,13 +116,12 @@ export default function WideBillPanel() {
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState('');
-  const [editQtyItem, setEditQtyItem] = useState<CartItem | null>(null);
+  /** Inline qty drafts so typing is not wiped / does not remove the line at 0. */
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
 
-  const listRef = useRef<FlatList<CartItem>>(null);
   const requestId = useRef(0);
-  const prevQty = useRef(new Map<string, number>());
   const splitExtraRef = useRef(splitExtra);
   splitExtraRef.current = splitExtra;
 
@@ -149,8 +143,6 @@ export default function WideBillPanel() {
   const change = Math.max(0, totalPaid - totalDue);
   const discountApplied = round2(preview?.discountAmount ?? 0);
 
-  const activeItem = items.find((item) => item.variantId === activeId) || items[items.length - 1] || null;
-
   const syncPrimaryAmount = useCallback((due: number, extras = splitExtraRef.current) => {
     const other = extras.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     setPayAmount(round2(Math.max(0, due - other)).toFixed(2));
@@ -158,31 +150,6 @@ export default function WideBillPanel() {
 
   const defaultSplitMode = (main: string) =>
     PAYMENT_MODES.find((m) => m.id !== main)?.id || 'upi';
-
-  useEffect(() => {
-    setActiveId((current) => {
-      const prev = prevQty.current;
-      let touched: string | null = null;
-      for (const item of items) {
-        if (prev.get(item.variantId) !== item.quantity) touched = item.variantId;
-      }
-      prevQty.current = new Map(items.map((item) => [item.variantId, item.quantity]));
-      if (touched) return touched;
-      if (!items.length) return null;
-      if (current && items.some((item) => item.variantId === current)) return current;
-      return items[items.length - 1].variantId;
-    });
-  }, [items]);
-
-  useEffect(() => {
-    if (!activeId) return;
-    const index = items.findIndex((item) => item.variantId === activeId);
-    if (index < 0) return;
-    const frame = requestAnimationFrame(() => {
-      listRef.current?.scrollToIndex({ index, viewPosition: 0.35, animated: true });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [activeId, items]);
 
   useEffect(() => {
     if (!notice) return;
@@ -279,10 +246,52 @@ export default function WideBillPanel() {
     };
   }, [view, customerQuery]);
 
+  const formatCartQty = (item: CartItem) => {
+    const qty = item.quantity;
+    if (!item.allowDecimalQty) {
+      return qty % 1 === 0 ? String(qty) : qty.toFixed(2);
+    }
+    // Plain number for the inline input (no "kg"/"g" suffix).
+    if (Number.isInteger(qty)) return String(qty);
+    return String(Math.round(qty * 1000) / 1000);
+  };
+
+  const clearQtyDraft = (variantId: string) => {
+    setQtyDrafts((prev) => {
+      if (!(variantId in prev)) return prev;
+      const next = { ...prev };
+      delete next[variantId];
+      return next;
+    });
+  };
+
   const stepQty = (item: CartItem, direction: 1 | -1) => {
+    clearQtyDraft(item.variantId);
     const step = item.allowDecimalQty ? cartQtyStep(item.uom?.code) : 1;
     const next = Math.round((item.quantity + direction * step) * 1000) / 1000;
     updateQty(item.variantId, next);
+  };
+
+  const commitInlineQty = (item: CartItem, raw: string) => {
+    const cleaned = raw.trim().replace(',', '.');
+    const parsed = parseFloat(cleaned);
+    if (!cleaned || Number.isNaN(parsed) || parsed <= 0) {
+      clearQtyDraft(item.variantId);
+      return;
+    }
+    const next = item.allowDecimalQty
+      ? Math.round(parsed * 1000) / 1000
+      : Math.max(1, Math.round(parsed));
+    updateQty(item.variantId, next);
+    clearQtyDraft(item.variantId);
+  };
+
+  // Draft only while typing — commit on blur so preview/split/round-off are not reset every keystroke.
+  const onInlineQtyChange = (item: CartItem, value: string) => {
+    const sanitized = item.allowDecimalQty
+      ? value.replace(/[^0-9.,]/g, '')
+      : value.replace(/[^0-9]/g, '');
+    setQtyDrafts((prev) => ({ ...prev, [item.variantId]: sanitized }));
   };
 
   const applyDiscount = () => {
@@ -553,44 +562,60 @@ export default function WideBillPanel() {
   };
 
   const renderLine = ({ item }: { item: CartItem }) => {
-    const current = item.variantId === activeItem?.variantId;
     const size = variantLabel(item.size, item.color);
-    const qtyLabel = item.allowDecimalQty
-      ? formatQuantity(item.quantity, item.uom)
-      : item.quantity % 1 === 0
-        ? String(item.quantity)
-        : item.quantity.toFixed(2);
+    const qtyValue =
+      qtyDrafts[item.variantId] !== undefined
+        ? qtyDrafts[item.variantId]
+        : formatCartQty(item);
     return (
-      <View style={[styles.line, current && styles.lineCurrent]}>
-        <View style={styles.lineTop}>
-          <View style={styles.lineInfo}>
-            <Text style={styles.lineName} numberOfLines={2}>
-              {item.productName}
-              {item.isCustom ? ' · Custom' : size ? ` · ${size}` : ''}
-            </Text>
-            <Text style={styles.lineMeta}>
-              {money(item.unitPrice)}
-              {item.uom?.code ? ` / ${item.uom.code}` : ''}
-              {current ? '  ·  Current' : ''}
-            </Text>
+      <View style={styles.tableRow}>
+        <View style={styles.colProduct}>
+          <Text style={styles.lineName} numberOfLines={2}>
+            {item.productName}
+            {item.isCustom ? ' · Custom' : size ? ` · ${size}` : ''}
+          </Text>
+          {item.uom?.code ? <Text style={styles.lineMeta}>{item.uom.code}</Text> : null}
+        </View>
+        <Text style={styles.colRate}>{money(item.unitPrice)}</Text>
+        <View style={styles.colQty}>
+          <View style={styles.qtyInline}>
+            <Pressable
+              onPress={() => stepQty(item, -1)}
+              hitSlop={6}
+              style={styles.qtyBtn}
+              accessibilityLabel={`Decrease ${item.productName}`}>
+              <Icon name="minus" size={16} color={colors.primary} />
+            </Pressable>
+            <TextInput
+              value={qtyValue}
+              onChangeText={(value) => onInlineQtyChange(item, value)}
+              onBlur={() => commitInlineQty(item, qtyValue)}
+              onSubmitEditing={() => commitInlineQty(item, qtyValue)}
+              keyboardType={item.allowDecimalQty ? 'decimal-pad' : 'number-pad'}
+              selectTextOnFocus
+              style={styles.qtyInput}
+              accessibilityLabel={`Quantity for ${item.productName}`}
+            />
+            <Pressable
+              onPress={() => stepQty(item, 1)}
+              hitSlop={6}
+              style={styles.qtyBtn}
+              accessibilityLabel={`Increase ${item.productName}`}>
+              <Icon name="plus" size={16} color={colors.primary} />
+            </Pressable>
           </View>
-          <Pressable
-            onPress={() => removeItem(item.variantId)}
-            hitSlop={8}
-            style={styles.removeBtn}
-            accessibilityLabel={`Remove ${item.productName}`}>
-            <Icon name="close" size={16} color={colors.textMuted} />
-          </Pressable>
         </View>
-        <View style={styles.lineBottom}>
-          <QtyStepper
-            value={qtyLabel}
-            onDecrease={() => stepQty(item, -1)}
-            onIncrease={() => stepQty(item, 1)}
-            onPressValue={() => setEditQtyItem(item)}
-          />
-          <Text style={styles.lineTotal}>{money(item.unitPrice * item.quantity)}</Text>
-        </View>
+        <Text style={styles.colAmount}>{money(item.unitPrice * item.quantity)}</Text>
+        <Pressable
+          onPress={() => {
+            clearQtyDraft(item.variantId);
+            removeItem(item.variantId);
+          }}
+          hitSlop={8}
+          style={styles.removeBtn}
+          accessibilityLabel={`Remove ${item.productName}`}>
+          <Icon name="close" size={16} color={colors.textMuted} />
+        </Pressable>
       </View>
     );
   };
@@ -816,26 +841,6 @@ export default function WideBillPanel() {
         </View>
       ) : (
         <>
-          {activeItem ? (
-            <View style={styles.currentCard}>
-              <Text style={styles.currentName} numberOfLines={1}>
-                {activeItem.productName}
-                {activeItem.isCustom
-                  ? ' · Custom'
-                  : variantLabel(activeItem.size, activeItem.color)
-                    ? ` · ${variantLabel(activeItem.size, activeItem.color)}`
-                    : ''}
-              </Text>
-              <Text style={styles.currentAmt}>
-                {activeItem.allowDecimalQty
-                  ? formatQuantity(activeItem.quantity, activeItem.uom)
-                  : activeItem.quantity}
-                {' × '}
-                {money(activeItem.unitPrice * activeItem.quantity)}
-              </Text>
-            </View>
-          ) : null}
-
           {discountOpen ? (
             <View style={styles.discountBox}>
               <View style={styles.modeRow}>
@@ -891,27 +896,29 @@ export default function WideBillPanel() {
           ) : null}
 
           {hasItems ? (
-            <FlatList
-              ref={listRef}
-              data={items}
-              keyExtractor={(item) => item.variantId}
-              renderItem={renderLine}
-              style={styles.fill}
-              contentContainerStyle={styles.listContent}
-              keyboardShouldPersistTaps="handled"
-              onScrollToIndexFailed={(info) => {
-                listRef.current?.scrollToOffset({
-                  offset: Math.max(0, info.averageItemLength * info.index),
-                  animated: true,
-                });
-              }}
-            />
+            <View style={styles.fill}>
+              <View style={styles.tableHeader}>
+                <Text style={[styles.th, styles.colProduct]}>Product</Text>
+                <Text style={[styles.th, styles.colRateHead]}>Rate</Text>
+                <Text style={[styles.th, styles.colQtyHead]}>Qty</Text>
+                <Text style={[styles.th, styles.colAmountHead]}>Amount</Text>
+                <View style={styles.thRemove} />
+              </View>
+              <FlatList
+                data={items}
+                keyExtractor={(item) => item.variantId}
+                renderItem={renderLine}
+                style={styles.fill}
+                contentContainerStyle={styles.listContent}
+                keyboardShouldPersistTaps="handled"
+              />
+            </View>
           ) : (
             <View style={styles.empty}>
               <Icon name="cart-outline" size={36} color={colors.primary} />
               <Text style={styles.emptyTitle}>No items yet</Text>
               <Text style={styles.emptyHint}>
-                Tap a product on the left. It shows up here as the current item, and you can take payment without leaving this screen.
+                Tap a product on the left to add it here. Edit quantity in the Qty column, then take payment.
               </Text>
             </View>
           )}
@@ -1077,32 +1084,6 @@ export default function WideBillPanel() {
         </>
       )}
 
-      <QuantityEntryDialog
-        product={
-          editQtyItem
-            ? ({
-                variantId: editQtyItem.variantId,
-                productId: '',
-                productName: editQtyItem.productName,
-                sku: editQtyItem.sku,
-                size: editQtyItem.size,
-                color: editQtyItem.color,
-                sellingPrice: editQtyItem.unitPrice,
-                uom: editQtyItem.uom || { code: 'pcs', type: 'count' },
-                allowDecimalQty: editQtyItem.allowDecimalQty === true,
-                stockQty: editQtyItem.stockQty,
-              } satisfies SearchProductResult)
-            : null
-        }
-        initialQuantity={editQtyItem?.quantity}
-        editing
-        contained
-        onConfirm={(quantity) => {
-          if (editQtyItem) updateQty(editQtyItem.variantId, quantity);
-          setEditQtyItem(null);
-        }}
-        onDismiss={() => setEditQtyItem(null)}
-      />
     </View>
   );
 }
@@ -1207,45 +1188,85 @@ const styles = StyleSheet.create({
   },
   secondaryBtnText: { fontSize: 13, fontWeight: '700', color: colors.text },
   inlinePrimary: { flex: 1.4, marginTop: 0 },
-  currentCard: {
+  listContent: { paddingHorizontal: spacing.sm, paddingBottom: spacing.xs },
+  tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: spacing.xs,
     marginHorizontal: spacing.sm,
-    marginBottom: spacing.xs,
-    paddingHorizontal: spacing.sm,
     paddingVertical: 6,
-    borderRadius: radius.sm,
-    backgroundColor: colors.primaryLight,
-    borderWidth: 1,
-    borderColor: colors.primary,
+    paddingHorizontal: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surfaceVariant,
+    borderTopLeftRadius: radius.sm,
+    borderTopRightRadius: radius.sm,
   },
-  currentName: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.text },
-  currentAmt: { fontSize: 13, fontWeight: '800', color: colors.primary },
-  listContent: { paddingHorizontal: spacing.sm, paddingBottom: spacing.xs },
-  line: {
-    paddingVertical: 6,
+  th: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  thRemove: { width: 24 },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: 8.16, // +2% vs previous 8
+    paddingHorizontal: spacing.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderLight,
   },
-  lineCurrent: {
-    marginHorizontal: -spacing.xs,
-    paddingHorizontal: spacing.xs,
-    borderRadius: radius.sm,
-    backgroundColor: colors.secondaryLight,
-    borderBottomColor: 'transparent',
+  colProduct: { flex: 1.4, minWidth: 0 },
+  colRateHead: { width: 72, textAlign: 'right' },
+  colQtyHead: { width: 128, textAlign: 'center' },
+  colAmountHead: { width: 78, textAlign: 'right' },
+  colRate: { width: 72, fontSize: 12, fontWeight: '600', color: colors.textSecondary, textAlign: 'right' },
+  colQty: { width: 128, alignItems: 'center' },
+  colAmount: {
+    width: 78,
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.secondary,
+    textAlign: 'right',
   },
-  lineTop: { flexDirection: 'row', alignItems: 'flex-start' },
-  lineInfo: { flex: 1, minWidth: 0, paddingRight: spacing.sm },
-  lineName: { fontSize: 13, fontWeight: '700', color: colors.text },
-  lineMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
-  lineBottom: {
+  qtyInline: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 4,
+    backgroundColor: colors.surfaceVariant,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
   },
-  lineTotal: { fontSize: 14, fontWeight: '800', color: colors.secondary },
+  qtyBtn: {
+    width: 28.56, // +2%
+    height: 28.56,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qtyInput: {
+    width: 53,
+    height: 28.56, // +2%
+    paddingVertical: 0,
+    paddingHorizontal: 4,
+    marginHorizontal: 2,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.primary,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+  },
+  lineName: { fontSize: 13, fontWeight: '700', color: colors.text },
+  lineMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   removeBtn: {
     width: 24,
     height: 24,

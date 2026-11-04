@@ -9,6 +9,7 @@ import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/colors';
 import { spacing } from '../theme/layout';
 import { useDrawerStore } from './drawerStore';
+import { usePinnedSidebar } from './usePinnedSidebar';
 
 const TOOLBAR_HEIGHT = 58;
 
@@ -20,6 +21,7 @@ export default function AppHeader({ title }: AppHeaderProps) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const open = useDrawerStore((s) => s.open);
+  const pinned = usePinnedSidebar();
   const canGoBack = navigation.canGoBack();
   const currentRoute = useNavigationState((state) => state?.routes[state.index]?.name);
   const tenant = useAuthStore((s) => s.tenant);
@@ -41,25 +43,41 @@ export default function AppHeader({ title }: AppHeaderProps) {
     );
   };
 
+  const goNewBill = () => {
+    navigation.dispatch(
+      CommonActions.reset({
+        index: 1,
+        routes: [
+          { name: 'Dashboard' },
+          { name: 'Billing', params: { fresh: true } },
+        ],
+      }),
+    );
+  };
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar barStyle="dark-content" backgroundColor={colors.surface} />
       <View style={styles.accentBar} />
       <View style={styles.toolbar}>
-        <TouchableOpacity
-          onPress={canGoBack ? () => navigation.goBack() : open}
-          style={styles.iconButton}
-          activeOpacity={0.7}
-          hitSlop={8}
-          accessibilityLabel={canGoBack ? 'Go back' : 'Open menu'}>
-          <View style={styles.iconCircle}>
-            <Icon
-              name={canGoBack ? 'arrow-left' : 'menu'}
-              size={22}
-              color={colors.primary}
-            />
-          </View>
-        </TouchableOpacity>
+        {pinned && !canGoBack ? (
+          <View style={styles.iconButton} />
+        ) : (
+          <TouchableOpacity
+            onPress={canGoBack ? () => navigation.goBack() : open}
+            style={styles.iconButton}
+            activeOpacity={0.7}
+            hitSlop={8}
+            accessibilityLabel={canGoBack ? 'Go back' : 'Open menu'}>
+            <View style={styles.iconCircle}>
+              <Icon
+                name={canGoBack ? 'arrow-left' : 'menu'}
+                size={22}
+                color={colors.primary}
+              />
+            </View>
+          </TouchableOpacity>
+        )}
 
         <View style={styles.center}>
           {isRoot ? (
@@ -85,6 +103,15 @@ export default function AppHeader({ title }: AppHeaderProps) {
         </View>
 
         <View style={styles.rightActions}>
+          <TouchableOpacity
+            onPress={goNewBill}
+            style={styles.newBillBtn}
+            activeOpacity={0.8}
+            hitSlop={6}
+            accessibilityLabel="New Bill">
+            <Icon name="point-of-sale" size={18} color={colors.textOnPrimary} />
+            <Text style={styles.newBillLabel}>New Bill</Text>
+          </TouchableOpacity>
           {showHome ? (
             <TouchableOpacity
               onPress={goHome}
@@ -96,6 +123,14 @@ export default function AppHeader({ title }: AppHeaderProps) {
                 <Icon name="home" size={22} color={colors.primary} />
               </View>
             </TouchableOpacity>
+          ) : pinned ? (
+            <View style={styles.iconButton}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>
+                  {(user?.name || 'U').split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase()}
+                </Text>
+              </View>
+            </View>
           ) : (
             <TouchableOpacity
               onPress={open}
@@ -166,8 +201,23 @@ const styles = StyleSheet.create({
   rightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 48,
+    flexShrink: 0,
     justifyContent: 'flex-end',
+  },
+  newBillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: colors.secondary,
+    marginRight: spacing.xs,
+    gap: 6,
+  },
+  newBillLabel: {
+    color: colors.textOnPrimary,
+    fontSize: 13,
+    fontWeight: '700',
   },
   center: {
     flex: 1,

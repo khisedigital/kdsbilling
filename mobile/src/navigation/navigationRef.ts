@@ -18,6 +18,21 @@ export function navigateMainScreen<K extends keyof MainStackParamList>(
           { name: screen as string, params },
         ];
 
+  const action = CommonActions.reset({
+    index: innerRoutes.length - 1,
+    routes: innerRoutes,
+  });
+
+  // Reset only the inner stack. Resetting the root remounts the desktop sidebar
+  // and jumps its scroll position back to the top.
+  const root = navigationRef.getRootState();
+  const mainRoute = root.routes.find((route) => route.name === 'Main');
+  const nestedKey = mainRoute?.state?.key;
+  if (nestedKey) {
+    navigationRef.dispatch({ ...action, target: nestedKey });
+    return;
+  }
+
   navigationRef.dispatch(
     CommonActions.reset({
       index: 0,

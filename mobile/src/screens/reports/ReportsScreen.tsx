@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Dimensions, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Chip, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -17,7 +17,6 @@ type GroupFilter = (typeof GROUPS)[number];
 
 const GRID_GAP = spacing.md;
 const GRID_PAD = spacing.lg;
-const TILE_WIDTH = (Dimensions.get('window').width - GRID_PAD * 2 - GRID_GAP) / 2;
 
 const GROUP_META: Record<Exclude<GroupFilter, 'All'>, { icon: string; color: string }> = {
   Sales: { icon: 'chart-bar', color: colors.primary },
@@ -274,7 +273,9 @@ const styles = StyleSheet.create({
     gap: GRID_GAP,
   },
   tile: {
-    width: TILE_WIDTH,
+    flexGrow: 1,
+    flexBasis: '46%',
+    maxWidth: '100%',
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,

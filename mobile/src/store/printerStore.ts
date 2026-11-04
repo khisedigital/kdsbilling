@@ -27,12 +27,16 @@ export interface PrinterSettings {
   serverPrinterId?: string;
 }
 
+/** Physical sticker height in mm (width is always 50). Wrong height → gap sensor skips a label. */
+export type LabelHeightMm = 25 | 28;
+
 /**
  * Gap-label / barcode sticker printer — stored separately from billing.
- * No paper size; connection only.
  */
 export interface LabelPrinterSettings {
   type: PrinterType;
+  /** Sticker height for the loaded roll (50×28 or 50×25). */
+  labelHeightMm?: LabelHeightMm;
   bluetoothAddress?: string;
   bluetoothName?: string;
   systemPrinterName?: string;
@@ -53,7 +57,12 @@ export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
 
 export const DEFAULT_LABEL_PRINTER_SETTINGS: LabelPrinterSettings = {
   type: IS_DESKTOP ? 'system' : 'bluetooth',
+  labelHeightMm: 28,
 };
+
+function normalizeLabelHeightMm(value: unknown): LabelHeightMm {
+  return value === 25 ? 25 : 28;
+}
 
 function normalizePrinterSettings(raw: string | null): PrinterSettings {
   if (!raw) return { ...DEFAULT_PRINTER_SETTINGS };
@@ -84,6 +93,7 @@ function normalizeLabelPrinterSettings(raw: string | null): LabelPrinterSettings
   const type: PrinterType = stored.type === 'a4' ? 'system' : stored.type || DEFAULT_LABEL_PRINTER_SETTINGS.type;
   const saved: LabelPrinterSettings = {
     type: !IS_DESKTOP && type === 'system' ? 'bluetooth' : type,
+    labelHeightMm: normalizeLabelHeightMm(stored.labelHeightMm),
     bluetoothAddress: stored.bluetoothAddress,
     bluetoothName: stored.bluetoothName,
     systemPrinterName: stored.systemPrinterName,

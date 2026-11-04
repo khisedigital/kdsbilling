@@ -131,7 +131,7 @@ export interface ProductBarcodeStatus {
   variants: VariantBarcodeStatus[];
 }
 
-/** Assigns an internal Code 128 (KDSPOZ…) barcode to each listed variant that has none. Never overwrites existing. */
+/** Assigns a number-only EAN-13 to each listed variant that has none. Replaces letter barcodes (KDSPOZ…). Never overwrites manufacturer barcodes. */
 export async function generateBarcodes(variantIds: string[]): Promise<GeneratedBarcode[]> {
   const { data } = await api.post('/products/barcodes/generate', { variantIds });
   return data.data;

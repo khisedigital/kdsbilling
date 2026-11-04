@@ -12,17 +12,48 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useNavigationState } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { APP_DISPLAY_NAME } from '../constants/branding';
 import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/colors';
 import { radius, spacing } from '../theme/layout';
-import { menuSections } from './menuConfig';
+import { menuSections, type MenuItem, type MenuScreen } from './menuConfig';
 import type { MainStackParamList } from './MainNavigator';
 import { useDrawerStore } from './drawerStore';
 import { navigateMainScreen } from './navigationRef';
+import { SIDEBAR_WIDTH } from './usePinnedSidebar';
 
-const DRAWER_WIDTH = 292;
+const DRAWER_WIDTH = SIDEBAR_WIDTH;
+
+/** Survives a sidebar remount so the menu list does not jump to the top. */
+let menuScrollY = 0;
+
+/** Screens opened from a menu item; the parent item stays selected. */
+const MENU_ROUTE_PARENT: Partial<Record<keyof MainStackParamList, MenuScreen>> = {
+  BarcodeScanner: 'Billing',
+  Payment: 'Billing',
+  HoldBill: 'Billing',
+  SaleDetail: 'SalesList',
+  Return: 'ReturnsList',
+  ImportMasterProducts: 'ProductList',
+  ProductDetail: 'ProductList',
+  ProductForm: 'ProductList',
+  ReportDetail: 'Reports',
+  PurchaseBillDetail: 'PurchaseBillList',
+  PurchaseBillForm: 'PurchaseBillList',
+  ShopifyIntegration: 'Integrations',
+  PrintLabel: 'BarcodeLabel',
+  StockTransfer: 'StockList',
+};
+
+function isMenuItemActive(item: MenuItem, routeName: string, params?: Record<string, unknown>): boolean {
+  const screen = MENU_ROUTE_PARENT[routeName as keyof MainStackParamList] || routeName;
+  if (item.screen !== screen) return false;
+  if (!item.params) return true;
+  const entries = Object.entries(item.params).filter(([key]) => key !== 'fresh');
+  return entries.every(([key, value]) => params?.[key] === value);
+}
 
 function SidebarItem({
   label,
@@ -41,6 +72,11 @@ function SidebarItem({
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.65}
+      accessibilityState={{ selected: Boolean(highlight) }}
+      // Keep focus from scrolling the menu list to the clicked row.
+      onMouseDown={(event) => {
+        (event as { preventDefault?: () => void }).preventDefault?.();
+      }}
       style={[styles.menuItem, highlight && styles.menuItemHighlight, danger && styles.menuItemDanger]}>
       <View style={[styles.menuIconWrap, highlight && styles.menuIconWrapHighlight, danger && styles.menuIconWrapDanger]}>
         <Icon
@@ -58,7 +94,7 @@ function SidebarItem({
   );
 }
 
-export default function AppSidebar() {
+export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
   const insets = useSafeAreaInsets();
   const isOpen = useDrawerStore((s) => s.isOpen);
   const close = useDrawerStore((s) => s.close);
@@ -69,8 +105,35 @@ export default function AppSidebar() {
   const [visible, setVisible] = useState(false);
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const menuScrollRef = useRef<ScrollView>(null);
+  const currentRoute = useNavigationState((state) => {
+    const focused = state?.routes?.[state.index ?? 0];
+    const nested = focused?.state as
+      | { index?: number; routes?: { name: string; params?: Record<string, unknown> }[] }
+      | undefined;
+    const route = nested?.routes?.[nested.index ?? 0];
+    return route?.name ? `${route.name}:${JSON.stringify(route.params ?? {})}` : 'Dashboard:{}';
+  });
+  const currentName = currentRoute.slice(0, currentRoute.indexOf(':'));
+  const currentParams = JSON.parse(currentRoute.slice(currentRoute.indexOf(':') + 1)) as Record<string, unknown>;
+
+  const holdMenuScroll = () => {
+    const y = menuScrollY;
+    requestAnimationFrame(() => {
+      menuScrollRef.current?.scrollTo({ y, animated: false });
+    });
+  };
 
   useEffect(() => {
+    const y = menuScrollY;
+    const frame = requestAnimationFrame(() => {
+      menuScrollRef.current?.scrollTo({ y, animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentRoute]);
+
+  useEffect(() => {
+    if (pinned) return;
     if (isOpen) {
       setVisible(true);
       Animated.parallel([
@@ -108,9 +171,14 @@ export default function AppSidebar() {
     ]).start(({ finished }) => {
       if (finished) setVisible(false);
     });
-  }, [isOpen, visible, slideAnim, fadeAnim]);
+  }, [pinned, isOpen, visible, slideAnim, fadeAnim]);
 
   const navigateTo = <K extends keyof MainStackParamList>(screen: K, params?: MainStackParamList[K]) => {
+    if (pinned) {
+      navigateMainScreen(screen, params);
+      holdMenuScroll();
+      return;
+    }
     close();
     setTimeout(() => navigateMainScreen(screen, params), 80);
   };
@@ -122,25 +190,10 @@ export default function AppSidebar() {
     .slice(0, 2)
     .toUpperCase();
 
-  if (!visible) return null;
+  if (!pinned && !visible) return null;
 
-  return (
-    <Modal visible transparent animationType="none" onRequestClose={close} statusBarTranslucent>
-      <View style={styles.root}>
-        <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={close} />
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.panel,
-            {
-              width: DRAWER_WIDTH,
-              paddingTop: insets.top,
-              paddingBottom: insets.bottom,
-              transform: [{ translateX: slideAnim }],
-            },
-          ]}>
+  const body = (
+    <>
           <View style={styles.header}>
             <View style={styles.brandRow}>
               <Image source={require('../assets/logo.png')} style={styles.brandLogo} resizeMode="contain" />
@@ -148,9 +201,11 @@ export default function AppSidebar() {
                 <Text style={styles.brandName} numberOfLines={1}>{APP_DISPLAY_NAME}</Text>
                 <Text style={styles.brandTag} numberOfLines={1}>Billing made simple</Text>
               </View>
-              <TouchableOpacity onPress={close} hitSlop={12} style={styles.closeBtn}>
-                <Icon name="close" size={20} color={colors.textMuted} />
-              </TouchableOpacity>
+              {pinned ? null : (
+                <TouchableOpacity onPress={close} hitSlop={12} style={styles.closeBtn}>
+                  <Icon name="close" size={20} color={colors.textMuted} />
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.shopCard}>
@@ -172,9 +227,14 @@ export default function AppSidebar() {
           </View>
 
           <ScrollView
+            ref={menuScrollRef}
             style={styles.menuList}
             contentContainerStyle={styles.menuScroll}
-            showsVerticalScrollIndicator={false}>
+            showsVerticalScrollIndicator={false}
+            scrollEventThrottle={16}
+            onScroll={(event) => {
+              menuScrollY = event.nativeEvent.contentOffset.y;
+            }}>
             {menuSections.map((section) => {
               const items = section.items.filter((item) => {
                 if (
@@ -195,7 +255,7 @@ export default function AppSidebar() {
                       key={`${section.title}-${item.label}`}
                       label={item.label}
                       icon={item.icon}
-                      highlight={item.highlight}
+                      highlight={isMenuItemActive(item, currentName, currentParams)}
                       onPress={() => navigateTo(item.screen, item.params)}
                     />
                   ))}
@@ -210,11 +270,44 @@ export default function AppSidebar() {
               icon="logout"
               danger
               onPress={() => {
-                close();
+                if (!pinned) close();
                 logout();
               }}
             />
           </View>
+    </>
+  );
+
+  if (pinned) {
+    return (
+      <View
+        style={[
+          styles.panelDocked,
+          { width: DRAWER_WIDTH, paddingTop: insets.top, paddingBottom: insets.bottom },
+        ]}>
+        {body}
+      </View>
+    );
+  }
+
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={close} statusBarTranslucent>
+      <View style={styles.root}>
+        <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={close} />
+        </Animated.View>
+
+        <Animated.View
+          style={[
+            styles.panel,
+            {
+              width: DRAWER_WIDTH,
+              paddingTop: insets.top,
+              paddingBottom: insets.bottom,
+              transform: [{ translateX: slideAnim }],
+            },
+          ]}>
+          {body}
         </Animated.View>
       </View>
     </Modal>
@@ -235,6 +328,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderTopRightRadius: 20,
     borderBottomRightRadius: 20,
+    overflow: 'hidden',
+  },
+  panelDocked: {
+    alignSelf: 'stretch',
+    flexShrink: 0,
+    backgroundColor: colors.surface,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: colors.border,
     overflow: 'hidden',
   },
   header: {
@@ -347,9 +448,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 10,
     borderRadius: radius.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: 'transparent',
   },
   menuItemHighlight: {
     backgroundColor: colors.primaryLight,
+    borderLeftColor: colors.primary,
   },
   menuItemDanger: {
     backgroundColor: colors.errorLight,

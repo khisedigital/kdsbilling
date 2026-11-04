@@ -1,9 +1,14 @@
 /**
- * Barcode format helpers — supports manufacturer EAN-13 and internal Code 128.
- * Internal namespace is reserved: codes starting with KDSPOZ (Code 128).
+ * Barcode format helpers.
+ * New in-store codes are number-only EAN-13 (GS1 prefix 20) so retail scanners can read them.
+ * Older internal codes starting with KDSPOZ (Code 128 letters) stay valid until replaced.
  */
 
+const crypto = require('crypto');
+
 const INTERNAL_PREFIX = 'KDSPOZ';
+/** GS1 restricted-circulation prefix — in-store numbers, not manufacturer EANs. */
+const IN_STORE_PREFIX = '20';
 
 function ean13CheckDigit(first12) {
   let sum = 0;
@@ -23,27 +28,24 @@ function isInternalCode128(value) {
   return code.startsWith(INTERNAL_PREFIX) && code.length >= INTERNAL_PREFIX.length + 8;
 }
 
+/** Digits only. Generated codes are 13-digit EAN-13; typed codes may be 8–14 digit retail numbers. */
+function isNumericBarcode(value) {
+  return /^\d{4,18}$/.test(String(value || '').trim());
+}
+
 function isValidBarcodeValue(value) {
-  const code = String(value || '').trim();
-  if (!code) return false;
-  if (code.length > 50) return false;
-  if (isValidEan13(code)) return true;
-  if (isInternalCode128(code)) return true;
-  // Other manufacturer formats (UPC-A, Code 128, etc.) — allow printable ASCII.
-  return /^[\x20-\x7E]{4,50}$/.test(code);
+  return isNumericBarcode(value);
 }
 
 /**
- * Generate a unique-looking internal Code 128 value in the KDSPOZ namespace.
+ * 13-digit in-store EAN-13 (prefix 20 + random digits + check digit).
+ * Digits only — laser and camera scanners that ignore Code 128 can read it.
  * Uniqueness must still be checked against the barcodes table by the caller.
  */
-function randomInternalCode128() {
-  const alphabet = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let body = '';
-  while (body.length < 12) {
-    body += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return `${INTERNAL_PREFIX}${body}`;
+function randomInStoreEan13() {
+  let body = IN_STORE_PREFIX;
+  while (body.length < 12) body += String(crypto.randomInt(0, 10));
+  return body + ean13CheckDigit(body);
 }
 
 /** Plain (non-quantity) barcode preferred for labeling / billing. */
@@ -78,11 +80,13 @@ function detectBarcodeType(value) {
 
 module.exports = {
   INTERNAL_PREFIX,
+  IN_STORE_PREFIX,
   ean13CheckDigit,
   isValidEan13,
   isInternalCode128,
+  isNumericBarcode,
   isValidBarcodeValue,
-  randomInternalCode128,
+  randomInStoreEan13,
   pickPlainBarcode,
   classifyBarcodeStatus,
   detectBarcodeType,

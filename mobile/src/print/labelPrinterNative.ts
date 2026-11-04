@@ -8,7 +8,7 @@ type NativeLabelPrinter = {
   listPrinters: () => Promise<ListedPrinter[]>;
   connect: (address: string) => Promise<{ connected: boolean; name?: string; address?: string }>;
   getStatus: () => Promise<{ connected: boolean; name?: string; address?: string }>;
-  printLabel: (payload: GapLabelContent, copies: number) => Promise<void>;
+  printLabel: (payload: GapLabelContent & { heightMm?: 25 | 28 }, copies: number) => Promise<void>;
   calibrate: () => Promise<void>;
   pullIn: () => Promise<void>;
   disconnect: () => Promise<void>;
@@ -70,10 +70,14 @@ export async function getNativeLabelPrinterStatus(): Promise<{
   return native.getStatus();
 }
 
-export async function printNativeGapLabel(label: GapLabelContent, copies: number): Promise<void> {
+export async function printNativeGapLabel(
+  label: GapLabelContent,
+  copies: number,
+  heightMm: 25 | 28 = 28,
+): Promise<void> {
   if (!native?.printLabel) throw new Error(SDK_ONLY);
   await ensureBluetoothPermission();
-  await native.printLabel(label, copies);
+  await native.printLabel({ ...label, heightMm }, copies);
 }
 
 /** Gap / black-mark form-feed calibrate (same as SDKDemoApk). */

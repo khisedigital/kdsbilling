@@ -11,7 +11,10 @@ export type GapLabelContent = {
 
 /** Same physical sticker as Android Microlan path. */
 export const LABEL_WIDTH_MM = 50;
-export const LABEL_HEIGHT_MM = 25;
+/** Default sticker height — match the roll in the printer (50×28 or 50×25). */
+export const LABEL_HEIGHT_MM = 28;
+export type LabelHeightMm = 25 | 28;
+export const LABEL_HEIGHT_OPTIONS: LabelHeightMm[] = [28, 25];
 
 /**
  * 58 mm head ≈ 384 dots @ 203 dpi.
@@ -19,7 +22,15 @@ export const LABEL_HEIGHT_MM = 25;
  */
 const PRINTER_WIDTH_PX = 384;
 const LABEL_WIDTH_PX = PRINTER_WIDTH_PX;
-const LABEL_HEIGHT_PX = Math.round((PRINTER_WIDTH_PX * LABEL_HEIGHT_MM) / LABEL_WIDTH_MM); // 192
+
+export function normalizeLabelHeightMm(value?: number | null): LabelHeightMm {
+  return value === 25 ? 25 : 28;
+}
+
+function labelHeightPx(heightMm: LabelHeightMm): number {
+  // Full sticker height so GS FF lands on the next gap (short images skip a label).
+  return Math.round((PRINTER_WIDTH_PX * heightMm) / LABEL_WIDTH_MM);
+}
 
 const ESC_INIT = [0x1b, 0x40];
 /** Gap / black-mark form-feed (same as SDKDemoApk). */
@@ -150,11 +161,15 @@ function fitBarcodeDigits(
 }
 
 /**
- * Canvas layout matches Android LabelBitmap.kt (50×25 mm thermal sticker @ 384×192).
+ * Canvas layout matches Android LabelBitmap.kt (50×H mm thermal sticker @ 384×H).
+ * Height must match the physical roll or gap form-feed skips a sticker.
  */
-export function renderGapLabelCanvas(content: GapLabelContent): HTMLCanvasElement {
+export function renderGapLabelCanvas(
+  content: GapLabelContent,
+  heightMm: LabelHeightMm = LABEL_HEIGHT_MM,
+): HTMLCanvasElement {
   const width = LABEL_WIDTH_PX;
-  const height = LABEL_HEIGHT_PX;
+  const height = labelHeightPx(normalizeLabelHeightMm(heightMm));
   const canvas = requireCanvas();
   canvas.width = width;
   canvas.height = height;
@@ -295,9 +310,16 @@ function appendRaster(out: number[], raster: { widthBytes: number; height: numbe
  * ESC/POS label job: INIT + (raster + GS FF) × copies.
  * USB desktop printers receive this via the raw system queue.
  */
-export function buildGapLabelEscPos(content: GapLabelContent, copies: number): number[] {
+export function buildGapLabelEscPos(
+  content: GapLabelContent,
+  copies: number,
+  heightMm: LabelHeightMm = LABEL_HEIGHT_MM,
+): number[] {
   const count = Math.max(1, Math.min(99, Math.floor(copies) || 1));
-  const fitted = fitToPrinterWidth(renderGapLabelCanvas(content), PRINTER_WIDTH_PX);
+  const fitted = fitToPrinterWidth(
+    renderGapLabelCanvas(content, normalizeLabelHeightMm(heightMm)),
+    PRINTER_WIDTH_PX,
+  );
   const raster = canvasToRaster(fitted);
   const out: number[] = [...ESC_INIT];
   for (let i = 0; i < count; i += 1) {

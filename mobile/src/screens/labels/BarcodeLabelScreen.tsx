@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -16,10 +16,12 @@ import { encodeBarcode } from '../../print/barcodeEncode';
 import {
   isDesktopLabelPrintAvailable,
   isGapLabelPrintAvailable,
-  LABEL_HEIGHT_MM,
+  LABEL_HEIGHT_OPTIONS,
   LABEL_WIDTH_MM,
+  normalizeLabelHeightMm,
   printGapLabel,
   type GapLabelContent,
+  type LabelHeightMm,
 } from '../../print/gapLabel';
 import {
   connectNativeLabelPrinter,
@@ -162,11 +164,14 @@ export default function BarcodeLabelScreen() {
   const canPrint = isGapLabelPrintAvailable();
   const { width: winW } = useWindowDimensions();
   const previewW = Math.min(winW - spacing.lg * 2, 340);
-  const previewH = previewW * (LABEL_HEIGHT_MM / LABEL_WIDTH_MM);
 
   const [shopName, setShopName] = useState('My Shop');
+  const [labelHeightMm, setLabelHeightMm] = useState<LabelHeightMm>(28);
+  const previewH = previewW * (labelHeightMm / LABEL_WIDTH_MM);
   const [productMeta, setProductMeta] = useState<ProductBarcodeStatus | null>(null);
   const [rows, setRows] = useState<VariantRow[]>([]);
+  const rowsRef = useRef<VariantRow[]>([]);
+  rowsRef.current = rows;
   const [loadingProduct, setLoadingProduct] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [previewVariantId, setPreviewVariantId] = useState<string | null>(null);
@@ -183,6 +188,7 @@ export default function BarcodeLabelScreen() {
   const [status, setStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const applyDesktopLabelPrinter = useCallback((settings: LabelPrinterSettings) => {
+    setLabelHeightMm(normalizeLabelHeightMm(settings.labelHeightMm));
     if (settings.type === 'network' && settings.networkHost?.trim()) {
       const host = settings.networkHost.trim();
       const port = settings.networkPort || 9100;
@@ -213,29 +219,66 @@ export default function BarcodeLabelScreen() {
     setStatus({ type, text });
   }, []);
 
-  const applyBarcodeStatus = useCallback((data: ProductBarcodeStatus, preferSelectAvailable = true) => {
+  const persistLabelHeight = useCallback(
+    async (heightMm: LabelHeightMm) => {
+      setLabelHeightMm(heightMm);
+      try {
+        const current = await getLabelPrinterSettings();
+        await saveLabelPrinterSettings({
+          ...current,
+          labelHeightMm: heightMm,
+        });
+        showStatus(
+          'ok',
+          `Label size set to ${LABEL_WIDTH_MM}×${heightMm} mm. Print one test label to check alignment.`,
+        );
+      } catch (err) {
+        showStatus('err', err instanceof Error ? err.message : 'Could not save label size.');
+      }
+    },
+    [showStatus],
+  );
+
+  const applyBarcodeStatus = useCallback((
+    data: ProductBarcodeStatus,
+    opts?: { preferSelectAvailable?: boolean; preserveRows?: VariantRow[] },
+  ) => {
+    const preferSelectAvailable = opts?.preferSelectAvailable !== false;
+    const previous = new Map((opts?.preserveRows || []).map((row) => [row.variantId, row]));
     setProductMeta(data);
     setRows(
       data.variants.map((v) => {
         const printable = v.status === 'available' && Boolean(v.barcode);
+        const prev = previous.get(v.variantId);
         return {
           ...v,
-          selected: preferSelectAvailable ? printable : false,
-          labelQty: '1',
+          selected: prev
+            ? printable && prev.selected
+            : preferSelectAvailable
+              ? printable
+              : false,
+          labelQty: prev?.labelQty && Number(prev.labelQty) > 0 ? prev.labelQty : '1',
         };
       }),
     );
-    const firstPrintable = data.variants.find((v) => v.status === 'available' && v.barcode);
-    setPreviewVariantId(firstPrintable?.variantId || data.variants[0]?.variantId || null);
+    setPreviewVariantId((current) => {
+      if (current && data.variants.some((v) => v.variantId === current)) return current;
+      const firstPrintable = data.variants.find((v) => v.status === 'available' && v.barcode);
+      return firstPrintable?.variantId || data.variants[0]?.variantId || null;
+    });
   }, []);
 
   const loadBarcodeStatus = useCallback(
-    async (productId: string) => {
+    async (productId: string, preserveSelection = false) => {
       setLoadingProduct(true);
       setStatus(null);
       try {
         const data = await fetchProductBarcodeStatus(productId);
-        applyBarcodeStatus(data, true);
+        const preserveRows = preserveSelection ? rowsRef.current : undefined;
+        applyBarcodeStatus(data, {
+          preferSelectAvailable: !preserveSelection,
+          preserveRows,
+        });
       } catch (err) {
         setProductMeta(null);
         setRows([]);
@@ -269,6 +312,13 @@ export default function BarcodeLabelScreen() {
       })
       .catch(() => {});
 
+    getLabelPrinterSettings()
+      .then((settings) => {
+        setLabelHeightMm(normalizeLabelHeightMm(settings.labelHeightMm));
+        if (useDesktop) applyDesktopLabelPrinter(settings);
+      })
+      .catch(() => {});
+
     if (useSdk) {
       getNativeLabelPrinterStatus()
         .then((s) => {
@@ -278,13 +328,6 @@ export default function BarcodeLabelScreen() {
             setPrinterAddress(s.address || '');
           }
         })
-        .catch(() => {});
-      return;
-    }
-
-    if (useDesktop) {
-      getLabelPrinterSettings()
-        .then(applyDesktopLabelPrinter)
         .catch(() => {});
     }
   }, [useSdk, useDesktop, applyDesktopLabelPrinter]);
@@ -305,6 +348,11 @@ export default function BarcodeLabelScreen() {
 
   const missingCount = useMemo(
     () => rows.filter((r) => r.status === 'missing').length,
+    [rows],
+  );
+
+  const letterCount = useMemo(
+    () => rows.filter((r) => r.barcodeType === 'code128').length,
     [rows],
   );
 
@@ -341,9 +389,11 @@ export default function BarcodeLabelScreen() {
 
   const onGenerateMissing = async () => {
     if (!productMeta || generating) return;
-    const missingIds = rows.filter((r) => r.status === 'missing').map((r) => r.variantId);
+    const missingIds = rows
+      .filter((r) => r.status === 'missing' || r.barcodeType === 'code128')
+      .map((r) => r.variantId);
     if (!missingIds.length) {
-      showStatus('ok', 'All variants already have barcodes.');
+      showStatus('ok', 'All variants already have number barcodes.');
       return;
     }
     setGenerating(true);
@@ -351,11 +401,11 @@ export default function BarcodeLabelScreen() {
     try {
       const result = await generateBarcodes(missingIds);
       const created = result.filter((r) => r.generated).length;
-      await loadBarcodeStatus(productMeta.productId);
+      await loadBarcodeStatus(productMeta.productId, true);
       showStatus(
         'ok',
         created
-          ? `Generated ${created} internal Code 128 barcode${created === 1 ? '' : 's'}`
+          ? `Generated ${created} number barcode${created === 1 ? '' : 's'}. Print new labels — old letter stickers will not scan.`
           : 'No new barcodes needed',
       );
     } catch (err) {
@@ -414,9 +464,12 @@ export default function BarcodeLabelScreen() {
         return;
       }
 
+      const current = await getLabelPrinterSettings();
       const next: LabelPrinterSettings = {
+        ...current,
         type: 'system',
         systemPrinterName: printer.address,
+        labelHeightMm,
       };
       await saveLabelPrinterSettings(next);
       applyDesktopLabelPrinter(next);
@@ -485,6 +538,11 @@ export default function BarcodeLabelScreen() {
     const blocked = rows.filter((r) => r.selected && r.status !== 'available');
     if (blocked.length) {
       showStatus('err', 'Resolve missing/duplicate barcodes before printing selected variants.');
+      return;
+    }
+    const letterSelected = printableRows.filter((r) => r.barcodeType === 'code128');
+    if (letterSelected.length) {
+      showStatus('err', 'Selected labels use letter barcodes. Generate number barcodes first so the scanner can read them.');
       return;
     }
 
@@ -579,9 +637,31 @@ export default function BarcodeLabelScreen() {
             height={previewH}
           />
           <Text style={styles.previewCaption}>
-            {LABEL_WIDTH_MM}×{LABEL_HEIGHT_MM} mm · preview only (no barcode is auto-generated)
+            {LABEL_WIDTH_MM}×{labelHeightMm} mm · preview only (no barcode is auto-generated)
           </Text>
           {previewRight ? <Text style={styles.previewCaption}>{previewRight}</Text> : null}
+        </View>
+
+        <View style={styles.block}>
+          <Text style={styles.blockTitle}>Label size</Text>
+          <Text style={styles.muted}>
+            Match the sticker roll in the printer. Wrong height skips a blank label between prints.
+          </Text>
+          <View style={styles.sizeRow}>
+            {LABEL_HEIGHT_OPTIONS.map((heightMm) => {
+              const active = labelHeightMm === heightMm;
+              return (
+                <Pressable
+                  key={heightMm}
+                  onPress={() => persistLabelHeight(heightMm)}
+                  style={[styles.sizeChip, active && styles.sizeChipOn]}>
+                  <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
+                    {LABEL_WIDTH_MM}×{heightMm} mm
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         <View style={styles.block}>
@@ -628,7 +708,7 @@ export default function BarcodeLabelScreen() {
               </View>
             </View>
 
-            {missingCount > 0 ? (
+            {missingCount > 0 || letterCount > 0 ? (
               <Button
                 mode="outlined"
                 icon="barcode"
@@ -636,7 +716,9 @@ export default function BarcodeLabelScreen() {
                 loading={generating}
                 disabled={generating || printing}
                 style={styles.generateBtn}>
-                Generate Missing Barcodes ({missingCount})
+                {letterCount > 0 && missingCount === 0
+                  ? `Convert to number barcodes (${letterCount})`
+                  : `Generate number barcodes (${missingCount + letterCount})`}
               </Button>
             ) : null}
 
@@ -695,7 +777,12 @@ export default function BarcodeLabelScreen() {
                     />
                   </View>
                   {row.status === 'missing' ? (
-                    <Text style={styles.warnLine}>Generate a barcode before printing this variant.</Text>
+                    <Text style={styles.warnLine}>Generate a number barcode before printing this variant.</Text>
+                  ) : null}
+                  {row.barcodeType === 'code128' ? (
+                    <Text style={styles.warnLine}>
+                      Letter barcode — scanners cannot read it. Convert to a number barcode, then print again.
+                    </Text>
                   ) : null}
                   {row.status === 'duplicate' ? (
                     <Text style={styles.warnLine}>
@@ -762,7 +849,7 @@ export default function BarcodeLabelScreen() {
           mode="contained"
           onPress={onPrint}
           loading={printing}
-          disabled={printing || connecting || generating || !totalLabels}
+          disabled={printing || connecting || generating || !connected || !totalLabels}
           style={styles.printBtn}
           contentStyle={styles.printBtnContent}
           labelStyle={styles.printBtnLabel}
@@ -864,6 +951,26 @@ const styles = StyleSheet.create({
   bannerText: { flex: 1, fontSize: 13, fontWeight: '400', color: colors.text },
 
   previewBlock: { alignItems: 'center', marginBottom: spacing.lg },
+  sizeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  sizeChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    backgroundColor: colors.surface,
+  },
+  sizeChipOn: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  sizeChipText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  sizeChipTextOn: { color: colors.primary },
   previewCard: {
     backgroundColor: '#fff',
     borderWidth: 1,

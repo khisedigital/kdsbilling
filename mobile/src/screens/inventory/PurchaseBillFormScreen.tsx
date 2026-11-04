@@ -25,6 +25,7 @@ import {
   fetchProduct,
   productVariantToSearchResult,
   searchProducts,
+  updateProduct,
   type SearchProductResult,
 } from '../../services/catalogService';
 import { apiError } from '../../utils/apiError';
@@ -37,6 +38,7 @@ type Props = NativeStackScreenProps<MainStackParamList, 'PurchaseBillForm'>;
 type LineItem = {
   key: string;
   variantId: string;
+  productId: string;
   productName: string;
   sku: string;
   size?: string | null;
@@ -44,6 +46,10 @@ type LineItem = {
   quantity: string;
   unitCost: string;
   uomCode?: string;
+  sellingPrice?: number;
+  mrp?: number | null;
+  /** Temp line — create this size on the product before posting the purchase. */
+  isNewVariant?: boolean;
 };
 
 type ProductGroup = {
@@ -53,6 +59,7 @@ type ProductGroup = {
 };
 
 type VariantQtyDraft = {
+  key: string;
   variantId: string;
   productName: string;
   sku: string;
@@ -61,9 +68,16 @@ type VariantQtyDraft = {
   color?: string | null;
   uomCode?: string;
   mrp?: number | null;
-  sellingPrice: number;
+  sellingPrice: string;
   quantity: string;
   unitCost: string;
+  isNew?: boolean;
+};
+
+type ActiveProduct = {
+  productId: string;
+  productName: string;
+  drafts: VariantQtyDraft[];
 };
 
 function groupSearchResults(items: SearchProductResult[]): ProductGroup[] {
@@ -110,6 +124,7 @@ function productHasVariants(
 
 function toVariantDraft(v: SearchProductResult): VariantQtyDraft {
   return {
+    key: v.variantId,
     variantId: v.variantId,
     productName: v.productName,
     sku: v.sku,
@@ -118,10 +133,15 @@ function toVariantDraft(v: SearchProductResult): VariantQtyDraft {
     color: v.color,
     uomCode: v.uom?.code,
     mrp: v.mrp ?? null,
-    sellingPrice: v.sellingPrice || 0,
+    sellingPrice: String(v.sellingPrice || 0),
     quantity: '0',
     unitCost: String(defaultUnitCost(v)),
+    isNew: false,
   };
+}
+
+function sameVariantKey(size?: string | null, color?: string | null) {
+  return `${(size || '').trim().toLowerCase()}|${(color || '').trim().toLowerCase()}`;
 }
 
 export default function PurchaseBillFormScreen({ route, navigation }: Props) {
@@ -143,11 +163,9 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
   const [savingSupplier, setSavingSupplier] = useState(false);
   const [supplierError, setSupplierError] = useState('');
 
-  const [variantPickerOpen, setVariantPickerOpen] = useState(false);
-  const [variantPickerTitle, setVariantPickerTitle] = useState('');
-  const [variantDrafts, setVariantDrafts] = useState<VariantQtyDraft[]>([]);
+  const [activeProduct, setActiveProduct] = useState<ActiveProduct | null>(null);
   const [loadingVariants, setLoadingVariants] = useState(false);
-  const [variantPickerError, setVariantPickerError] = useState('');
+  const [variantError, setVariantError] = useState('');
 
   const productGroups = useMemo(() => groupSearchResults(results), [results]);
 
@@ -177,30 +195,38 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       setSearchError('');
       return;
     }
+    let cancelled = false;
     const t = setTimeout(async () => {
       setSearching(true);
       setSearchError('');
       try {
         const found = await searchProducts(q);
+        if (cancelled) return;
         setResults(found);
         if (!found.length) setSearchError(`No product for "${q}"`);
       } catch {
+        if (cancelled) return;
         setResults([]);
         setSearchError('Search failed. Try again.');
       } finally {
-        setSearching(false);
+        if (!cancelled) setSearching(false);
       }
     }, 280);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [search]);
 
-  const upsertLine = (product: SearchProductResult, quantity: number, unitCost: number) => {
+  const upsertLine = (product: SearchProductResult & { productId?: string }, quantity: number, unitCost: number) => {
     if (!(quantity > 0)) return;
     setLines((prev) => {
-      const existing = prev.find((line) => line.variantId === product.variantId);
+      const existing = prev.find(
+        (line) => !line.isNewVariant && line.variantId === product.variantId,
+      );
       if (existing) {
         return prev.map((line) =>
-          line.variantId === product.variantId
+          line.key === existing.key
             ? {
                 ...line,
                 quantity: String((parseFloat(line.quantity) || 0) + quantity),
@@ -214,6 +240,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
         {
           key: `${product.variantId}-${Date.now()}`,
           variantId: product.variantId,
+          productId: product.productId || '',
           productName: product.productName,
           sku: product.sku,
           size: product.size,
@@ -221,6 +248,9 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
           quantity: String(quantity),
           unitCost: String(unitCost || 0),
           uomCode: product.uom?.code,
+          sellingPrice: product.sellingPrice,
+          mrp: product.mrp,
+          isNewVariant: false,
         },
       ];
     });
@@ -228,21 +258,32 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
 
   const addSingleVariant = (product: SearchProductResult) => {
     upsertLine(product, 1, defaultUnitCost(product));
+    setActiveProduct(null);
     setSearch('');
     setResults([]);
     setSearchError('');
     Keyboard.dismiss();
   };
 
-  const openVariantPickerWithList = (title: string, list: SearchProductResult[], warning?: string) => {
-    setVariantPickerError(warning || '');
-    setVariantPickerTitle(title);
-    setVariantDrafts(list.map(toVariantDraft));
-    setVariantPickerOpen(true);
+  const showInlineVariants = (
+    productId: string,
+    productName: string,
+    list: SearchProductResult[],
+    warning?: string,
+  ) => {
+    setVariantError(warning || '');
+    setActiveProduct({
+      productId,
+      productName,
+      drafts: list.map(toVariantDraft),
+    });
+    setSearch('');
+    setResults([]);
+    setSearchError('');
   };
 
   const selectProductGroup = async (group: ProductGroup) => {
-    setVariantPickerError('');
+    setVariantError('');
     setLoadingVariants(true);
     Keyboard.dismiss();
     try {
@@ -257,15 +298,15 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       }
 
       if (productHasVariants(product, activeVariants)) {
-        openVariantPickerWithList(product.name || group.productName, activeVariants);
+        showInlineVariants(product.id, product.name || group.productName, activeVariants);
       } else {
-        // No size/color variants — keep normal product-level purchase entry.
         addSingleVariant(activeVariants[0]);
       }
     } catch {
       const fallback = group.variants;
       if (productHasVariants({ has_variants: false }, fallback) || fallback.length > 1) {
-        openVariantPickerWithList(
+        showInlineVariants(
+          group.productId,
           group.productName,
           fallback,
           'Could not load all sizes. Showing search matches.',
@@ -280,15 +321,55 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
     }
   };
 
-  const updateVariantDraft = (variantId: string, patch: Partial<VariantQtyDraft>) => {
-    setVariantDrafts((prev) =>
-      prev.map((row) => (row.variantId === variantId ? { ...row, ...patch } : row)),
-    );
-    setVariantPickerError('');
+  const updateDraft = (key: string, patch: Partial<VariantQtyDraft>) => {
+    setActiveProduct((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        drafts: prev.drafts.map((row) => (row.key === key ? { ...row, ...patch } : row)),
+      };
+    });
+    setVariantError('');
+  };
+
+  const addNewVariantDraft = () => {
+    if (!activeProduct) return;
+    const ref = activeProduct.drafts.find((d) => !d.isNew) || activeProduct.drafts[0];
+    const key = `new-${Date.now()}`;
+    setActiveProduct({
+      ...activeProduct,
+      drafts: [
+        ...activeProduct.drafts,
+        {
+          key,
+          variantId: key,
+          productName: activeProduct.productName,
+          sku: '',
+          barcode: '',
+          size: '',
+          color: '',
+          uomCode: ref?.uomCode,
+          mrp: null,
+          sellingPrice: ref?.sellingPrice || '0',
+          quantity: '0',
+          unitCost: ref?.unitCost || '0',
+          isNew: true,
+        },
+      ],
+    });
+    setVariantError('');
+  };
+
+  const removeDraft = (key: string) => {
+    setActiveProduct((prev) => {
+      if (!prev) return prev;
+      return { ...prev, drafts: prev.drafts.filter((row) => row.key !== key) };
+    });
   };
 
   const variantDraftTotals = useMemo(() => {
-    return variantDrafts.reduce(
+    const drafts = activeProduct?.drafts || [];
+    return drafts.reduce(
       (acc, row) => {
         const qty = parseFloat(row.quantity) || 0;
         const cost = parseFloat(row.unitCost) || 0;
@@ -301,50 +382,113 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       },
       { qty: 0, amount: 0, lines: 0 },
     );
-  }, [variantDrafts]);
+  }, [activeProduct]);
 
-  const confirmVariantPicker = () => {
-    const selected = variantDrafts.filter((row) => (parseFloat(row.quantity) || 0) > 0);
+  const confirmInlineVariants = () => {
+    if (!activeProduct) return;
+    const selected = activeProduct.drafts.filter((row) => (parseFloat(row.quantity) || 0) > 0);
     if (!selected.length) {
-      setVariantPickerError('Enter quantity greater than 0 for at least one variant');
+      setVariantError('Enter quantity greater than 0 for at least one variant');
       return;
     }
+
+    const existingKeys = new Set(
+      activeProduct.drafts
+        .filter((row) => !row.isNew)
+        .map((row) => sameVariantKey(row.size, row.color)),
+    );
+    const seenNew = new Set<string>();
+
     for (const row of selected) {
       const qty = parseFloat(row.quantity);
       const unitCost = parseFloat(row.unitCost);
       if (Number.isNaN(qty) || qty <= 0) {
-        setVariantPickerError(`Invalid quantity for ${variantLabel(row.size, row.color) || row.sku}`);
+        setVariantError(`Invalid quantity for ${variantLabel(row.size, row.color) || row.sku || 'new size'}`);
         return;
       }
       if (Number.isNaN(unitCost) || unitCost < 0) {
-        setVariantPickerError(`Enter a valid purchase price for ${variantLabel(row.size, row.color) || row.sku}`);
+        setVariantError(`Enter a valid purchase price for ${variantLabel(row.size, row.color) || 'new size'}`);
         return;
       }
+      if (row.isNew && !(row.size || '').trim() && !(row.color || '').trim()) {
+        setVariantError('New variant needs a size or colour');
+        return;
+      }
+      const sell = parseFloat(row.sellingPrice);
+      if (row.isNew && (Number.isNaN(sell) || sell < 0)) {
+        setVariantError('New variant needs a valid selling price (0 allowed)');
+        return;
+      }
+      if (row.isNew) {
+        const key = sameVariantKey(row.size, row.color);
+        if (existingKeys.has(key) || seenNew.has(key)) {
+          setVariantError(
+            `Size ${variantLabel(row.size, row.color) || 'Default'} already exists — use the existing row`,
+          );
+          return;
+        }
+        seenNew.add(key);
+      }
     }
-    for (const row of selected) {
-      upsertLine(
-        {
-          variantId: row.variantId,
-          productId: '',
-          productName: row.productName,
-          sku: row.sku,
-          size: row.size,
-          color: row.color,
-          sellingPrice: row.sellingPrice,
-          costPrice: parseFloat(row.unitCost) || 0,
-          mrp: row.mrp,
-          barcodes: row.barcode ? [row.barcode] : [],
-          uom: row.uomCode ? { code: row.uomCode } : null,
-        },
-        parseFloat(row.quantity) || 0,
-        parseFloat(row.unitCost) || 0,
-      );
-    }
-    setVariantPickerOpen(false);
-    setVariantDrafts([]);
-    setSearch('');
-    setResults([]);
-    setSearchError('');
+
+    setLines((prev) => {
+      let next = [...prev];
+      for (const row of selected) {
+        const qty = parseFloat(row.quantity) || 0;
+        const unitCost = parseFloat(row.unitCost) || 0;
+        if (row.isNew) {
+          next.push({
+            key: `${row.key}-${Date.now()}`,
+            variantId: row.variantId,
+            productId: activeProduct.productId,
+            productName: activeProduct.productName,
+            sku: row.sku || 'New',
+            size: (row.size || '').trim() || null,
+            color: (row.color || '').trim() || null,
+            quantity: String(qty),
+            unitCost: String(unitCost),
+            uomCode: row.uomCode,
+            sellingPrice: parseFloat(row.sellingPrice) || 0,
+            mrp: row.mrp,
+            isNewVariant: true,
+          });
+          continue;
+        }
+
+        const existing = next.find((line) => !line.isNewVariant && line.variantId === row.variantId);
+        if (existing) {
+          next = next.map((line) =>
+            line.key === existing.key
+              ? {
+                  ...line,
+                  quantity: String((parseFloat(line.quantity) || 0) + qty),
+                  unitCost: String(unitCost),
+                }
+              : line,
+          );
+        } else {
+          next.push({
+            key: `${row.variantId}-${Date.now()}`,
+            variantId: row.variantId,
+            productId: activeProduct.productId,
+            productName: row.productName,
+            sku: row.sku,
+            size: row.size,
+            color: row.color,
+            quantity: String(qty),
+            unitCost: String(unitCost),
+            uomCode: row.uomCode,
+            sellingPrice: parseFloat(row.sellingPrice) || 0,
+            mrp: row.mrp,
+            isNewVariant: false,
+          });
+        }
+      }
+      return next;
+    });
+
+    setActiveProduct(null);
+    setVariantError('');
   };
 
   const updateLine = (key: string, patch: Partial<LineItem>) => {
@@ -396,6 +540,93 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
     }
   };
 
+  /** Create any new sizes on their products (append-only), then return lines with real variantIds. */
+  const resolveNewVariants = async (purchaseLines: LineItem[]): Promise<LineItem[]> => {
+    const newLines = purchaseLines.filter((line) => line.isNewVariant);
+    if (!newLines.length) return purchaseLines;
+
+    const byProduct = new Map<string, LineItem[]>();
+    for (const line of newLines) {
+      if (!line.productId) throw new Error('New variant is missing product id');
+      const list = byProduct.get(line.productId) || [];
+      list.push(line);
+      byProduct.set(line.productId, list);
+    }
+
+    const idMap = new Map<string, string>(); // temp variantId → real id
+
+    for (const [productId, pending] of byProduct.entries()) {
+      const product = await fetchProduct(productId);
+      const existing = (product.variants || []).filter((v) => v?.id);
+      const existingKeys = new Set(existing.map((v) => sameVariantKey(v.size, v.color)));
+
+      // Reuse an existing size instead of creating a duplicate.
+      const toCreate: LineItem[] = [];
+      for (const line of pending) {
+        const key = sameVariantKey(line.size, line.color);
+        const match = existing.find((v) => sameVariantKey(v.size, v.color) === key);
+        if (match?.id) {
+          idMap.set(line.variantId, match.id);
+        } else {
+          toCreate.push(line);
+          existingKeys.add(key);
+        }
+      }
+
+      if (toCreate.length) {
+        const createPayload = toCreate.map((line) => ({
+          size: line.size || undefined,
+          color: line.color || undefined,
+          sellingPrice:
+            line.sellingPrice != null && line.sellingPrice >= 0
+              ? line.sellingPrice
+              : parseFloat(line.unitCost) || 0,
+          costPrice: parseFloat(line.unitCost) || 0,
+          mrp: line.mrp != null ? line.mrp : undefined,
+          stockQty: 0,
+        }));
+
+        const beforeKeys = new Set(existing.map((v) => sameVariantKey(v.size, v.color)));
+        const updated = await updateProduct(productId, {
+          variantSyncMode: 'append',
+          variants: createPayload,
+        });
+
+        const after = (updated.variants || []).filter((v) => v?.id);
+        const newlyCreated = after.filter((v) => !beforeKeys.has(sameVariantKey(v.size, v.color)));
+
+        for (const line of toCreate) {
+          const match =
+            newlyCreated.find(
+              (v) => sameVariantKey(v.size, v.color) === sameVariantKey(line.size, line.color),
+            )
+            || after.find(
+              (v) => sameVariantKey(v.size, v.color) === sameVariantKey(line.size, line.color),
+            );
+          if (!match?.id) {
+            throw new Error(
+              `Could not create variant ${variantLabel(line.size, line.color) || ''} on ${line.productName}`,
+            );
+          }
+          idMap.set(line.variantId, match.id);
+          const idx = newlyCreated.findIndex((v) => v.id === match.id);
+          if (idx >= 0) newlyCreated.splice(idx, 1);
+        }
+      }
+    }
+
+    return purchaseLines.map((line) => {
+      if (!line.isNewVariant) return line;
+      const realId = idMap.get(line.variantId);
+      if (!realId) throw new Error('Failed to resolve new variant id');
+      return {
+        ...line,
+        variantId: realId,
+        isNewVariant: false,
+      };
+    });
+  };
+
   const handleSubmit = async () => {
     setError('');
     if (!supplierId) {
@@ -406,32 +637,40 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       setError('Add at least one product');
       return;
     }
+    if (activeProduct) {
+      setError('Finish adding the selected product variants first (or clear them)');
+      return;
+    }
 
-    const items = lines.map((line) => ({
-      variantId: line.variantId,
-      quantity: parseFloat(line.quantity),
-      unitCost: parseFloat(line.unitCost),
-    }));
-
-    const invalid = items.find(
-      (item) =>
-        !item.variantId ||
-        Number.isNaN(item.quantity) ||
-        item.quantity <= 0 ||
-        Number.isNaN(item.unitCost) ||
-        item.unitCost < 0,
-    );
+    const invalid = lines.find((line) => {
+      const qty = parseFloat(line.quantity);
+      const cost = parseFloat(line.unitCost);
+      return Number.isNaN(qty) || qty <= 0 || Number.isNaN(cost) || cost < 0;
+    });
     if (invalid) {
       setError('Each item needs a valid quantity and unit cost');
       return;
     }
 
+    const newInvalid = lines.find(
+      (line) => line.isNewVariant && !(line.size || '').trim() && !(line.color || '').trim(),
+    );
+    if (newInvalid) {
+      setError('New variants need a size or colour');
+      return;
+    }
+
     setLoading(true);
     try {
+      const resolved = await resolveNewVariants(lines);
       const bill = await createPurchaseBill({
         supplierId,
         notes: notes.trim() || undefined,
-        items,
+        items: resolved.map((line) => ({
+          variantId: line.variantId,
+          quantity: parseFloat(line.quantity),
+          unitCost: parseFloat(line.unitCost),
+        })),
       });
       Alert.alert('Purchase saved', `${bill.bill_number} · stock updated`, [
         {
@@ -504,7 +743,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
         <SectionCard
           title="Add products"
           icon="package-variant"
-          subtitle="Search by name, SKU or barcode. Variant products show all active sizes for qty entry.">
+          subtitle="Search a product. Variants open inline — you can also add a new size here.">
           <TextInput
             label="Search product"
             value={search}
@@ -544,15 +783,143 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                         </Text>
                         <Text style={styles.resultMeta} numberOfLines={1}>
                           {multi
-                            ? 'Tap to enter qty & purchase price per size'
+                            ? 'Tap to enter qty per size (inline)'
                             : `${first?.sku || ''} · Cost ${money(cost)} · Stock ${first?.stockQty ?? 0}`}
                         </Text>
                       </View>
-                      <Text style={styles.resultAdd}>{multi ? 'Variants' : 'Add'}</Text>
+                      <Text style={styles.resultAdd}>{multi ? 'Open' : 'Add'}</Text>
                     </Pressable>
                   );
                 })
               )}
+            </View>
+          ) : null}
+
+          {activeProduct ? (
+            <View style={styles.inlinePanel}>
+              <View style={styles.inlineHead}>
+                <View style={styles.flex}>
+                  <Text style={styles.inlineTitle}>{activeProduct.productName}</Text>
+                  <Text style={styles.inlineHint}>
+                    Qty 0 = skip. New sizes are saved on this product when you save the purchase.
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    setActiveProduct(null);
+                    setVariantError('');
+                  }}
+                  hitSlop={10}
+                  style={styles.removeBtn}>
+                  <Icon name="close" size={16} color={colors.textMuted} />
+                </Pressable>
+              </View>
+
+              {activeProduct.drafts.map((row) => {
+                const size = variantLabel(row.size, row.color) || (row.isNew ? 'New size' : 'Default');
+                const qty = parseFloat(row.quantity) || 0;
+                const cost = parseFloat(row.unitCost) || 0;
+                return (
+                  <View key={row.key} style={[styles.variantCard, row.isNew && styles.variantCardNew]}>
+                    {row.isNew ? (
+                      <>
+                        <View style={styles.newBadgeRow}>
+                          <Text style={styles.newBadge}>New variant</Text>
+                          <Pressable onPress={() => removeDraft(row.key)} hitSlop={8}>
+                            <Icon name="delete-outline" size={18} color={colors.error} />
+                          </Pressable>
+                        </View>
+                        <View style={styles.variantFields}>
+                          <TextInput
+                            label="Size *"
+                            value={row.size || ''}
+                            onChangeText={(v) => updateDraft(row.key, { size: v })}
+                            mode="outlined"
+                            dense
+                            style={styles.variantQty}
+                          />
+                          <TextInput
+                            label="Colour"
+                            value={row.color || ''}
+                            onChangeText={(v) => updateDraft(row.key, { color: v })}
+                            mode="outlined"
+                            dense
+                            style={styles.variantCost}
+                          />
+                        </View>
+                        <TextInput
+                          label="Selling price ₹ *"
+                          value={row.sellingPrice}
+                          onChangeText={(v) => updateDraft(row.key, { sellingPrice: v })}
+                          keyboardType="decimal-pad"
+                          mode="outlined"
+                          dense
+                          style={styles.fullInput}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.variantSize}>{size}</Text>
+                        <Text style={styles.variantSku}>SKU {row.sku}</Text>
+                        <Text style={styles.variantBarcode} numberOfLines={1}>
+                          {row.barcode ? `Barcode ${row.barcode}` : 'No barcode yet'}
+                        </Text>
+                        <Text style={styles.variantRef}>
+                          MRP {row.mrp != null && row.mrp > 0 ? money(row.mrp) : '—'}
+                          {'  ·  '}
+                          Sell {money(parseFloat(row.sellingPrice) || 0)}
+                        </Text>
+                      </>
+                    )}
+                    <View style={styles.variantFields}>
+                      <TextInput
+                        label="Qty"
+                        value={row.quantity}
+                        onChangeText={(v) => updateDraft(row.key, { quantity: v })}
+                        keyboardType="decimal-pad"
+                        mode="outlined"
+                        dense
+                        style={styles.variantQty}
+                      />
+                      <TextInput
+                        label="Purchase ₹"
+                        value={row.unitCost}
+                        onChangeText={(v) => updateDraft(row.key, { unitCost: v })}
+                        keyboardType="decimal-pad"
+                        mode="outlined"
+                        dense
+                        style={styles.variantCost}
+                      />
+                    </View>
+                    {qty > 0 ? (
+                      <Text style={styles.variantLineTotal}>Line {money(qty * cost)}</Text>
+                    ) : null}
+                  </View>
+                );
+              })}
+
+              <View style={styles.inlineActions}>
+                <Button
+                  mode="outlined"
+                  icon="plus"
+                  onPress={addNewVariantDraft}
+                  style={styles.addVariantBtn}>
+                  Add variant
+                </Button>
+                <Button mode="contained" onPress={confirmInlineVariants} style={styles.addPurchaseBtn}>
+                  Add to purchase
+                </Button>
+              </View>
+
+              {variantDraftTotals.lines > 0 ? (
+                <View style={styles.variantTotals}>
+                  <Text style={styles.variantTotalsText}>
+                    Selected {variantDraftTotals.lines} · Qty {variantDraftTotals.qty}
+                  </Text>
+                  <Text style={styles.variantTotalsAmount}>{money(variantDraftTotals.amount)}</Text>
+                </View>
+              ) : null}
+              {variantError ? <HelperText type="error">{variantError}</HelperText> : null}
             </View>
           ) : null}
         </SectionCard>
@@ -571,8 +938,11 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                       <Text style={styles.lineName} numberOfLines={2}>
                         {line.productName}
                         {size ? ` · ${size}` : ''}
+                        {line.isNewVariant ? ' · New' : ''}
                       </Text>
-                      <Text style={styles.lineSku}>{line.sku}</Text>
+                      <Text style={styles.lineSku}>
+                        {line.isNewVariant ? 'Will be created on save' : line.sku}
+                      </Text>
                     </View>
                     <Pressable onPress={() => removeLine(line.key)} hitSlop={10} style={styles.removeBtn}>
                       <Icon name="close" size={16} color={colors.textMuted} />
@@ -668,93 +1038,6 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
             <Button onPress={handleAddSupplier} loading={savingSupplier}>Save</Button>
           </Dialog.Actions>
         </Dialog>
-
-        <Dialog
-          visible={variantPickerOpen}
-          onDismiss={() => !loadingVariants && setVariantPickerOpen(false)}
-          style={styles.variantDialog}>
-          <Dialog.Title>{variantPickerTitle || 'Variants'}</Dialog.Title>
-          <Dialog.ScrollArea style={styles.variantScroll}>
-            {loadingVariants ? (
-              <View style={styles.variantLoading}>
-                <ActivityIndicator color={colors.primary} />
-                <Text style={styles.resultsStatus}>Loading variants…</Text>
-              </View>
-            ) : (
-              <View style={styles.variantList}>
-                <Text style={styles.variantHint}>
-                  All active variants are listed. Qty defaults to 0 — only variants with qty greater than 0 are added.
-                  MRP and selling price are for reference.
-                </Text>
-                {variantDrafts.map((row) => {
-                  const size = variantLabel(row.size, row.color) || 'Default';
-                  const qty = parseFloat(row.quantity) || 0;
-                  const cost = parseFloat(row.unitCost) || 0;
-                  return (
-                    <View key={row.variantId} style={styles.variantCard}>
-                      <Text style={styles.variantSize}>{size}</Text>
-                      <Text style={styles.variantSku}>SKU {row.sku}</Text>
-                      <Text style={styles.variantBarcode} numberOfLines={1}>
-                        {row.barcode ? `Barcode ${row.barcode}` : 'No barcode yet'}
-                      </Text>
-                      <Text style={styles.variantRef}>
-                        MRP {row.mrp != null && row.mrp > 0 ? money(row.mrp) : '—'}
-                        {'  ·  '}
-                        Sell {money(row.sellingPrice || 0)}
-                      </Text>
-                      <View style={styles.variantFields}>
-                        <TextInput
-                          label="Qty"
-                          value={row.quantity}
-                          onChangeText={(v) => updateVariantDraft(row.variantId, { quantity: v })}
-                          keyboardType="decimal-pad"
-                          mode="outlined"
-                          dense
-                          style={styles.variantQty}
-                        />
-                        <TextInput
-                          label="Purchase ₹"
-                          value={row.unitCost}
-                          onChangeText={(v) => updateVariantDraft(row.variantId, { unitCost: v })}
-                          keyboardType="decimal-pad"
-                          mode="outlined"
-                          dense
-                          style={styles.variantCost}
-                        />
-                      </View>
-                      {qty > 0 ? (
-                        <Text style={styles.variantLineTotal}>Line {money(qty * cost)}</Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
-                {!variantDrafts.length ? (
-                  <Text style={styles.resultsStatus}>No active variants found for this product.</Text>
-                ) : null}
-                {variantDrafts.length ? (
-                  <View style={styles.variantTotals}>
-                    <Text style={styles.variantTotalsText}>
-                      Selected {variantDraftTotals.lines} · Qty {variantDraftTotals.qty}
-                    </Text>
-                    <Text style={styles.variantTotalsAmount}>{money(variantDraftTotals.amount)}</Text>
-                  </View>
-                ) : null}
-                {variantPickerError ? <HelperText type="error">{variantPickerError}</HelperText> : null}
-              </View>
-            )}
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
-            <Button onPress={() => setVariantPickerOpen(false)} disabled={loadingVariants}>
-              Cancel
-            </Button>
-            <Button
-              onPress={confirmVariantPicker}
-              disabled={loadingVariants || !variantDrafts.length}
-              mode="contained">
-              Add to purchase
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
       </Portal>
     </KeyboardAvoidingView>
   );
@@ -763,6 +1046,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   title: { ...typography.h1, fontSize: 22 },
   subtitle: { ...typography.bodySm, marginBottom: spacing.xl },
+  flex: { flex: 1, minWidth: 0 },
   supplierGrid: { gap: spacing.sm },
   supplierChip: {
     flexDirection: 'row',
@@ -786,6 +1070,7 @@ const styles = StyleSheet.create({
   emptySupplier: { gap: spacing.md, alignItems: 'flex-start' },
   emptySupplierText: { color: colors.textMuted, fontSize: 14, lineHeight: 20 },
   input: { marginBottom: spacing.md, backgroundColor: colors.surface },
+  fullInput: { marginTop: spacing.sm, backgroundColor: colors.surface },
   resultsPanel: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -812,6 +1097,20 @@ const styles = StyleSheet.create({
   resultName: { fontSize: 14, fontWeight: '600', color: colors.text },
   resultMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   resultAdd: { fontSize: 13, fontWeight: '700', color: colors.secondary, marginLeft: spacing.sm },
+  inlinePanel: {
+    marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    backgroundColor: colors.primaryLight,
+  },
+  inlineHead: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.md },
+  inlineTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
+  inlineHint: { fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 16 },
+  inlineActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  addVariantBtn: { flex: 1, borderRadius: radius.md },
+  addPurchaseBtn: { flex: 1.2, borderRadius: radius.md },
   emptyLines: { color: colors.textMuted, fontSize: 14, paddingVertical: spacing.sm },
   lineCard: {
     borderWidth: 1,
@@ -859,11 +1158,6 @@ const styles = StyleSheet.create({
   submitContent: { minHeight: 50 },
   submitLabel: { fontSize: 16, fontWeight: '700' },
   dialog: { borderRadius: radius.lg },
-  variantDialog: { borderRadius: radius.lg, maxHeight: '90%' },
-  variantScroll: { maxHeight: 480, paddingHorizontal: 0 },
-  variantLoading: { paddingVertical: spacing.xl, alignItems: 'center', gap: spacing.sm },
-  variantList: { paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
-  variantHint: { ...typography.bodySm, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 18 },
   variantCard: {
     borderWidth: 1,
     borderColor: colors.borderLight,
@@ -871,6 +1165,22 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
     backgroundColor: colors.surface,
+  },
+  variantCardNew: {
+    borderColor: colors.secondary,
+    borderStyle: 'dashed',
+  },
+  newBadgeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  newBadge: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.secondary,
+    textTransform: 'uppercase',
   },
   variantSize: { fontSize: 15, fontWeight: '700', color: colors.text },
   variantSku: { fontSize: 12, color: colors.textMuted, marginTop: 2 },

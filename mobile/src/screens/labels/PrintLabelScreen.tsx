@@ -241,7 +241,7 @@ export default function PrintLabelScreen() {
         </View>
         <Text style={styles.sizeCaption}>
           {useSdk
-            ? `${LABEL_WIDTH_MM} × ${LABEL_HEIGHT_MM} mm · 2 mm gap · sensor align`
+            ? `${LABEL_WIDTH_MM} × ${LABEL_HEIGHT_MM} mm · match roll size on Barcode label · sensor align`
             : 'Needs Android app + Microlan SDK'}
         </Text>
       </View>
