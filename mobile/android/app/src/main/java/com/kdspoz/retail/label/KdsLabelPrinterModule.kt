@@ -16,6 +16,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableMap
+import android.util.Base64
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -36,6 +37,19 @@ class KdsLabelPrinterModule(
   private var printerAddress: String? = null
 
   override fun getName(): String = "KdsLabelPrinter"
+
+  /** Plain receipt text → ESC/POS. Marathi lines are rasters; Latin lines stay as text. */
+  @ReactMethod
+  fun encodeReceipt(text: String, charsPerLine: Int, promise: Promise) {
+    executor.execute {
+      try {
+        val bytes = ReceiptRaster.encode(text, charsPerLine)
+        promise.resolve(Base64.encodeToString(bytes, Base64.NO_WRAP))
+      } catch (err: Exception) {
+        promise.reject("RECEIPT_ENCODE", err.message, err)
+      }
+    }
+  }
 
   @ReactMethod
   fun isAvailable(promise: Promise) {

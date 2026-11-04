@@ -7,6 +7,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput as NativeInput,
   View,
 } from 'react-native';
 import { Button, HelperText, Text, TextInput } from 'react-native-paper';
@@ -59,6 +60,7 @@ function nearestRupee(amount: number) {
 
 export default function PaymentScreen({ navigation }: Props) {
   const items = useCartStore((s) => s.items);
+  const updatePrice = useCartStore((s) => s.updatePrice);
   const customerId = useCartStore((s) => s.customerId);
   const customerName = useCartStore((s) => s.customerName);
   const billDiscountAmount = useCartStore((s) => s.billDiscountAmount);
@@ -76,6 +78,8 @@ export default function PaymentScreen({ navigation }: Props) {
   const [splitExtra, setSplitExtra] = useState<{ mode: string; amount: string }[]>([]);
   const [showDiscount, setShowDiscount] = useState(false);
   const [showItems, setShowItems] = useState(false);
+  const [priceEditId, setPriceEditId] = useState<string | null>(null);
+  const [priceDraft, setPriceDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState('');
@@ -247,6 +251,20 @@ export default function PaymentScreen({ navigation }: Props) {
   const balance = Math.max(0, totalDue - totalPaid);
   const change = Math.max(0, totalPaid - totalDue);
   const getCartMeta = (id: string) => items.find((i) => i.variantId === id);
+
+  const beginPriceEdit = (variantId: string, unitPrice: number) => {
+    setPriceEditId(variantId);
+    setPriceDraft(String(round2(unitPrice)));
+  };
+
+  const commitPriceEdit = (variantId: string) => {
+    const cleaned = priceDraft.trim().replace(',', '.');
+    const parsed = parseFloat(cleaned);
+    if (cleaned && Number.isFinite(parsed) && parsed >= 0) {
+      updatePrice(variantId, parsed);
+    }
+    setPriceEditId((current) => (current === variantId ? null : current));
+  };
 
   const discountApplied = round2(preview?.discountAmount ?? 0);
   const hasDiscount = discountApplied > 0 || billDiscountPercent > 0 || billDiscountAmount > 0;
@@ -638,9 +656,33 @@ export default function PaymentScreen({ navigation }: Props) {
                 <View key={line.variantId} style={[styles.line, idx > 0 && styles.lineBorder]}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.lineName} numberOfLines={2}>{line.productName}</Text>
-                    <Text style={styles.lineMeta}>
-                      {qty} × ₹{round2(line.unitPrice).toFixed(2)}
-                    </Text>
+                    {priceEditId === line.variantId ? (
+                      <View style={styles.priceEditRow}>
+                        <Text style={styles.pricePrefix}>₹</Text>
+                        <NativeInput
+                          value={priceDraft}
+                          onChangeText={(value) => setPriceDraft(value.replace(/[^0-9.,]/g, ''))}
+                          onBlur={() => commitPriceEdit(line.variantId)}
+                          onSubmitEditing={() => commitPriceEdit(line.variantId)}
+                          autoFocus
+                          selectTextOnFocus
+                          keyboardType="decimal-pad"
+                          style={styles.priceInput}
+                          accessibilityLabel={`Price for ${line.productName}`}
+                        />
+                      </View>
+                    ) : (
+                      <Pressable
+                        onPress={() => beginPriceEdit(line.variantId, cartItem?.unitPrice ?? line.unitPrice)}
+                        hitSlop={6}
+                        style={styles.priceTap}
+                        accessibilityLabel={`Edit price for ${line.productName}`}>
+                        <Text style={styles.lineMeta}>
+                          {qty} × ₹{round2(line.unitPrice).toFixed(2)}
+                        </Text>
+                        <Icon name="pencil-outline" size={14} color={colors.primary} />
+                      </Pressable>
+                    )}
                   </View>
                   <Text style={styles.lineAmt}>₹{round2(line.lineTotal).toFixed(2)}</Text>
                 </View>
@@ -908,7 +950,35 @@ const styles = StyleSheet.create({
   line: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.sm },
   lineBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderLight },
   lineName: { fontSize: 14, fontWeight: '600', color: colors.text },
-  lineMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  lineMeta: { fontSize: 12, color: colors.textMuted },
+  priceTap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  priceEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    gap: 2,
+  },
+  pricePrefix: { fontSize: 14, fontWeight: '700', color: colors.text },
+  priceInput: {
+    minWidth: 88,
+    height: 32,
+    paddingVertical: 0,
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+  },
   lineAmt: { fontSize: 14, fontWeight: '700', color: colors.text, marginLeft: spacing.md },
   miniSum: {
     marginTop: spacing.md,

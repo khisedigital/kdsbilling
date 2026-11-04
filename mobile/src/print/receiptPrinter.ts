@@ -126,7 +126,7 @@ function buildTestThermalSample(opts: {
 
   const lines = [
     eq,
-    `<C>${(shopName || APP_DISPLAY_NAME).toUpperCase().slice(0, width)}</C>`,
+    `<CB>${(shopName || APP_DISPLAY_NAME).toUpperCase().slice(0, Math.max(12, Math.floor(width / 2)))}</CB>`,
     eq,
   ];
   if (addr) lines.push(`<C>${addr}</C>`);
@@ -161,7 +161,7 @@ function buildTestA4Html(opts: {
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b{font-weight:700}
   .head{text-align:center;border:1px solid #000;padding:16px;margin-bottom:16px}
-  .shop{font-size:20px;margin:0;letter-spacing:.02em;text-transform:uppercase}
+  .shop{font-size:28px;margin:0;letter-spacing:.02em;text-transform:uppercase;text-align:center}
   .meta{font-size:13px;color:#000;margin:4px 0}
   table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
   th{color:#000;padding:8px;text-align:left;border-top:1px solid #000;border-bottom:1px solid #000}

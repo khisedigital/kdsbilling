@@ -100,12 +100,15 @@ export default function BillingScreen({ navigation, route }: Props) {
   const [discountError, setDiscountError] = useState('');
   const [cartOpen, setCartOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
+  const [priceEditId, setPriceEditId] = useState<string | null>(null);
+  const [priceDraft, setPriceDraft] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
 
   const items = useCartStore((s) => s.items);
   const addItem = useCartStore((s) => s.addItem);
   const updateQty = useCartStore((s) => s.updateQty);
+  const updatePrice = useCartStore((s) => s.updatePrice);
   const removeItem = useCartStore((s) => s.removeItem);
   const syncFromCatalog = useCartStore((s) => s.syncFromCatalog);
   const clearCart = useCartStore((s) => s.clear);
@@ -565,16 +568,19 @@ export default function BillingScreen({ navigation, route }: Props) {
     setRefreshing(false);
   };
 
-  const addCustomItem = (item: { name: string; price: number; quantity: number }) => {
-    addItem({
-      variantId: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      productName: item.name,
-      sku: 'CUSTOM',
-      quantity: item.quantity,
-      unitPrice: item.price,
-      isCustom: true,
-      allowDecimalQty: true,
-      stockQty: 0,
+  const addCustomItem = (entries: { name: string; price: number; quantity: number }[]) => {
+    const stamp = Date.now().toString(36);
+    entries.forEach((item, index) => {
+      addItem({
+        variantId: `custom-${stamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        productName: item.name,
+        sku: 'CUSTOM',
+        quantity: item.quantity,
+        unitPrice: item.price,
+        isCustom: true,
+        allowDecimalQty: true,
+        stockQty: 0,
+      });
     });
     setCustomOpen(false);
   };
@@ -610,9 +616,24 @@ export default function BillingScreen({ navigation, route }: Props) {
     [barPad, gridItems.length],
   );
 
+  const beginPriceEdit = (variantId: string, unitPrice: number) => {
+    setPriceEditId(variantId);
+    setPriceDraft(String(unitPrice));
+  };
+
+  const commitPriceEdit = (variantId: string) => {
+    const cleaned = priceDraft.trim().replace(',', '.');
+    const parsed = parseFloat(cleaned);
+    if (cleaned && Number.isFinite(parsed) && parsed >= 0) {
+      updatePrice(variantId, parsed);
+    }
+    setPriceEditId((current) => (current === variantId ? null : current));
+  };
+
   const renderCartLine = ({ item }: { item: (typeof items)[number] }) => {
     const lineTotal = item.unitPrice * item.quantity;
     const size = variantLabel(item.size, item.color);
+    const editingPrice = priceEditId === item.variantId;
     return (
       <View style={styles.line}>
         <View style={styles.lineTop}>
@@ -621,7 +642,34 @@ export default function BillingScreen({ navigation, route }: Props) {
               {item.productName}
               {item.isCustom ? ' · Custom' : size ? ` · ${size}` : ''}
             </Text>
-            <Text style={styles.lineMeta}>₹{item.unitPrice}{item.uom?.code ? `/${item.uom.code}` : ''}</Text>
+            {editingPrice ? (
+              <View style={styles.priceEditRow}>
+                <Text style={styles.pricePrefix}>₹</Text>
+                <TextInput
+                  value={priceDraft}
+                  onChangeText={(value) => setPriceDraft(value.replace(/[^0-9.,]/g, ''))}
+                  onBlur={() => commitPriceEdit(item.variantId)}
+                  onSubmitEditing={() => commitPriceEdit(item.variantId)}
+                  autoFocus
+                  selectTextOnFocus
+                  keyboardType="decimal-pad"
+                  style={styles.priceInput}
+                  accessibilityLabel={`Price for ${item.productName}`}
+                />
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => beginPriceEdit(item.variantId, item.unitPrice)}
+                hitSlop={6}
+                style={styles.priceTap}
+                accessibilityLabel={`Edit price for ${item.productName}`}>
+                <Text style={styles.lineMeta}>
+                  ₹{item.unitPrice}
+                  {item.uom?.code ? `/${item.uom.code}` : ''}
+                </Text>
+                <Icon name="pencil-outline" size={13} color={colors.primary} />
+              </Pressable>
+            )}
           </View>
           <Pressable onPress={() => removeItem(item.variantId)} hitSlop={10} style={styles.removeBtn}>
             <Icon name="close" size={16} color={colors.textMuted} />
@@ -1338,7 +1386,35 @@ const styles = StyleSheet.create({
   },
   lineInfo: { flex: 1, minWidth: 0, paddingRight: spacing.sm },
   lineName: { fontSize: 14, fontWeight: '700', color: colors.text },
-  lineMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  lineMeta: { fontSize: 12, color: colors.textMuted },
+  priceTap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  priceEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    gap: 2,
+  },
+  pricePrefix: { fontSize: 14, fontWeight: '700', color: colors.text },
+  priceInput: {
+    minWidth: 88,
+    height: 32,
+    paddingVertical: 0,
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+  },
   lineTotal: { fontSize: 16, fontWeight: '800', color: colors.secondary },
   removeBtn: {
     width: 28,

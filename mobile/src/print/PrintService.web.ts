@@ -1,4 +1,5 @@
 /// <reference lib="dom" />
+import indicFontUrl from '../assets/NotoSansDevanagari-Bold.ttf';
 import { getDesktopBridge } from '../desktop/bridge';
 import {
   buildEscPosBytes,
@@ -7,6 +8,34 @@ import {
   sanitizeEscPosText,
   type ThermalHtmlPaper,
 } from './escpos';
+import { hasDevanagari } from './indicText';
+
+let indicFontTask: Promise<void> | null = null;
+
+/** Load the bundled Devanagari face before the receipt canvas draws a name. */
+async function ensureIndicFont(text: string): Promise<void> {
+  if (!hasDevanagari(text)) return;
+  if (typeof document === 'undefined' || typeof FontFace === 'undefined') return;
+  if (!indicFontTask) {
+    const face = new FontFace('KdsDevanagari', `url(${JSON.stringify(indicFontUrl)})`, {
+      weight: '700',
+      style: 'normal',
+    });
+    indicFontTask = face
+      .load()
+      .then((loaded) => {
+        document.fonts.add(loaded);
+        (globalThis as { __kdsIndicFont?: boolean }).__kdsIndicFont = true;
+      })
+      .catch(() => undefined);
+  }
+  await indicFontTask;
+}
+
+async function thermalBytes(text: string, charsPerLine: number): Promise<number[]> {
+  await ensureIndicFont(text);
+  return buildEscPosBytes(text, charsPerLine);
+}
 
 export { buildEscPosBytes, sanitizeEscPosText, toPlainReceipt } from './escpos';
 export type { ThermalPrintPayload } from './escpos';
@@ -152,7 +181,7 @@ export async function printViaSystem(
   const bridge = getDesktopBridge();
 
   if (bridge?.printRawSystem) {
-    const bytes = buildEscPosBytes(sanitizeEscPosText(source), charsPerLine);
+    const bytes = await thermalBytes(sanitizeEscPosText(source), charsPerLine);
     await bridge.printRawSystem({
       printerName: printerName || '',
       base64: bytesToBase64(bytes),
@@ -177,7 +206,7 @@ export async function printViaNetwork(
 
   const bridge = getDesktopBridge();
   if (!bridge) throw new Error(DESKTOP_ONLY);
-  const bytes = buildEscPosBytes(payload, charsPerLine);
+  const bytes = await thermalBytes(payload, charsPerLine);
   await bridge.printRaw({ host: host.trim(), port, base64: bytesToBase64(bytes) });
 }
 
@@ -257,6 +286,6 @@ export async function printViaBluetooth(
   if (!address?.trim()) throw new Error('No Bluetooth printer selected.');
   const payload = sanitizeEscPosText(String(text || '').trim());
   if (!payload.trim()) throw new Error('Nothing to print.');
-  const bytes = buildEscPosBytes(payload, charsPerLine);
+  const bytes = await thermalBytes(payload, charsPerLine);
   await printBytesViaBluetooth(address, bytes);
 }

@@ -31,6 +31,7 @@ import {
 } from '../../print/labelPrinterNative';
 import { listSystemPrinters } from '../../print/PrintService';
 import {
+  ensureQuantityBarcodes,
   fetchProductBarcodeStatus,
   generateBarcodes,
   type ProductBarcodeStatus,
@@ -46,6 +47,7 @@ import {
 } from '../../store/printerStore';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
+import { formatQuantity, getQuantityPresets, parseQuantityForUom, quantityHint, type UomInfo } from '../../utils/quantity';
 import { productDisplayName, variantLabel } from '../../utils/variantLabel';
 
 type ListedPrinter = { name: string; address: string };
@@ -53,6 +55,8 @@ type ListedPrinter = { name: string; address: string };
 type VariantRow = VariantBarcodeStatus & {
   selected: boolean;
   labelQty: string;
+  rowKey: string;
+  packQuantity: number | null;
 };
 
 type LastPrintJob = {
@@ -82,6 +86,75 @@ function statusMeta(status: VariantBarcodeStatusKind): {
     return { label: 'Duplicate', color: colors.warning, bg: colors.warningLight, printable: false };
   }
   return { label: 'Missing', color: colors.error, bg: colors.errorLight, printable: false };
+}
+
+function expandLabelRows(
+  data: ProductBarcodeStatus,
+  extras: { variantId: string; barcode?: string | null; quantity: number }[] = [],
+): Array<VariantBarcodeStatus & { rowKey: string; packQuantity: number | null }> {
+  const rows: Array<VariantBarcodeStatus & { rowKey: string; packQuantity: number | null }> = [];
+  for (const variant of data.variants) {
+    rows.push({ ...variant, rowKey: variant.variantId, packQuantity: null });
+    if (data.hasVariants) continue;
+    const packs = [...(variant.quantityBarcodes || [])];
+    for (const extra of extras) {
+      if (extra.variantId !== variant.variantId) continue;
+      if (packs.some((pack) => sameQty(pack.quantity, extra.quantity))) continue;
+      const code = String(extra.barcode || '').trim();
+      packs.push({
+        quantity: extra.quantity,
+        barcode: code || null,
+        barcodeType: /^KDSPOZ/i.test(code) ? 'code128' : /^\d{8,18}$/.test(code) ? 'ean13' : code ? 'other' : null,
+        status: code ? 'available' : 'missing',
+      });
+    }
+    for (const pack of packs) {
+      rows.push({
+        ...variant,
+        rowKey: `${variant.variantId}:${pack.quantity}`,
+        barcode: pack.barcode,
+        barcodeType: pack.barcodeType,
+        status: pack.status,
+        packQuantity: pack.quantity,
+      });
+    }
+  }
+  return rows;
+}
+
+function packPresets(uom?: UomInfo | null): { label: string; quantity: number }[] {
+  const code = (uom?.code || '').toLowerCase();
+  const count = uom?.type === 'count' || ['pcs', 'pc', 'piece', 'pieces', 'nos', 'unit'].includes(code);
+  if (!count) return getQuantityPresets(uom);
+  return [
+    { label: '2', quantity: 2 },
+    { label: '5', quantity: 5 },
+    { label: '10', quantity: 10 },
+    { label: '12', quantity: 12 },
+  ];
+}
+
+function sameQty(a: number | null | undefined, b: number | null | undefined): boolean {
+  if (a == null || b == null) return false;
+  return Math.abs(a - b) < 0.0001;
+}
+
+function rowTitle(row: VariantRow, hasVariants: boolean, uom?: UomInfo | null): string {
+  if (row.packQuantity) return formatQuantity(row.packQuantity, uom);
+  if (!hasVariants) return formatQuantity(1, uom);
+  return variantLabel(row.size, row.color) || 'Default';
+}
+
+function itemQtyLabel(row: VariantRow, uom?: UomInfo | null): string {
+  const qty = row.packQuantity && row.packQuantity > 0 ? row.packQuantity : 1;
+  return formatQuantity(qty, uom);
+}
+
+/** 1 kg at ₹70 prints ₹35 on a 500 g label. Unit price is for one full unit. */
+function priceForQty(unitPrice: number | null | undefined, row: VariantRow): number | null {
+  if (unitPrice == null || Number.isNaN(Number(unitPrice))) return null;
+  const factor = row.packQuantity && row.packQuantity > 0 ? row.packQuantity : 1;
+  return Math.round(Number(unitPrice) * factor * 100) / 100;
 }
 
 function LabelPreview({
@@ -172,9 +245,13 @@ export default function BarcodeLabelScreen() {
   const [rows, setRows] = useState<VariantRow[]>([]);
   const rowsRef = useRef<VariantRow[]>([]);
   rowsRef.current = rows;
+  const extraPacksRef = useRef<{ variantId: string; barcode?: string | null; quantity: number }[]>([]);
+  const searchUomRef = useRef<ProductBarcodeStatus['uom']>(null);
   const [loadingProduct, setLoadingProduct] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [previewVariantId, setPreviewVariantId] = useState<string | null>(null);
+  const [previewRowKey, setPreviewRowKey] = useState<string | null>(null);
+  const [packDraft, setPackDraft] = useState('');
+  const [addingPack, setAddingPack] = useState(false);
   const [lastJob, setLastJob] = useState<LastPrintJob | null>(null);
 
   const [printerName, setPrinterName] = useState('Tap to select');
@@ -241,35 +318,44 @@ export default function BarcodeLabelScreen() {
 
   const applyBarcodeStatus = useCallback((
     data: ProductBarcodeStatus,
-    opts?: { preferSelectAvailable?: boolean; preserveRows?: VariantRow[] },
+    opts?: { preferSelectAvailable?: boolean; preserveRows?: VariantRow[]; selectPackQty?: number },
   ) => {
     const preferSelectAvailable = opts?.preferSelectAvailable !== false;
-    const previous = new Map((opts?.preserveRows || []).map((row) => [row.variantId, row]));
-    setProductMeta(data);
+    const expanded = expandLabelRows(data, extraPacksRef.current);
+    const previous = new Map((opts?.preserveRows || []).map((row) => [row.rowKey, row]));
+    const uom = data.uom || searchUomRef.current || null;
+    setProductMeta({ ...data, uom });
     setRows(
-      data.variants.map((v) => {
+      expanded.map((v) => {
         const printable = v.status === 'available' && Boolean(v.barcode);
-        const prev = previous.get(v.variantId);
+        const prev = previous.get(v.rowKey);
+        const picked = sameQty(v.packQuantity, opts?.selectPackQty);
         return {
           ...v,
-          selected: prev
-            ? printable && prev.selected
-            : preferSelectAvailable
-              ? printable
-              : false,
+          selected: picked
+            ? printable
+            : prev
+              ? printable && prev.selected
+              : preferSelectAvailable
+                ? printable
+                : false,
           labelQty: prev?.labelQty && Number(prev.labelQty) > 0 ? prev.labelQty : '1',
         };
       }),
     );
-    setPreviewVariantId((current) => {
-      if (current && data.variants.some((v) => v.variantId === current)) return current;
-      const firstPrintable = data.variants.find((v) => v.status === 'available' && v.barcode);
-      return firstPrintable?.variantId || data.variants[0]?.variantId || null;
+    setPreviewRowKey((current) => {
+      if (opts?.selectPackQty != null) {
+        const match = expanded.find((v) => sameQty(v.packQuantity, opts.selectPackQty));
+        if (match) return match.rowKey;
+      }
+      if (current && expanded.some((v) => v.rowKey === current)) return current;
+      const firstPrintable = expanded.find((v) => v.status === 'available' && v.barcode);
+      return firstPrintable?.rowKey || expanded[0]?.rowKey || null;
     });
   }, []);
 
   const loadBarcodeStatus = useCallback(
-    async (productId: string, preserveSelection = false) => {
+    async (productId: string, preserveSelection = false, selectPackQty?: number) => {
       setLoadingProduct(true);
       setStatus(null);
       try {
@@ -278,11 +364,12 @@ export default function BarcodeLabelScreen() {
         applyBarcodeStatus(data, {
           preferSelectAvailable: !preserveSelection,
           preserveRows,
+          selectPackQty,
         });
       } catch (err) {
         setProductMeta(null);
         setRows([]);
-        showStatus('err', err instanceof Error ? err.message : 'Could not load variants.');
+        showStatus('err', err instanceof Error ? err.message : 'Could not load barcodes.');
       } finally {
         setLoadingProduct(false);
       }
@@ -295,13 +382,22 @@ export default function BarcodeLabelScreen() {
       showStatus('err', 'Selected product has no id.');
       return;
     }
+    extraPacksRef.current = (item.quantityBarcodes || []).map((pack) => ({
+      variantId: item.variantId,
+      barcode: pack.barcode,
+      quantity: Number(pack.quantity),
+    }));
+    searchUomRef.current = item.uom || null;
     await loadBarcodeStatus(item.productId);
   };
 
   const clearProduct = () => {
     setProductMeta(null);
     setRows([]);
-    setPreviewVariantId(null);
+    extraPacksRef.current = [];
+    searchUomRef.current = null;
+    setPreviewRowKey(null);
+    setPackDraft('');
   };
 
   useEffect(() => {
@@ -358,20 +454,21 @@ export default function BarcodeLabelScreen() {
 
   const previewRow = useMemo(() => {
     if (!rows.length) return null;
-    return rows.find((r) => r.variantId === previewVariantId) || printableRows[0] || rows[0];
-  }, [rows, previewVariantId, printableRows]);
+    return rows.find((r) => r.rowKey === previewRowKey) || printableRows[0] || rows[0];
+  }, [rows, previewRowKey, printableRows]);
 
   const previewName = useMemo(() => {
     if (!productMeta || !previewRow) return 'Product';
     return productDisplayName(productMeta.productName, previewRow.size, previewRow.color);
   }, [productMeta, previewRow]);
 
-  const previewPrice = formatMoney(previewRow?.sellingPrice ?? null);
-  const previewMrp = formatMoney(previewRow?.mrp ?? null);
-  const previewRight = [previewMrp ? `MRP ${previewMrp}` : '', previewPrice].filter(Boolean).join('  ');
+  const previewQty = useMemo(() => {
+    if (!previewRow) return '';
+    return itemQtyLabel(previewRow, productMeta?.uom);
+  }, [productMeta, previewRow]);
 
-  const updateRow = (variantId: string, patch: Partial<VariantRow>) => {
-    setRows((prev) => prev.map((row) => (row.variantId === variantId ? { ...row, ...patch } : row)));
+  const updateRow = (rowKey: string, patch: Partial<VariantRow>) => {
+    setRows((prev) => prev.map((row) => (row.rowKey === rowKey ? { ...row, ...patch } : row)));
   };
 
   const selectAllPrintable = () => {
@@ -387,20 +484,26 @@ export default function BarcodeLabelScreen() {
     setRows((prev) => prev.map((row) => ({ ...row, selected: false })));
   };
 
+  const needsNumberBarcode = (row: VariantRow) => row.status === 'missing' || row.barcodeType === 'code128';
+
   const onGenerateMissing = async () => {
     if (!productMeta || generating) return;
-    const missingIds = rows
-      .filter((r) => r.status === 'missing' || r.barcodeType === 'code128')
-      .map((r) => r.variantId);
-    if (!missingIds.length) {
-      showStatus('ok', 'All variants already have number barcodes.');
+    const unitIds = [...new Set(
+      rows.filter((r) => !r.packQuantity && needsNumberBarcode(r)).map((r) => r.variantId),
+    )];
+    const packs = rows.filter((r) => r.packQuantity && needsNumberBarcode(r));
+    if (!unitIds.length && !packs.length) {
+      showStatus('ok', 'Already has number barcodes.');
       return;
     }
     setGenerating(true);
     setStatus(null);
     try {
-      const result = await generateBarcodes(missingIds);
-      const created = result.filter((r) => r.generated).length;
+      const generated = unitIds.length ? await generateBarcodes(unitIds) : [];
+      const packResult = packs.length
+        ? await ensureQuantityBarcodes(packs.map((r) => ({ variantId: r.variantId, quantity: r.packQuantity as number })))
+        : [];
+      const created = generated.filter((r) => r.generated).length + packResult.filter((r) => r.generated).length;
       await loadBarcodeStatus(productMeta.productId, true);
       showStatus(
         'ok',
@@ -413,6 +516,50 @@ export default function BarcodeLabelScreen() {
     } finally {
       setGenerating(false);
     }
+  };
+
+  const addPackQuantity = async (qty: number) => {
+    if (!productMeta || productMeta.hasVariants || addingPack || generating) return;
+    const variantId = productMeta.variants[0]?.variantId;
+    if (!variantId || !(qty > 0)) {
+      showStatus('err', 'Enter a quantity greater than 0.');
+      return;
+    }
+    const existing = rows.find((row) => sameQty(row.packQuantity, qty));
+    if (existing) {
+      const printable = existing.status === 'available' && Boolean(existing.barcode);
+      updateRow(existing.rowKey, { selected: printable });
+      setPreviewRowKey(existing.rowKey);
+      return;
+    }
+    setAddingPack(true);
+    setStatus(null);
+    try {
+      const created = await ensureQuantityBarcodes([{ variantId, quantity: qty }]);
+      const saved = created[0];
+      if (saved?.barcode) {
+        extraPacksRef.current = [
+          ...extraPacksRef.current.filter((pack) => !(pack.variantId === variantId && sameQty(pack.quantity, Number(saved.quantity)))),
+          { variantId, barcode: saved.barcode, quantity: Number(saved.quantity) },
+        ];
+      }
+      setPackDraft('');
+      await loadBarcodeStatus(productMeta.productId, true, Number(saved?.quantity ?? qty));
+    } catch (err) {
+      showStatus('err', err instanceof Error ? err.message : 'Could not add that quantity.');
+    } finally {
+      setAddingPack(false);
+    }
+  };
+
+  const addCustomPack = () => {
+    if (!productMeta) return;
+    const parsed = parseQuantityForUom(packDraft, productMeta.uom);
+    if (parsed == null || !(parsed > 0)) {
+      showStatus('err', productMeta.uom ? quantityHint(productMeta.uom) : 'Enter a quantity greater than 0.');
+      return;
+    }
+    addPackQuantity(parsed);
   };
 
   const loadPrinters = useCallback(async () => {
@@ -490,10 +637,10 @@ export default function BarcodeLabelScreen() {
     return {
       shopName,
       productName: productDisplayName(productMeta.productName, row.size, row.color),
-      detail: row.mrp != null && row.mrp > 0 ? `MRP ${formatMoney(row.mrp)}` : '',
+      detail: itemQtyLabel(row, productMeta.uom),
       barcode,
-      mrp: row.mrp != null && row.mrp > 0 ? formatMoney(row.mrp) : '',
-      price: formatMoney(row.sellingPrice),
+      mrp: '',
+      price: '',
     };
   };
 
@@ -603,7 +750,9 @@ export default function BarcodeLabelScreen() {
             : 'Connect printer'
           : totalLabels > 0
             ? `Print · ${totalLabels} label${totalLabels === 1 ? '' : 's'}`
-            : 'Select variants';
+            : productMeta.hasVariants
+              ? 'Select variants'
+              : 'Select a quantity';
 
   const selectedLabel = productMeta
     ? `${productMeta.productName}${productMeta.hasVariants ? ` · ${rows.length} variants` : ''}`
@@ -630,8 +779,8 @@ export default function BarcodeLabelScreen() {
           <LabelPreview
             shopName={shopName}
             productName={previewName}
-            qtyLabel={previewMrp ? `MRP ${previewMrp}` : ''}
-            price={previewPrice}
+            qtyLabel={previewQty}
+            price=""
             barcode={previewRow?.barcode || ''}
             width={previewW}
             height={previewH}
@@ -639,7 +788,6 @@ export default function BarcodeLabelScreen() {
           <Text style={styles.previewCaption}>
             {LABEL_WIDTH_MM}×{labelHeightMm} mm · preview only (no barcode is auto-generated)
           </Text>
-          {previewRight ? <Text style={styles.previewCaption}>{previewRight}</Text> : null}
         </View>
 
         <View style={styles.block}>
@@ -688,7 +836,7 @@ export default function BarcodeLabelScreen() {
           {loadingProduct ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={styles.muted}>Loading variants…</Text>
+              <Text style={styles.muted}>Loading barcodes…</Text>
             </View>
           ) : null}
         </View>
@@ -696,7 +844,7 @@ export default function BarcodeLabelScreen() {
         {rows.length ? (
           <View style={styles.block}>
             <View style={styles.tableHeader}>
-              <Text style={styles.blockTitle}>2 · Variants</Text>
+              <Text style={styles.blockTitle}>{productMeta?.hasVariants ? '2 · Variants' : '2 · Quantity'}</Text>
               <View style={styles.headerActions}>
                 <Pressable onPress={selectAllPrintable} disabled={printing || generating}>
                   <Text style={styles.link}>Select all</Text>
@@ -722,38 +870,82 @@ export default function BarcodeLabelScreen() {
               </Button>
             ) : null}
 
-            <Text style={styles.tableHint}>
-              Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.
-            </Text>
+            {productMeta && !productMeta.hasVariants ? (
+              <View style={styles.packBlock}>
+                <Text style={styles.tableHint}>
+                  Tap a quantity to print that pack. Labels is how many stickers. Printing does not change stock.
+                </Text>
+                <View style={styles.sizeRow}>
+                  {packPresets(productMeta.uom).map((preset) => {
+                    const existing = rows.find((row) => sameQty(row.packQuantity, preset.quantity));
+                    const on = Boolean(existing?.selected);
+                    return (
+                      <Pressable
+                        key={preset.label}
+                        onPress={() => addPackQuantity(preset.quantity)}
+                        disabled={addingPack || printing || generating}
+                        style={[styles.sizeChip, on && styles.sizeChipOn]}>
+                        <Text style={[styles.sizeChipText, on && styles.sizeChipTextOn]}>{preset.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <View style={styles.packAddRow}>
+                  <TextInput
+                    value={packDraft}
+                    onChangeText={setPackDraft}
+                    placeholder={productMeta.uom ? quantityHint(productMeta.uom) : 'Quantity'}
+                    mode="outlined"
+                    dense
+                    disabled={addingPack || printing || generating}
+                    style={styles.packInput}
+                    onSubmitEditing={addCustomPack}
+                  />
+                  <Button
+                    mode="contained"
+                    onPress={addCustomPack}
+                    loading={addingPack}
+                    disabled={addingPack || printing || generating}>
+                    Add qty
+                  </Button>
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.tableHint}>
+                Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.
+              </Text>
+            )}
 
             {rows.map((row) => {
               const meta = statusMeta(row.status);
-              const name = variantLabel(row.size, row.color) || 'Default';
+              const name = productMeta
+                ? rowTitle(row, productMeta.hasVariants, productMeta.uom)
+                : 'Default';
               const disabledSelect = !meta.printable;
               return (
-                <Pressable
-                  key={row.variantId}
-                  onPress={() => setPreviewVariantId(row.variantId)}
+                <View
+                  key={row.rowKey}
                   style={[
                     styles.variantCard,
-                    previewVariantId === row.variantId && styles.variantCardActive,
+                    previewRowKey === row.rowKey && styles.variantCardActive,
                   ]}>
-                  <View style={styles.variantTop}>
+                  <Pressable onPress={() => setPreviewRowKey(row.rowKey)} style={styles.variantTop}>
                     <Checkbox
                       status={row.selected ? 'checked' : 'unchecked'}
                       disabled={disabledSelect || printing || generating}
                       onPress={() => {
                         if (disabledSelect) return;
-                        updateRow(row.variantId, { selected: !row.selected });
+                        updateRow(row.rowKey, { selected: !row.selected });
+                        setPreviewRowKey(row.rowKey);
                       }}
                     />
                     <View style={styles.flex}>
                       <Text style={styles.variantName}>{name}</Text>
                       <Text style={styles.variantSku}>SKU {row.sku}</Text>
                       <Text style={styles.variantPrice}>
-                        MRP {row.mrp != null && row.mrp > 0 ? formatMoney(row.mrp) : '—'}
+                        MRP {row.mrp != null && row.mrp > 0 ? formatMoney(priceForQty(row.mrp, row)) : '—'}
                         {'  ·  '}
-                        Sell {formatMoney(row.sellingPrice)}
+                        Sell {formatMoney(priceForQty(row.sellingPrice, row))}
                       </Text>
                       <Text style={styles.variantBarcode} numberOfLines={1}>
                         {row.barcode || 'No barcode'}
@@ -763,21 +955,27 @@ export default function BarcodeLabelScreen() {
                     <View style={[styles.statusPill, { backgroundColor: meta.bg }]}>
                       <Text style={[styles.statusText, { color: meta.color }]}>{meta.label}</Text>
                     </View>
-                  </View>
+                  </Pressable>
                   <View style={styles.qtyRow}>
                     <Text style={styles.qtyLabel}>Labels</Text>
                     <TextInput
                       value={row.labelQty}
-                      onChangeText={(v) => updateRow(row.variantId, { labelQty: v })}
+                      onChangeText={(v) =>
+                        updateRow(row.rowKey, {
+                          labelQty: v,
+                          selected: meta.printable ? true : row.selected,
+                        })
+                      }
+                      onFocus={() => setPreviewRowKey(row.rowKey)}
                       keyboardType="number-pad"
                       mode="outlined"
                       dense
-                      disabled={disabledSelect || !row.selected || printing}
+                      disabled={disabledSelect || printing || generating}
                       style={styles.qtyInput}
                     />
                   </View>
                   {row.status === 'missing' ? (
-                    <Text style={styles.warnLine}>Generate a number barcode before printing this variant.</Text>
+                    <Text style={styles.warnLine}>Generate a number barcode before printing this row.</Text>
                   ) : null}
                   {row.barcodeType === 'code128' ? (
                     <Text style={styles.warnLine}>
@@ -789,7 +987,7 @@ export default function BarcodeLabelScreen() {
                       Duplicate barcode detected — fix the assignment before printing.
                     </Text>
                   ) : null}
-                </Pressable>
+                </View>
               );
             })}
 
@@ -1085,6 +1283,14 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     paddingLeft: 40,
   },
+  packBlock: { marginBottom: spacing.sm },
+  packAddRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  packInput: { flex: 1, backgroundColor: colors.surface },
   qtyLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
   qtyInput: { width: 88, backgroundColor: colors.surface },
   warnLine: { marginTop: 6, marginLeft: 40, fontSize: 11, color: colors.error, fontWeight: '600' },

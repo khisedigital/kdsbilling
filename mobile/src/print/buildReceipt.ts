@@ -3,6 +3,7 @@ import type { ShopSettings } from '../services/shopSettingsService';
 import { APP_DISPLAY_NAME } from '../constants/branding';
 import type { ThermalPrintPayload } from './PrintService';
 import { receiptCharsForPaper } from './escpos';
+import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari } from './indicText';
 
 function n(v: string | number | null | undefined): number {
   const x = parseFloat(String(v ?? 0));
@@ -20,14 +21,14 @@ function ascii(v: unknown): string {
     .replace(/[‘’]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/[<>]/g, '')
-    .replace(/[^\x20-\x7E\n]/g, '?')
+    .replace(/[^\x20-\x7E\n\u0900-\u097F\u200C\u200D]/g, '?')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function pad(text: string, width: number, align: 'left' | 'right' = 'left'): string {
-  const body = text.length > width ? text.slice(0, width) : text;
-  const gap = width - body.length;
+  const body = clipCols(text, width);
+  const gap = width - colLength(body);
   if (gap <= 0) return body;
   return align === 'right' ? `${' '.repeat(gap)}${body}` : `${body}${' '.repeat(gap)}`;
 }
@@ -46,25 +47,25 @@ function fmtDate(value: string | Date | null | undefined): string {
 function wrapWords(text: string, width: number): string[] {
   const value = ascii(text);
   if (!value) return [];
-  if (value.length <= width) return [value];
+  if (colLength(value) <= width) return [value];
   const out: string[] = [];
   let cur = '';
   for (const token of value.split(' ').filter(Boolean)) {
-    if (token.length > width) {
+    if (colLength(token) > width) {
       if (cur) {
         out.push(cur);
         cur = '';
       }
-      let rest = token;
+      let rest = graphemes(token);
       while (rest.length > width) {
-        out.push(rest.slice(0, width));
+        out.push(rest.slice(0, width).join(''));
         rest = rest.slice(width);
       }
-      cur = rest;
+      cur = rest.join('');
       continue;
     }
     const next = cur ? `${cur} ${token}` : token;
-    if (next.length <= width) cur = next;
+    if (colLength(next) <= width) cur = next;
     else {
       out.push(cur);
       cur = token;
@@ -77,7 +78,7 @@ function wrapWords(text: string, width: number): string[] {
 function kv(width: number, left: string, right: string): string {
   const l = ascii(left);
   const r = ascii(right);
-  return `${l}${' '.repeat(Math.max(1, width - l.length - r.length))}${r}`;
+  return `${l}${' '.repeat(Math.max(1, width - colLength(l) - colLength(r)))}${r}`;
 }
 
 type Cols = { item: number; qty: number; rate: number; amt: number };
@@ -112,7 +113,7 @@ function tableHeader(width: number, cols: Cols): string {
     pad('RATE', cols.rate, 'right') +
     ' ' +
     pad('AMT', cols.amt, 'right')
-  ).slice(0, width);
+  );
 }
 
 function tableRows(
@@ -137,7 +138,7 @@ function tableRows(
         pad(rateStr, cols.rate, 'right') +
         ' ' +
         pad(amtStr, cols.amt, 'right')
-      ).slice(0, width),
+      ),
     ];
   }
   return nameLines.map((line, idx) => {
@@ -150,7 +151,7 @@ function tableRows(
         pad(rateStr, cols.rate, 'right') +
         ' ' +
         pad(amtStr, cols.amt, 'right')
-      ).slice(0, width);
+      );
     }
     return pad(line, cols.item);
   });
@@ -217,9 +218,11 @@ export function buildThermalReceipt(
   const gstin = pickGstin(shop);
 
   lines.push(rule(w, '='));
-  for (const part of wrapWords(shopName.toUpperCase(), w)) {
-    // Center only — no bold/size (those blur on many thermal printers)
-    lines.push(`<C>${part}</C>`);
+  const shopUpper = shopName.toUpperCase();
+  // Double-size on the printer, so English wraps at half the columns.
+  const nameWidth = hasDevanagari(shopUpper) ? w : Math.max(12, Math.floor(w / 2));
+  for (const part of wrapWords(shopUpper, nameWidth)) {
+    lines.push(`<CB>${part}</CB>`);
   }
   lines.push(rule(w, '='));
 
@@ -236,7 +239,7 @@ export function buildThermalReceipt(
   lines.push(kv(w, 'Bill', pickBillNo(bill)));
   lines.push(kv(w, 'Date', pickBillDate(bill)));
   lines.push(
-    kv(w, 'Customer', ascii(bill.customer?.name || 'Walk-in').slice(0, Math.max(8, w - 10))),
+    kv(w, 'Customer', clipCols(ascii(bill.customer?.name || 'Walk-in'), Math.max(8, w - 10))),
   );
   lines.push(rule(w, '='));
   lines.push(tableHeader(w, cols));
@@ -317,11 +320,11 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
 <title>${escapeHtml(pickBillNo(bill))}</title>
 <style>
   *{box-sizing:border-box}
-  body{font-family:Arial,Helvetica,sans-serif;color:#000;font-weight:400;margin:0;padding:28px;max-width:780px;
+  body{font-family:Arial,Helvetica,${DEVANAGARI_FONTS},sans-serif;color:#000;font-weight:400;margin:0;padding:28px;max-width:780px;
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b,.totals .grand{font-weight:700}
   .head{text-align:center;border:1px solid #000;padding:18px 14px;margin-bottom:18px}
-  .shop{margin:0;font-size:22px;letter-spacing:.02em;text-transform:uppercase}
+  .shop{margin:0;font-size:28px;letter-spacing:.02em;text-transform:uppercase;text-align:center}
   .meta{margin:4px 0 0;color:#000;font-size:13px}
   .title{margin:10px 0 0;font-size:12px;letter-spacing:.2em}
   .info{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px;font-size:13px}

@@ -57,18 +57,22 @@ function pickPlainBarcode(barcodes) {
   return plain[0]?.barcode ? String(plain[0].barcode).trim() : '';
 }
 
+function classifyCode(code, occupancyByCode = {}) {
+  const value = String(code || '').trim();
+  if (!value) return { status: 'missing', barcode: '', barcodeType: null };
+  const occupants = occupancyByCode[value] || 1;
+  if (occupants > 1) {
+    return { status: 'duplicate', barcode: value, barcodeType: detectBarcodeType(value) };
+  }
+  return { status: 'available', barcode: value, barcodeType: detectBarcodeType(value) };
+}
+
 /**
  * Classify barcode presence for a variant given its barcodes and a map of
  * barcode → distinct variant_id count across the catalog.
  */
 function classifyBarcodeStatus(barcodes, occupancyByCode = {}) {
-  const code = pickPlainBarcode(barcodes);
-  if (!code) return { status: 'missing', barcode: '', barcodeType: null };
-  const occupants = occupancyByCode[code] || 1;
-  if (occupants > 1) {
-    return { status: 'duplicate', barcode: code, barcodeType: detectBarcodeType(code) };
-  }
-  return { status: 'available', barcode: code, barcodeType: detectBarcodeType(code) };
+  return classifyCode(pickPlainBarcode(barcodes), occupancyByCode);
 }
 
 function detectBarcodeType(value) {
@@ -89,5 +93,6 @@ module.exports = {
   randomInStoreEan13,
   pickPlainBarcode,
   classifyBarcodeStatus,
+  classifyCode,
   detectBarcodeType,
 };

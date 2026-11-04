@@ -4,12 +4,20 @@ const AppError = require('../utils/AppError');
 const { getPagination, paginatedResponse } = require('../utils/pagination');
 const { MOVEMENT_TYPES, toDecimal, getOrCreateBalance, applyStockMovement } = require('./stockEngine');
 const {
-  isValidBarcodeValue,
-  isNumericBarcode,
   randomInStoreEan13,
   pickPlainBarcode,
   classifyBarcodeStatus,
+  classifyCode,
 } = require('./barcodeValidation');
+
+/** Digits only, 4–18 characters. Defined here so a stale barcode module cannot crash the save. */
+function isNumericBarcode(value) {
+  return /^\d{4,18}$/.test(String(value || '').trim());
+}
+
+function isValidBarcodeValue(value) {
+  return isNumericBarcode(value);
+}
 
 const productIncludes = (db) => [
   { model: db.Category, as: 'category', attributes: ['id', 'name'] },
@@ -55,6 +63,75 @@ function sortBarcodes(barcodes) {
 
 function generateSku(prefix = 'SKU') {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function clipSku(value) {
+  const sku = String(value || '').trim();
+  if (!sku) return generateSku().slice(0, 50);
+  return sku.length > 50 ? sku.slice(0, 50) : sku;
+}
+
+function skuWithToken(base) {
+  const token = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const suffix = `-${token}`;
+  return `${clipSku(base).slice(0, 50 - suffix.length)}${suffix}`;
+}
+
+/** Size + colour identity. Blank options do not match, so a default variant is never reused by accident. */
+function variantOptionKey(size, color) {
+  const sizeKey = String(size || '').trim().toLowerCase();
+  const colorKey = String(color || '').trim().toLowerCase();
+  if (!sizeKey && !colorKey) return '';
+  return `${sizeKey}|${colorKey}`;
+}
+
+/**
+ * Pick a catalog-unique SKU. `product_variants.sku` is unique even for soft-deleted
+ * rows, and size helpers often reuse the same name/size code.
+ */
+async function allocateSku(db, requested, { excludeId, transaction, reserved } = {}) {
+  const { ProductVariant } = db;
+  const base = clipSku(String(requested || '').trim() || generateSku());
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const candidate = attempt === 0 ? base : skuWithToken(base);
+    const key = candidate.toLowerCase();
+    if (reserved?.has(key)) continue;
+
+    const owner = await ProductVariant.findOne({
+      where: { sku: candidate },
+      attributes: ['id'],
+      transaction,
+    });
+    if (!owner || (excludeId && owner.id === excludeId)) {
+      reserved?.add(key);
+      return candidate;
+    }
+  }
+
+  const fallback = skuWithToken(generateSku());
+  reserved?.add(fallback.toLowerCase());
+  return fallback;
+}
+
+/**
+ * Same size/colour already on this product (active, or removed) should be updated
+ * instead of inserted. Inserting again hits the old row's unique SKU.
+ */
+function findReusableVariant(rows, incoming, claimedIds) {
+  const key = variantOptionKey(incoming?.size, incoming?.color);
+  if (!key) return null;
+
+  const matches = (rows || []).filter((row) => variantOptionKey(row.size, row.color) === key);
+  const active = matches.find((row) => !row.deleted_at);
+  if (active) {
+    if (claimedIds?.has(active.id)) return null;
+    return active;
+  }
+
+  const deleted = matches.filter((row) => row.deleted_at && !claimedIds?.has(row.id));
+  deleted.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
+  return deleted[0] || null;
 }
 
 /** Split total qty across N sizes. Remainder goes to the first sizes (pcs-friendly). */
@@ -301,29 +378,37 @@ async function getProduct(db, id, branchId = null) {
   return withStock;
 }
 
-async function createVariantRecords(db, product, variants, transaction) {
+async function createVariantRecords(db, product, variants, transaction, reservedSkus) {
   const { ProductVariant, Barcode } = db;
+  const reserved = reservedSkus || new Set();
   const created = [];
 
   for (const v of variants) {
-    const sku = v.sku?.trim() || generateSku();
-    const variant = await ProductVariant.create(
-      {
-        product_id: product.id,
-        sku,
-        size: v.size || null,
-        color: v.color || null,
-        cost_price: v.costPrice ?? 0,
-        selling_price: v.sellingPrice,
-        mrp: v.mrp ?? null,
-        wholesale_price: v.wholesalePrice ?? null,
-        uom_id: v.uomId || product.uom_id,
-        tax_group_id: v.taxGroupId || product.tax_group_id,
-        reorder_level: v.reorderLevel ?? 0,
-        status: v.status || 'active',
-      },
-      { transaction }
-    );
+    let variant = null;
+    for (let attempt = 0; attempt < 5 && !variant; attempt += 1) {
+      const sku = await allocateSku(db, v.sku, { transaction, reserved });
+      try {
+        variant = await ProductVariant.create(
+          {
+            product_id: product.id,
+            sku,
+            size: v.size || null,
+            color: v.color || null,
+            cost_price: v.costPrice ?? 0,
+            selling_price: v.sellingPrice,
+            mrp: v.mrp ?? null,
+            wholesale_price: v.wholesalePrice ?? null,
+            uom_id: v.uomId || product.uom_id,
+            tax_group_id: v.taxGroupId || product.tax_group_id,
+            reorder_level: v.reorderLevel ?? 0,
+            status: v.status || 'active',
+          },
+          { transaction }
+        );
+      } catch (err) {
+        if (!isSkuUniqueError(err) || attempt === 4) throw err;
+      }
+    }
 
     // Every size/variant needs its own primary barcode (auto-generate if blank).
     let barcodes = v.barcodes?.length
@@ -516,6 +601,17 @@ function isUniqueConstraintError(err) {
   );
 }
 
+function isSkuUniqueError(err) {
+  if (!isUniqueConstraintError(err)) return false;
+  const paths = [
+    ...(err.errors || []).map((item) => item?.path || ''),
+    ...Object.keys(err.fields || {}),
+  ].join(' ');
+  const message = `${paths} ${err?.original?.sqlMessage || ''} ${err?.parent?.sqlMessage || ''}`;
+  if (/barcode/i.test(message)) return false;
+  return /sku/i.test(message);
+}
+
 /** Create primary barcode; retry on rare concurrent unique collisions. */
 async function createUniquePrimaryBarcode(db, variantId, transaction) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -616,21 +712,67 @@ async function syncProductVariants(db, product, variants, transaction, options =
     }
   }
 
-  const existing = await ProductVariant.findAll({
-    where: { product_id: product.id, deleted_at: null },
+  const catalogVariants = await ProductVariant.findAll({
+    where: { product_id: product.id },
     transaction,
   });
+  const existing = catalogVariants.filter((row) => !row.deleted_at);
   const existingIds = existing.map((row) => row.id);
   const keptVariants = [];
+  const reservedSkus = new Set();
+  // Ids already named in this save must not be grabbed by a new size row.
+  const claimedIds = new Set(variants.map((row) => row.id).filter(Boolean));
+
+  async function assignVariantBarcode(variant, incoming, { keepExisting = false } = {}) {
+    const requested = incoming.barcode !== undefined ? String(incoming.barcode || '').trim() : '';
+    if (requested && !isNumericBarcode(requested)) {
+      throw new AppError('Barcode must be numbers only', 400, 'VALIDATION_ERROR');
+    }
+    if (keepExisting) {
+      const primary = await Barcode.findOne({
+        where: { variant_id: variant.id, is_primary: true },
+        transaction,
+      });
+      if (primary && isNumericBarcode(primary.barcode)) return;
+    }
+    if (requested) {
+      await upsertVariantBarcode(db, variant.id, requested, transaction);
+      return;
+    }
+    // Keep a number barcode. Replace a letter barcode so scanners can read it.
+    const primary = await Barcode.findOne({
+      where: { variant_id: variant.id, is_primary: true },
+      transaction,
+    });
+    if (primary && !isNumericBarcode(primary.barcode)) {
+      await assignFreshBarcode(db, primary, transaction);
+    } else if (!primary) {
+      await createUniquePrimaryBarcode(db, variant.id, transaction);
+    }
+  }
 
   for (const v of variants) {
-    if (v.id) {
-      const variant = existing.find((row) => row.id === v.id);
-      if (!variant) throw new AppError('Variant not found', 404, 'NOT_FOUND');
+    let variant = null;
+    let restored = false;
 
+    if (v.id) {
+      variant = existing.find((row) => row.id === v.id);
+      if (!variant) throw new AppError('Variant not found', 404, 'NOT_FOUND');
+    } else {
+      variant = findReusableVariant(catalogVariants, v, claimedIds);
+      restored = Boolean(variant?.deleted_at);
+      if (variant) claimedIds.add(variant.id);
+    }
+
+    if (variant) {
+      const sku = await allocateSku(db, v.sku?.trim() || variant.sku, {
+        excludeId: variant.id,
+        transaction,
+        reserved: reservedSkus,
+      });
       await variant.update(
         {
-          sku: v.sku?.trim() || variant.sku,
+          sku,
           size: v.size !== undefined ? v.size?.trim() || null : variant.size,
           color: v.color !== undefined ? v.color?.trim() || null : variant.color,
           cost_price: v.costPrice !== undefined ? v.costPrice : variant.cost_price,
@@ -643,38 +785,22 @@ async function syncProductVariants(db, product, variants, transaction, options =
           tax_group_id:
             v.taxGroupId !== undefined ? v.taxGroupId || null : variant.tax_group_id,
           reorder_level: v.reorderLevel !== undefined ? v.reorderLevel : variant.reorder_level,
+          ...(restored ? { deleted_at: null, status: 'active' } : {}),
         },
         { transaction }
       );
 
-      const requested = v.barcode !== undefined ? String(v.barcode || '').trim() : '';
-      if (requested && !isNumericBarcode(requested)) {
-        throw new AppError('Barcode must be numbers only', 400, 'VALIDATION_ERROR');
-      }
-      if (requested) {
-        await upsertVariantBarcode(db, variant.id, requested, transaction);
-      } else {
-        // Keep a number barcode. Replace a letter barcode so scanners can read it.
-        const primary = await Barcode.findOne({
-          where: { variant_id: variant.id, is_primary: true },
-          transaction,
-        });
-        if (primary && !isNumericBarcode(primary.barcode)) {
-          await assignFreshBarcode(db, primary, transaction);
-        } else if (!primary) {
-          const code = await uniqueInStoreBarcode(db, transaction);
-          await Barcode.create(
-            { variant_id: variant.id, barcode: code, is_primary: true },
-            { transaction },
-          );
-        }
-      }
+      // A new row that matches a size already on this product must not replace
+      // that size's barcode with a freshly generated number.
+      await assignVariantBarcode(variant, v, { keepExisting: !v.id });
       if (Array.isArray(v.quantityBarcodes)) {
         await syncQuantityBarcodes(db, variant.id, v.quantityBarcodes, transaction);
       }
       keptVariants.push(variant);
     } else {
-      const [created] = await createVariantRecords(db, product, [v], transaction);
+      const [created] = await createVariantRecords(db, product, [v], transaction, reservedSkus);
+      claimedIds.add(created.id);
+      catalogVariants.push(created);
       keptVariants.push(created);
     }
   }
@@ -1152,6 +1278,7 @@ async function getProductBarcodeStatus(db, productId) {
   const product = await Product.findOne({
     where: { id: productId, deleted_at: null },
     attributes: ['id', 'name', 'has_variants'],
+    include: [{ model: db.UnitOfMeasure, as: 'uom', attributes: ['code', 'name', 'type'], required: false }],
   });
   if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
 
@@ -1161,9 +1288,13 @@ async function getProductBarcodeStatus(db, productId) {
     order: [['sku', 'ASC']],
   });
 
-  const plainCodes = variants
-    .map((v) => pickPlainBarcode(v.barcodes))
-    .filter(Boolean);
+  const plainCodes = [];
+  for (const variant of variants) {
+    for (const barcode of variant.barcodes || []) {
+      const code = String(barcode.barcode || '').trim();
+      if (code) plainCodes.push(code);
+    }
+  }
 
   const occupancyByCode = {};
   if (plainCodes.length) {
@@ -1203,8 +1334,23 @@ async function getProductBarcodeStatus(db, productId) {
     productId: product.id,
     productName: product.name,
     hasVariants,
+    uom: product.uom
+      ? { code: product.uom.code, name: product.uom.name, type: product.uom.type }
+      : null,
     variants: variants.map((v) => {
       const classified = classifyBarcodeStatus(v.barcodes, occupancyByCode);
+      const quantityBarcodes = (v.barcodes || [])
+        .filter((barcode) => barcode.quantity != null && Number(barcode.quantity) > 0)
+        .map((barcode) => {
+          const pack = classifyCode(barcode.barcode, occupancyByCode);
+          return {
+            quantity: parseFloat(String(barcode.quantity)),
+            barcode: pack.barcode || null,
+            barcodeType: pack.barcodeType,
+            status: pack.status,
+          };
+        })
+        .sort((a, b) => a.quantity - b.quantity);
       return {
         variantId: v.id,
         sku: v.sku,
@@ -1217,6 +1363,7 @@ async function getProductBarcodeStatus(db, productId) {
         barcodeType: classified.barcodeType,
         status: classified.status,
         stockQty: v.stockQty ?? null,
+        quantityBarcodes,
       };
     }),
   };

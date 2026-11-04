@@ -80,8 +80,11 @@ function newRowKey() {
 
 function makeSizeSku(baseSku: string, size: string) {
   const base = baseSku.trim().replace(/\s+/g, '-') || 'SKU';
-  const suffix = size.trim().replace(/\s+/g, '').toUpperCase();
-  return `${base}-${suffix}`;
+  const suffix = size.trim().replace(/\s+/g, '').toUpperCase() || 'VAR';
+  // A short token keeps SHIRT-M from colliding with the same size on another product,
+  // or with a size that was removed earlier (its SKU stays reserved).
+  const token = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `${base}-${suffix}-${token}`.slice(0, 50);
 }
 
 /** Match API: split total across sizes; remainder on first sizes. */

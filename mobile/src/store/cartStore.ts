@@ -11,6 +11,8 @@ export interface CartItem {
   color?: string | null;
   quantity: number;
   unitPrice: number;
+  /** Cashier changed this line’s rate. Catalog refresh must not put the list price back. */
+  priceEdited?: boolean;
   discountAmount?: number;
   discountPercent?: number;
   uom?: UomInfo;
@@ -32,6 +34,7 @@ interface CartState {
   resumedHeldId: string | null;
   addItem: (item: CartItem) => void;
   updateQty: (variantId: string, quantity: number) => void;
+  updatePrice: (variantId: string, unitPrice: number) => void;
   removeItem: (variantId: string) => void;
   /** Refresh name/price/stock on bill lines after a catalog product is edited. */
   syncFromCatalog: (catalog: SearchProductResult[]) => void;
@@ -92,6 +95,18 @@ export const useCartStore = create<CartState>((set, get) => ({
       });
     }
   },
+  updatePrice: (variantId, unitPrice) => {
+    const price = Math.round((Number(unitPrice) || 0) * 100) / 100;
+    if (!Number.isFinite(price) || price < 0) return;
+    set({
+      items: get().items.map((item) => {
+        if (item.variantId !== variantId) return item;
+        const current = Math.round((Number(item.unitPrice) || 0) * 100) / 100;
+        if (current === price) return item;
+        return { ...item, unitPrice: price, priceEdited: true };
+      }),
+    });
+  },
   removeItem: (variantId) => set({ items: get().items.filter((i) => i.variantId !== variantId) }),
   syncFromCatalog: (catalog) => {
     if (!catalog.length || !get().items.length) return;
@@ -101,7 +116,8 @@ export const useCartStore = create<CartState>((set, get) => ({
       if (item.isCustom) return item;
       const product = byVariant.get(item.variantId);
       if (!product) return item;
-      const nextPrice = Number(product.sellingPrice) || 0;
+      const catalogPrice = Number(product.sellingPrice) || 0;
+      const nextPrice = item.priceEdited ? item.unitPrice : catalogPrice;
       const nextAllow = !!(product.allowDecimalQty || product.isWeightBased);
       const nextStock = product.stockQty ?? item.stockQty;
       if (

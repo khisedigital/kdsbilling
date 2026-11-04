@@ -5,6 +5,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import java.text.BreakIterator
+import java.util.Locale
 
 /**
  * Render at the 58 mm head width (384 dots @ 203 dpi), not 50 mm × 8 = 400.
@@ -20,6 +22,7 @@ private fun labelHeightPx(heightMm: Int): Int {
 }
 
 private val TITLE_FONT: Typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+private val DEVANAGARI = Regex("[\\u0900-\\u097F]")
 /** Readable monospace for the human-readable barcode under the bars. */
 private val DIGIT_FONT: Typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
 
@@ -64,16 +67,21 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
 
   var y = padY.toFloat()
 
-  val shopSize = 22f
+  val shopSource = content.shopName.ifBlank { "Shop" }.replace(Regex("[A-Za-z]+")) { it.value.uppercase() }
+  val productSource = content.productName.ifBlank { "Product" }
+  val indic = DEVANAGARI.containsMatchIn(shopSource) || DEVANAGARI.containsMatchIn(productSource) ||
+    DEVANAGARI.containsMatchIn(content.detail)
+  val shopSize = if (indic) 24f else 22f
   paint.textSize = shopSize
   paint.textAlign = Paint.Align.CENTER
-  val shop = ellipsize(paint, content.shopName.ifBlank { "Shop" }.uppercase(), shopSize, (width - padX * 2).toFloat())
+  paint.isAntiAlias = indic
+  val shop = ellipsize(paint, shopSource, shopSize, (width - padX * 2).toFloat())
   y += shopSize
   canvas.drawText(shop, (width / 2).toFloat(), y, paint)
-  y += 5f
+  y += if (indic) 8f else 5f
 
-  val productSize = 18f
-  val priceSize = 18f
+  val productSize = if (indic) 20f else 18f
+  val priceSize = if (indic) 20f else 18f
   paint.textSize = priceSize
 
   val qtyText = content.detail.trim()
@@ -94,14 +102,16 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   y += productSize.coerceAtLeast(priceSize)
   paint.textAlign = Paint.Align.LEFT
   paint.textSize = productSize
+  paint.isAntiAlias = DEVANAGARI.containsMatchIn(productText)
   canvas.drawText(productText, padX.toFloat(), y, paint)
 
   if (rightPart.isNotBlank()) {
     paint.textAlign = Paint.Align.RIGHT
     paint.textSize = priceSize
+    paint.isAntiAlias = DEVANAGARI.containsMatchIn(rightPart)
     canvas.drawText(rightPart, (width - padX).toFloat(), y, paint)
   }
-  y += 5f
+  y += if (indic) 8f else 5f
 
   paint.strokeWidth = 1f
   paint.style = Paint.Style.STROKE
@@ -109,12 +119,11 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   paint.style = Paint.Style.FILL
   y += 5f
 
-  // Keep a clear footer so the barcode number is always visible on 50×25 mm.
+  // Bars fill the sticker down to the digit line so the print uses the selected label height.
   val preferredFooter = 18f
-  val footerReserve = preferredFooter + padY + 6f
+  val footerReserve = preferredFooter + padY + 4f
   val barTop = y.toInt()
-  val maxBarH = (height * 0.26f).toInt()
-  val barBottom = (height - footerReserve).toInt().coerceAtMost(barTop + maxBarH).coerceAtLeast(barTop + 24)
+  val barBottom = (height - footerReserve).toInt().coerceAtLeast(barTop + 24)
 
   val code = content.barcode.ifBlank { "2000000000008" }.replace("\\s+".toRegex(), "")
   drawBarcode(
@@ -149,7 +158,20 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   val digitY = (digitTop + digitSize).coerceAtMost((height - 2).toFloat())
   canvas.drawText(digitText, (width / 2).toFloat(), digitY, paint)
 
+  if (indic) solidifyDevanagari(bitmap)
   return bitmap
+}
+
+/** Turn gray anti-aliased Marathi strokes into solid black so the thermal head prints them. */
+private fun solidifyDevanagari(bitmap: Bitmap) {
+  val pixels = IntArray(bitmap.width * bitmap.height)
+  bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+  for (i in pixels.indices) {
+    val color = pixels[i]
+    val lum = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
+    pixels[i] = if (lum < 170) Color.BLACK else Color.WHITE
+  }
+  bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
 }
 
 private fun ellipsizeDigits(paint: Paint, text: String, maxWidth: Float): String {
@@ -174,11 +196,18 @@ private fun ellipsize(
   paint.isFakeBoldText = false
   if (paint.measureText(text) <= maxWidth) return text
   val ellipsis = ".."
-  var end = text.length
-  while (end > 0 && paint.measureText(text.substring(0, end) + ellipsis) > maxWidth) {
-    end -= 1
+  val breaks = BreakIterator.getCharacterInstance(Locale.forLanguageTag("mr"))
+  breaks.setText(text)
+  var lastFit = 0
+  var end = breaks.first()
+  while (end != BreakIterator.DONE) {
+    val next = breaks.next()
+    if (next == BreakIterator.DONE) break
+    if (paint.measureText(text.substring(0, next) + ellipsis) > maxWidth) break
+    lastFit = next
+    end = next
   }
-  return if (end <= 0) ellipsis else text.substring(0, end) + ellipsis
+  return if (lastFit <= 0) ellipsis else text.substring(0, lastFit) + ellipsis
 }
 
 private fun drawBarcode(canvas: Canvas, barcode: String, x: Float, y: Float, width: Float, height: Float) {
@@ -189,8 +218,8 @@ private fun drawBarcode(canvas: Canvas, barcode: String, x: Float, y: Float, wid
   }
   val quiet = BarcodeEncoder.QUIET_ZONE_MODULES
   val total = modules.length + quiet * 2
-  val module = (width / total).toInt().coerceAtLeast(2)
-  val barLeft = x.toInt() + quiet * module
+  val module = width / total.toFloat()
+  val x0 = x
   val top = y.toInt()
   val bottom = (y + height).toInt().coerceAtLeast(top + 1)
   val paint = Paint().apply {
@@ -198,24 +227,19 @@ private fun drawBarcode(canvas: Canvas, barcode: String, x: Float, y: Float, wid
     style = Paint.Style.FILL
     isAntiAlias = false
   }
-  var cursor = barLeft
   var i = 0
   while (i < modules.length) {
     if (modules[i] != '1') {
-      cursor += module
       i += 1
       continue
     }
     var run = 1
     while (i + run < modules.length && modules[i + run] == '1') run += 1
-    canvas.drawRect(
-      cursor.toFloat(),
-      top.toFloat(),
-      (cursor + run * module).toFloat(),
-      bottom.toFloat(),
-      paint,
-    )
-    cursor += run * module
+    val start = x0 + (quiet + i) * module
+    val end = x0 + (quiet + i + run) * module
+    if (end > start) {
+      canvas.drawRect(start, top.toFloat(), end, bottom.toFloat(), paint)
+    }
     i += run
   }
 }

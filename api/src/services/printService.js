@@ -1,3 +1,5 @@
+const { DEVANAGARI, renderIndicLine, paperDotsForMarkup } = require('./indicEscPos');
+
 function formatMoneyThermal(amount) {
   const n = parseFloat(amount);
   const value = Number.isFinite(n) ? n.toFixed(2) : '0.00';
@@ -39,7 +41,7 @@ function formatReceiptDate(value) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Keep thermal text ESC/POS safe (no rupee glyph, no tag markers) */
+/** Keep thermal text ESC/POS safe. Marathi stays so it can be drawn as an image. */
 function sanitizeThermalText(value) {
   return String(value ?? '')
     .replace(/₹/g, 'Rs.')
@@ -47,7 +49,7 @@ function sanitizeThermalText(value) {
     .replace(/[‘’]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/[<>]/g, '')
-    .replace(/[^\x20-\x7E\n]/g, '?');
+    .replace(/[^\x20-\x7E\n\u0900-\u097F\u200C\u200D]/g, '?');
 }
 
 /**
@@ -350,23 +352,23 @@ function renderA4(payload) {
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
       *{box-sizing:border-box}
-      body{font-family:Georgia,'Times New Roman',serif;padding:36px 40px;color:#111;max-width:720px;margin:0 auto}
+      body{font-family:Georgia,'Times New Roman','Nirmala UI','Noto Sans Devanagari',Mangal,serif;padding:36px 40px;color:#111;max-width:720px;margin:0 auto}
       .banner{text-align:center;border-top:3px double #111;border-bottom:3px double #111;padding:18px 12px 16px;margin-bottom:22px}
       .logo{max-height:64px;max-width:200px;object-fit:contain;margin-bottom:10px}
       .shop{font-size:26px;font-weight:700;letter-spacing:0.04em;margin:0 0 8px;text-transform:uppercase;line-height:1.2}
-      .meta{color:#374151;font-size:13px;margin:3px 0;line-height:1.4;font-family:Arial,Helvetica,sans-serif}
-      .doc-title{margin-top:12px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,sans-serif}
-      .bill-meta{display:flex;justify-content:space-between;gap:16px;margin:0 0 18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#374151}
+      .meta{color:#374151;font-size:13px;margin:3px 0;line-height:1.4;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
+      .doc-title{margin-top:12px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
+      .bill-meta{display:flex;justify-content:space-between;gap:16px;margin:0 0 18px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;color:#374151}
       .bill-meta strong{color:#111}
-      table{width:100%;border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      table{width:100%;border-collapse:collapse;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       th,td{border-bottom:1px solid #e5e7eb;padding:10px 8px;text-align:left}
       th{background:#f3f4f6;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#4b5563}
-      .totals{margin-top:16px;margin-left:auto;width:260px;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      .totals{margin-top:16px;margin-left:auto;width:260px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       .totals .row{display:flex;justify-content:space-between;padding:4px 0}
       .totals .grand{border-top:2px solid #111;margin-top:8px;padding-top:10px;font-size:16px;font-weight:700}
-      .pay{margin-top:18px;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      .pay{margin-top:18px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       .pay-row{display:flex;justify-content:space-between;max-width:260px;margin-left:auto;padding:2px 0}
-      .footer{text-align:center;margin-top:32px;padding-top:14px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,sans-serif;font-size:13px}
+      .footer{text-align:center;margin-top:32px;padding-top:14px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
     </style>
     </head><body>
     <div class="banner">
@@ -411,6 +413,9 @@ function thermalMarkupToEscPos(rawText) {
   const RESET = Buffer.from([0x1b, 0x61, 0x00, 0x1d, 0x21, 0x00, 0x1b, 0x21, 0x00]);
   const FEED = Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x0a]);
   const CUT = Buffer.from([0x1d, 0x56, 0x00]);
+  const text = String(rawText || '');
+  const dots = paperDotsForMarkup(text);
+  let align = 'left';
 
   const tags = {
     '<C>': Buffer.from([0x1b, 0x61, 0x01]),
@@ -435,13 +440,28 @@ function thermalMarkupToEscPos(rawText) {
   const tagNames = Object.keys(tags).sort((a, b) => b.length - a.length);
 
   const chunks = [INIT];
+  if (DEVANAGARI.test(text)) {
+    // Leave UTF-8 / Chinese mode so the following image is not printed as ???.
+    chunks.push(Buffer.from([0x1c, 0x2e, 0x1b, 0x74, 0x00]));
+  }
   let i = 0;
-  const text = String(rawText || '');
   let buf = '';
+
+  const setAlign = (tag) => {
+    if (tag === '<L>') align = 'left';
+    else if (tag === '<R>') align = 'right';
+    else if (tag === '<C>' || tag === '<CB>' || tag === '<CD>' || tag === '<CM>') align = 'center';
+  };
 
   const flushText = () => {
     if (!buf) return;
-    chunks.push(Buffer.from(buf, 'ascii'));
+    const body = buf.replace(/\n/g, '');
+    if (DEVANAGARI.test(body)) {
+      chunks.push(Buffer.from([0x1b, 0x61, 0x00]));
+      chunks.push(renderIndicLine(body, dots, align));
+    } else {
+      chunks.push(Buffer.from(buf, 'ascii'));
+    }
     buf = '';
   };
 
@@ -456,6 +476,7 @@ function thermalMarkupToEscPos(rawText) {
       }
       if (matched) {
         flushText();
+        setAlign(matched);
         chunks.push(tags[matched]);
         i += matched.length;
         continue;
@@ -465,11 +486,13 @@ function thermalMarkupToEscPos(rawText) {
       buf += '\n';
       flushText();
       chunks.push(RESET);
+      align = 'left';
       i += 1;
       continue;
     }
     const code = text.charCodeAt(i);
-    if (code >= 0x20 && code <= 0x7e) buf += text[i];
+    const indic = (code >= 0x0900 && code <= 0x097f) || code === 0x200c || code === 0x200d;
+    if ((code >= 0x20 && code <= 0x7e) || indic) buf += text[i];
     i += 1;
   }
   flushText();

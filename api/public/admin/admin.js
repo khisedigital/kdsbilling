@@ -2138,9 +2138,15 @@ function optionList(items, selectedId, emptyLabel) {
 }
 
 function makeSizeSku(baseSku, size) {
-  const base = (baseSku || 'SKU').trim().toUpperCase().replace(/\s+/g, '');
+  const base = (baseSku || '').trim().toUpperCase().replace(/\s+/g, '');
   const suffix = String(size || '').trim().toUpperCase().replace(/\s+/g, '');
-  return suffix ? `${base}-${suffix}` : base;
+  const token = Math.random().toString(36).slice(2, 6).toUpperCase();
+  // Empty product SKU used to become "M-M" for every product. That unique key
+  // made the second size M fail with "Record already exists".
+  const body = base
+    ? `${base}-${suffix || 'VAR'}-${token}`
+    : `${suffix || 'SKU'}-${token}`;
+  return body.slice(0, 50);
 }
 
 function sizeRowHtml(row = {}) {

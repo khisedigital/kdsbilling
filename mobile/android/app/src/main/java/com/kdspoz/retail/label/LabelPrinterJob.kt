@@ -60,6 +60,8 @@ object LabelPrinterJob {
         val out = socket.outputStream
           ?: throw IOException("Printer socket has no output stream.")
         out.write(PrinterCommands.INIT)
+        // Left edge of the head. A centered align parks the sticker image in the middle of the roll.
+        out.write(byteArrayOf(0x1B, 0x61, 0x00, 0x1D, 0x4C, 0x00, 0x00))
         repeat(count) {
           out.write(raster)
           // Gap / black-mark advance — same as SDKDemoApk (not printNewLine)

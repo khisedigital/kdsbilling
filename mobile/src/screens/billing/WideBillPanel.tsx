@@ -81,6 +81,7 @@ function money(n: number) {
 export default function WideBillPanel() {
   const items = useCartStore((s) => s.items);
   const updateQty = useCartStore((s) => s.updateQty);
+  const updatePrice = useCartStore((s) => s.updatePrice);
   const removeItem = useCartStore((s) => s.removeItem);
   const clearCart = useCartStore((s) => s.clear);
   const customerId = useCartStore((s) => s.customerId);
@@ -118,6 +119,8 @@ export default function WideBillPanel() {
   const [error, setError] = useState('');
   /** Inline qty drafts so typing is not wiped / does not remove the line at 0. */
   const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
+  /** Inline rate drafts so preview is not recalculated on every keystroke. */
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
 
@@ -292,6 +295,30 @@ export default function WideBillPanel() {
       ? value.replace(/[^0-9.,]/g, '')
       : value.replace(/[^0-9]/g, '');
     setQtyDrafts((prev) => ({ ...prev, [item.variantId]: sanitized }));
+  };
+
+  const clearPriceDraft = (variantId: string) => {
+    setPriceDrafts((prev) => {
+      if (!(variantId in prev)) return prev;
+      const next = { ...prev };
+      delete next[variantId];
+      return next;
+    });
+  };
+
+  const commitInlinePrice = (item: CartItem, raw: string) => {
+    const cleaned = raw.trim().replace(',', '.');
+    const parsed = parseFloat(cleaned);
+    if (!cleaned || Number.isNaN(parsed) || parsed < 0) {
+      clearPriceDraft(item.variantId);
+      return;
+    }
+    updatePrice(item.variantId, parsed);
+    clearPriceDraft(item.variantId);
+  };
+
+  const onInlinePriceChange = (item: CartItem, value: string) => {
+    setPriceDrafts((prev) => ({ ...prev, [item.variantId]: value.replace(/[^0-9.,]/g, '') }));
   };
 
   const applyDiscount = () => {
@@ -567,6 +594,10 @@ export default function WideBillPanel() {
       qtyDrafts[item.variantId] !== undefined
         ? qtyDrafts[item.variantId]
         : formatCartQty(item);
+    const priceValue =
+      priceDrafts[item.variantId] !== undefined
+        ? priceDrafts[item.variantId]
+        : round2(item.unitPrice).toFixed(2);
     return (
       <View style={styles.tableRow}>
         <View style={styles.colProduct}>
@@ -576,7 +607,19 @@ export default function WideBillPanel() {
           </Text>
           {item.uom?.code ? <Text style={styles.lineMeta}>{item.uom.code}</Text> : null}
         </View>
-        <Text style={styles.colRate}>{money(item.unitPrice)}</Text>
+        <View style={styles.rateCell}>
+          <Text style={styles.ratePrefix}>₹</Text>
+          <TextInput
+            value={priceValue}
+            onChangeText={(value) => onInlinePriceChange(item, value)}
+            onBlur={() => commitInlinePrice(item, priceValue)}
+            onSubmitEditing={() => commitInlinePrice(item, priceValue)}
+            keyboardType="decimal-pad"
+            selectTextOnFocus
+            style={styles.rateInput}
+            accessibilityLabel={`Price for ${item.productName}`}
+          />
+        </View>
         <View style={styles.colQty}>
           <View style={styles.qtyInline}>
             <Pressable
@@ -609,6 +652,7 @@ export default function WideBillPanel() {
         <Pressable
           onPress={() => {
             clearQtyDraft(item.variantId);
+            clearPriceDraft(item.variantId);
             removeItem(item.variantId);
           }}
           hitSlop={8}
@@ -1220,10 +1264,31 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderLight,
   },
   colProduct: { flex: 1.4, minWidth: 0 },
-  colRateHead: { width: 72, textAlign: 'right' },
+  colRateHead: { width: 104, textAlign: 'right' },
   colQtyHead: { width: 128, textAlign: 'center' },
   colAmountHead: { width: 78, textAlign: 'right' },
-  colRate: { width: 72, fontSize: 12, fontWeight: '600', color: colors.textSecondary, textAlign: 'right' },
+  rateCell: {
+    width: 104,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 2,
+  },
+  ratePrefix: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  rateInput: {
+    width: 78,
+    height: 28.56,
+    paddingVertical: 0,
+    paddingHorizontal: 6,
+    textAlign: 'right',
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   colQty: { width: 128, alignItems: 'center' },
   colAmount: {
     width: 78,

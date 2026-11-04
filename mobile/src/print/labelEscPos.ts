@@ -1,4 +1,5 @@
 import { encodeBarcode } from './barcodeEncode';
+import { DEVANAGARI_FONTS, graphemes, hasDevanagari } from './indicText';
 
 export type GapLabelContent = {
   shopName: string;
@@ -51,11 +52,12 @@ function ellipsize(
   if (maxWidth <= 0) return '';
   if (ctx.measureText(text).width <= maxWidth) return text;
   const ellipsis = '..';
-  let end = text.length;
-  while (end > 0 && ctx.measureText(`${text.slice(0, end)}${ellipsis}`).width > maxWidth) {
+  const parts = graphemes(text);
+  let end = parts.length;
+  while (end > 0 && ctx.measureText(`${parts.slice(0, end).join('')}${ellipsis}`).width > maxWidth) {
     end -= 1;
   }
-  return end <= 0 ? ellipsis : `${text.slice(0, end)}${ellipsis}`;
+  return end <= 0 ? ellipsis : `${parts.slice(0, end).join('')}${ellipsis}`;
 }
 
 function setPrinterFont(ctx: CanvasRenderingContext2D, sizePx: number, bold = true) {
@@ -63,8 +65,8 @@ function setPrinterFont(ctx: CanvasRenderingContext2D, sizePx: number, bold = tr
   const weight = bold ? '700' : '400';
   // Digits use light monospace — bold + multi-stroke turns into a dark blob on thermal.
   const family = bold
-    ? 'Arial, Helvetica, "Segoe UI", sans-serif'
-    : '"Courier New", Courier, monospace';
+    ? `Arial, Helvetica, "Segoe UI", ${DEVANAGARI_FONTS}, sans-serif`
+    : `"Courier New", Courier, ${DEVANAGARI_FONTS}, monospace`;
   ctx.font = `${weight} ${size}px ${family}`;
 }
 
@@ -94,22 +96,22 @@ function drawBarcodeBars(
   }
   const quiet = 8;
   const total = modules.length + quiet * 2;
-  const module = Math.max(2, Math.floor(width / total));
-  let cursor = Math.floor(x) + quiet * module;
+  const module = width / total;
+  const x0 = Math.floor(x);
   const top = Math.floor(y);
   const bottom = Math.max(top + 1, Math.floor(y + height));
   ctx.fillStyle = '#000';
   let i = 0;
   while (i < modules.length) {
     if (modules[i] !== '1') {
-      cursor += module;
       i += 1;
       continue;
     }
     let run = 1;
     while (i + run < modules.length && modules[i + run] === '1') run += 1;
-    ctx.fillRect(cursor, top, run * module, bottom - top);
-    cursor += run * module;
+    const start = Math.round(x0 + (quiet + i) * module);
+    const end = Math.round(x0 + (quiet + i + run) * module);
+    if (end > start) ctx.fillRect(start, top, end - start, bottom - top);
     i += run;
   }
 }
@@ -131,8 +133,8 @@ function hardenToMono(ctx: CanvasRenderingContext2D, width: number, height: numb
       continue;
     }
     const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-    // Only near-black becomes ink — drops gray halo that looks like darkness.
-    const on = lum < 100;
+    // Keep the whole stroke. A low cutoff leaves only the dark core of each letter.
+    const on = lum < 170;
     const v = on ? 0 : 255;
     px[i] = v;
     px[i + 1] = v;
@@ -187,42 +189,51 @@ export function renderGapLabelCanvas(
   const padY = Math.max(4, Math.floor(height / 24));
   let y = padY;
 
-  const shopSize = 22;
+  const shopSource = (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase());
+  const productSource = content.productName.trim() || 'Product';
+  const qtyText = content.detail.trim();
+  const priceText = (content.price || content.mrp || '').trim();
+  const indic = hasDevanagari(`${shopSource} ${productSource} ${qtyText}`);
+  const shopSize = indic ? 24 : 22;
+  const productSize = indic ? 20 : 18;
+  const priceSize = indic ? 20 : 18;
+
   setPrinterFont(ctx, shopSize, true);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  const shop = ellipsize(
-    ctx,
-    (content.shopName.trim() || 'Shop').toUpperCase(),
-    width - padX * 2,
-  );
-  y += shopSize;
-  drawCleanText(ctx, shop, width / 2, y);
-  y += 5;
+  const shop = ellipsize(ctx, shopSource, width - padX * 2);
+  const shopY = y + shopSize;
 
-  const productSize = 18;
-  const priceSize = 18;
   setPrinterFont(ctx, priceSize, true);
-  const qtyText = content.detail.trim();
-  const priceText = (content.price || content.mrp || '').trim();
   const rightPart = [qtyText, priceText].filter(Boolean).join('  ');
   const rightWidth = rightPart ? ctx.measureText(rightPart).width : 0;
   const gap = 10;
   const leftMax = Math.max(width * 0.32, width - padX * 2 - rightWidth - gap);
 
   setPrinterFont(ctx, productSize, true);
-  const productText = ellipsize(ctx, content.productName.trim() || 'Product', leftMax);
+  const productText = ellipsize(ctx, productSource, leftMax);
+  const nameY = shopY + (indic ? 8 : 5) + Math.max(productSize, priceSize);
 
-  y += Math.max(productSize, priceSize);
-  ctx.textAlign = 'left';
-  setPrinterFont(ctx, productSize, true);
-  drawCleanText(ctx, productText, padX, y);
-  if (rightPart) {
-    ctx.textAlign = 'right';
-    setPrinterFont(ctx, priceSize, true);
-    drawCleanText(ctx, rightPart, width - padX, y);
-  }
-  y += 5;
+  const drawNames = () => {
+    ctx.fillStyle = '#000';
+    setPrinterFont(ctx, shopSize, true);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    drawCleanText(ctx, shop, width / 2, shopY);
+
+    ctx.textAlign = 'left';
+    setPrinterFont(ctx, productSize, true);
+    drawCleanText(ctx, productText, padX, nameY);
+    if (rightPart) {
+      ctx.textAlign = 'right';
+      setPrinterFont(ctx, priceSize, true);
+      drawCleanText(ctx, rightPart, width - padX, nameY);
+    }
+  };
+
+  // Marathi strokes are thin. Draw them after the black/white pass so matras are not erased.
+  if (!indic) drawNames();
+  y = nameY + (indic ? 8 : 5);
 
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -231,20 +242,17 @@ export function renderGapLabelCanvas(
   ctx.stroke();
   y += 5;
 
-  // Leave a clear footer so the barcode number stays on the sticker.
+  // Bars fill the sticker down to the digit line so the print uses the selected label height.
   const footerSize = 18;
-  const footerReserve = footerSize + padY + 6;
+  const footerReserve = footerSize + padY + 4;
   const barTop = Math.floor(y);
-  const maxBarH = Math.floor(height * 0.26);
-  const barBottom = Math.max(
-    barTop + 24,
-    Math.min(Math.floor(height - footerReserve), barTop + maxBarH),
-  );
+  const barBottom = Math.max(barTop + 24, Math.floor(height - footerReserve));
   const code = content.barcode.trim() || '2000000000008';
   drawBarcodeBars(ctx, code, padX, barTop, width - padX * 2, barBottom - barTop);
 
   // Harden bars/text first, then paint solid black digits (anti-alias was making them vanish).
   hardenToMono(ctx, width, height);
+  if (indic) drawNames();
 
   const digitTop = barBottom + 2;
   ctx.fillStyle = '#fff';
@@ -290,7 +298,8 @@ function canvasToRaster(canvas: HTMLCanvasElement): { widthBytes: number; height
       const alpha = px[i + 3];
       if (alpha < 128) continue;
       const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-      if (lum >= 128) continue;
+      // 170 keeps thin Devanagari strokes (matras) that anti-aliasing leaves gray.
+      if (lum >= 170) continue;
       data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
     }
   }
@@ -321,7 +330,8 @@ export function buildGapLabelEscPos(
     PRINTER_WIDTH_PX,
   );
   const raster = canvasToRaster(fitted);
-  const out: number[] = [...ESC_INIT];
+  // Left edge of the head. A centered align parks the sticker image in the middle of the roll.
+  const out: number[] = [...ESC_INIT, 0x1b, 0x61, 0x00, 0x1d, 0x4c, 0x00, 0x00];
   for (let i = 0; i < count; i += 1) {
     appendRaster(out, raster);
     out.push(...LABEL_FORM_FEED);

@@ -1,3 +1,5 @@
+import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari, keepPrintable } from './indicText';
+
 export interface ThermalPrintPayload {
   format: string;
   charsPerLine?: number;
@@ -7,14 +9,9 @@ export interface ThermalPrintPayload {
   mimeType?: string;
 }
 
-/** Keep printable ASCII; preserve style tags until ESC/POS encode */
+/** Keep printable text. Marathi (Devanagari) is preserved; other symbols become ?. */
 export function sanitizeEscPosText(text: string): string {
-  return String(text ?? '')
-    .replace(/₹/g, 'Rs.')
-    .replace(/[–—·]/g, '-')
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[^\x20-\x7E\n\r\t<>/]/g, '?');
+  return keepPrintable(text);
 }
 
 /**
@@ -48,22 +45,21 @@ export function toPlainReceipt(text: string, charsPerLine = 32): string {
     .map((line) => {
       const centered = line.match(/^<(?:C|CB|CD|CM)>(.*)<\/(?:C|CB|CD|CM)>\s*$/);
       if (centered) {
-        const body = centered[1].replace(/<\/?[A-Z]+>/g, '').trim();
+        const body = clipCols(centered[1].replace(/<\/?[A-Z]+>/g, '').trim(), width);
         if (!body) return '';
-        const clipped = body.slice(0, width);
-        const pad = Math.max(0, Math.floor((width - clipped.length) / 2));
-        return `${' '.repeat(pad)}${clipped}`;
+        const pad = Math.max(0, Math.floor((width - colLength(body)) / 2));
+        return `${' '.repeat(pad)}${body}`;
       }
       const bold = line.match(/^<B>(.*)<\/B>\s*$/);
       if (bold) {
-        return bold[1].replace(/<\/?[A-Z]+>/g, '').slice(0, width);
+        return clipCols(bold[1].replace(/<\/?[A-Z]+>/g, ''), width);
       }
       const cleaned = line.replace(/<\/?[A-Z]+>/g, '');
       if (!cleaned.trim()) return '';
-      if (cleaned.length <= width) return cleaned;
+      if (colLength(cleaned) <= width) return cleaned;
       const lead = cleaned.match(/^ */)?.[0].length ?? 0;
-      const body = cleaned.trimStart().slice(0, Math.max(1, width - Math.min(lead, width - 1)));
-      return `${' '.repeat(Math.min(lead, width - body.length))}${body}`;
+      const body = clipCols(cleaned.trimStart(), Math.max(1, width - Math.min(lead, width - 1)));
+      return `${' '.repeat(Math.min(lead, width - colLength(body)))}${body}`;
     });
 
   const lines: string[] = [];
@@ -136,7 +132,7 @@ pre {
   max-width: ${paperMm}mm;
   /* 58 mm: larger left padding for converter; 80 mm: equal sides */
   padding: 2mm ${sideRightMm}mm 8mm ${sideLeftMm}mm;
-  font-family: "Courier New", Courier, ui-monospace, monospace;
+  font-family: "Courier New", Courier, ${DEVANAGARI_FONTS}, ui-monospace, monospace;
   font-weight: 700;
   font-size: ${fontMm}mm;
   line-height: 1.28;
@@ -253,6 +249,205 @@ export function is58mmChars(charsPerLine: number): boolean {
   return charsPerLine <= 32;
 }
 
+function canDrawCanvas(): boolean {
+  return typeof document !== 'undefined' && typeof document.createElement === 'function';
+}
+
+/** Bundled face when the desktop app has loaded it; otherwise Windows system faces. */
+function canvasIndicFont(px: number): string {
+  const loaded =
+    typeof document !== 'undefined' &&
+    ((globalThis as { __kdsIndicFont?: boolean }).__kdsIndicFont ||
+      document.fonts?.check?.(`700 ${px}px KdsDevanagari`));
+  const family = loaded ? 'KdsDevanagari' : '"Nirmala UI", "Noto Sans Devanagari", Mangal';
+  return `700 ${px}px ${family}, sans-serif`;
+}
+
+/** Qty / rate / amount sitting on the same row as a Marathi item name. */
+function splitAmountTail(line: string): { name: string; tail: string } | null {
+  const match = line.match(/^(.*\S)\s+(\d+(?:\.\d+)?\s+\d+\.\d{2}\s+\d+\.\d{2})\s*$/);
+  if (!match || !hasDevanagari(match[1])) return null;
+  return { name: match[1].trim(), tail: match[2].trim() };
+}
+
+function centeredBody(line: string): string | null {
+  const body = line.trim();
+  if (!body || body === line) return null;
+  const lead = line.length - line.trimStart().length;
+  const trail = line.length - line.trimEnd().length;
+  if (lead >= 1 && trail >= 1 && Math.abs(lead - trail) <= 2) return body;
+  return null;
+}
+
+function wrapByPixels(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const parts = graphemes(text);
+  const lines: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    const next = current + part;
+    if (!current || ctx.measureText(next).width <= maxWidth) {
+      current = next;
+      continue;
+    }
+    lines.push(current);
+    current = part;
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [''];
+}
+
+/** One receipt line drawn with a Devanagari font, as a black/white raster. */
+function renderIndicRaster(
+  text: string,
+  widthPx: number,
+  opts?: { fontSize?: number; center?: boolean; padTop?: number },
+): { widthBytes: number; height: number; data: Uint8Array } {
+  const width = Math.max(8, widthPx);
+  const fontSize = opts?.fontSize ?? 22;
+  const canvas = document.createElement('canvas');
+  const measure = canvas.getContext('2d');
+  if (!measure) throw new Error('Could not draw the Marathi receipt line.');
+  measure.font = canvasIndicFont(fontSize);
+
+  const paddedCenter = opts?.center ? null : centeredBody(text);
+  const amounts = opts?.center || paddedCenter ? null : splitAmountTail(text);
+  const nameSource = opts?.center
+    ? text.trim()
+    : paddedCenter || amounts?.name || text.trim() || text;
+  const tail = amounts?.tail || '';
+  const tailWidth = tail ? measure.measureText(tail).width + 8 : 0;
+  const centered = Boolean(opts?.center || paddedCenter);
+  const nameMax = Math.max(40, width - tailWidth - 4);
+  const rows = wrapByPixels(measure, nameSource, centered ? width - 8 : nameMax);
+
+  const padTop = opts?.padTop ?? 2;
+  const probe = measure.measureText('म');
+  const ascent = probe.actualBoundingBoxAscent || fontSize * 0.85;
+  const descent = probe.actualBoundingBoxDescent || fontSize * 0.35;
+  const rowH = Math.ceil(ascent + descent + padTop + 4);
+  const height = Math.max(rowH, rowH * rows.length);
+
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('Could not draw the Marathi receipt line.');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#000';
+  ctx.font = canvasIndicFont(fontSize);
+  ctx.textBaseline = 'alphabetic';
+
+  rows.forEach((row, index) => {
+    const baseline = Math.round(ascent + padTop + index * rowH);
+    if (centered) {
+      ctx.textAlign = 'center';
+      ctx.fillText(row, width / 2, baseline);
+      return;
+    }
+    ctx.textAlign = 'left';
+    ctx.fillText(row, 2, baseline);
+    if (tail && index === 0) {
+      ctx.font = canvasIndicFont(fontSize);
+      ctx.textAlign = 'right';
+      ctx.fillText(tail, width - 2, baseline);
+      ctx.font = canvasIndicFont(fontSize);
+    }
+  });
+
+  const image = ctx.getImageData(0, 0, width, height);
+  const widthBytes = Math.ceil(width / 8);
+  const data = new Uint8Array(widthBytes * height);
+  const px = image.data;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+      if (lum >= 170) continue;
+      data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
+    }
+  }
+  return { width, widthBytes, height, data };
+}
+
+/**
+ * ESC * 24-dot bit image.
+ * GS v 0 is skipped by a lot of 58/80 mm heads, and the bitmap bytes then print as ???.
+ */
+function appendBitImage(
+  out: number[],
+  raster: { width: number; widthBytes: number; height: number; data: Uint8Array },
+) {
+  const { width, widthBytes, height, data } = raster;
+  const black = (x: number, y: number) => {
+    if (x >= width || y >= height) return false;
+    return (data[y * widthBytes + (x >> 3)] & (0x80 >> (x & 7))) !== 0;
+  };
+  out.push(0x1b, 0x33, 24);
+  for (let band = 0; band < height; band += 24) {
+    out.push(0x1b, 0x2a, 33, width & 0xff, (width >> 8) & 0xff);
+    for (let x = 0; x < width; x += 1) {
+      for (let k = 0; k < 3; k += 1) {
+        let slice = 0;
+        for (let b = 0; b < 8; b += 1) {
+          if (black(x, band + k * 8 + b)) slice |= 0x80 >> b;
+        }
+        out.push(slice);
+      }
+    }
+    out.push(0x0a);
+  }
+  out.push(0x1b, 0x32);
+}
+
+/** Shop name: centered, double size. Marathi is drawn larger in the image. */
+function appendShopTitle(out: number[], title: string, widthPx: number) {
+  const body = title.replace(/<\/?[A-Z]+>/g, '').trim();
+  if (!body) {
+    out.push(0x0a);
+    return;
+  }
+  if (hasDevanagari(body) && canDrawCanvas()) {
+    out.push(0x1b, 0x61, 0x00);
+    // White band above the letters so the taller shop name is not clipped.
+    appendBitImage(out, renderIndicRaster(body, widthPx, { fontSize: 34, center: true, padTop: 10 }));
+    return;
+  }
+  // Drop below the rule, then open the line enough for double-height text.
+  out.push(0x1b, 0x4a, 10, 0x1b, 0x33, 64);
+  out.push(0x1b, 0x61, 0x01, 0x1d, 0x21, 0x11, 0x1b, 0x21, 0x08);
+  for (let i = 0; i < body.length; i += 1) {
+    const code = body.charCodeAt(i);
+    if (code >= 0x20 && code <= 0x7e) out.push(code);
+  }
+  out.push(0x0a, 0x1d, 0x21, 0x00, 0x1b, 0x21, 0x00, 0x1b, 0x61, 0x00, 0x1b, 0x32);
+}
+
+function appendReceiptLine(out: number[], line: string, charsPerLine: number, widthPx: number) {
+  const title = line.match(/^<CB>(.*)<\/CB>\s*$/);
+  if (title) {
+    appendShopTitle(out, title[1], widthPx);
+    return;
+  }
+  const plain = toPlainReceipt(line, charsPerLine);
+  if (!plain) {
+    if (!line.trim()) out.push(0x0a);
+    return;
+  }
+  if (hasDevanagari(plain) && canDrawCanvas()) {
+    appendBitImage(out, renderIndicRaster(plain, widthPx));
+    return;
+  }
+  for (let i = 0; i < plain.length; i += 1) {
+    const code = plain.charCodeAt(i);
+    if (code >= 0x20 && code <= 0x7e) out.push(code);
+  }
+  out.push(0x0a);
+}
+
 /**
  * Encode receipt as sharp plain ESC/POS.
  *
@@ -261,7 +456,7 @@ export function is58mmChars(charsPerLine: number): boolean {
  * - 80 mm: GS L=0, GS W=576
  */
 export function buildEscPosBytes(text: string, charsPerLine = 32): number[] {
-  const plain = toPlainReceipt(text, charsPerLine);
+  const source = String(text || '').replace(/\r/g, '');
   const { leftDots, widthDots } = receiptPrintArea(charsPerLine);
   const out: number[] = [
     ...ESC.INIT,
@@ -277,9 +472,12 @@ export function buildEscPosBytes(text: string, charsPerLine = 32): number[] {
     // print the rest as text → first line shows "jx" (j + n=120).
   ];
 
-  for (let i = 0; i < plain.length; i += 1) {
-    const code = plain.charCodeAt(i);
-    if (code === 0x0a || (code >= 0x20 && code <= 0x7e)) out.push(code);
+  if (hasDevanagari(source) && canDrawCanvas()) {
+    // Leave UTF-8 / Chinese character mode so the image is not printed as ???.
+    out.push(0x1c, 0x2e, 0x1b, 0x74, 0x00);
+  }
+  for (const line of source.split('\n')) {
+    appendReceiptLine(out, line, charsPerLine, widthDots);
   }
 
   if (!out.length || out[out.length - 1] !== 0x0a) out.push(0x0a);

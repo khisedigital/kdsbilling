@@ -110,6 +110,13 @@ export interface GeneratedBarcode {
 
 export type VariantBarcodeStatusKind = 'available' | 'missing' | 'duplicate';
 
+export interface QuantityBarcodeStatus {
+  quantity: number;
+  barcode?: string | null;
+  barcodeType?: 'ean13' | 'code128' | 'other' | null;
+  status: VariantBarcodeStatusKind;
+}
+
 export interface VariantBarcodeStatus {
   variantId: string;
   sku: string;
@@ -122,12 +129,14 @@ export interface VariantBarcodeStatus {
   barcodeType?: 'ean13' | 'code128' | 'other' | null;
   status: VariantBarcodeStatusKind;
   stockQty?: number | null;
+  quantityBarcodes?: QuantityBarcodeStatus[];
 }
 
 export interface ProductBarcodeStatus {
   productId: string;
   productName: string;
   hasVariants: boolean;
+  uom?: { code: string; name?: string; type?: 'count' | 'weight' | 'volume' | 'length' } | null;
   variants: VariantBarcodeStatus[];
 }
 

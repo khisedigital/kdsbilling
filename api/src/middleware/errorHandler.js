@@ -12,11 +12,20 @@ function errorHandler(err, req, res, _next) {
   }
 
   if (err.name === 'SequelizeUniqueConstraintError') {
+    const field = err.errors?.[0];
+    const path = String(field?.path || Object.keys(err.fields || {})[0] || '');
+    const value = field?.value ?? err.fields?.[path];
+    let message = 'Record already exists';
+    if (/sku/i.test(path)) {
+      message = value ? `SKU ${value} is already used` : 'SKU is already used';
+    } else if (/barcode/i.test(path)) {
+      message = value ? `Barcode ${value} is already used by another product` : 'Barcode is already used by another product';
+    }
     return res.status(409).json({
       success: false,
       error: {
         code: 'DUPLICATE_ENTRY',
-        message: 'Record already exists',
+        message,
       },
     });
   }

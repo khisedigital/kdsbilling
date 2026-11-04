@@ -5,7 +5,9 @@ import {
   delay,
   estimatePrintFlushMs,
   sanitizeEscPosText,
+  toPlainReceipt,
 } from './escpos';
+import { hasDevanagari } from './indicText';
 
 export { buildEscPosBytes, sanitizeEscPosText, toPlainReceipt } from './escpos';
 export type { ThermalPrintPayload } from './escpos';
@@ -42,12 +44,45 @@ try {
 let bleConnectedAddress: string | null = null;
 let netConnectedKey: string | null = null;
 
+function decodeBase64(value: string): number[] {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = value.replace(/=+$/, '');
+  const out: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < clean.length; i += 1) {
+    const v = alphabet.indexOf(clean[i]);
+    if (v < 0) continue;
+    buffer = (buffer << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buffer >> bits) & 0xff);
+    }
+  }
+  return out;
+}
+
+/** Android has no canvas. Marathi lines are drawn by the native receipt raster. */
+async function receiptBytes(plainOrMarkup: string, charsPerLine: number): Promise<number[]> {
+  const plain = toPlainReceipt(plainOrMarkup, charsPerLine);
+  const native = NativeModules.KdsLabelPrinter as
+    | { encodeReceipt?: (text: string, cols: number) => Promise<string> }
+    | undefined;
+  if (Platform.OS === 'android' && hasDevanagari(plain) && native?.encodeReceipt) {
+    const encoded = await native.encodeReceipt(plain, charsPerLine);
+    const bytes = decodeBase64(String(encoded || ''));
+    if (bytes.length) return bytes;
+  }
+  return buildEscPosBytes(plainOrMarkup, charsPerLine);
+}
+
 async function printPayload(
   moduleName: 'RNBLEPrinter' | 'RNNetPrinter',
   plainOrMarkup: string,
   charsPerLine = 32,
 ): Promise<void> {
-  const bytes = buildEscPosBytes(plainOrMarkup, charsPerLine);
+  const bytes = await receiptBytes(plainOrMarkup, charsPerLine);
   if (!bytes.length) throw new Error('Nothing to print.');
   await printRawBase64(moduleName, bytesToBase64(bytes));
 }
