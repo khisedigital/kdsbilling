@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, TextInput as NativeTextInput, View } from 'react-native';
 import { Button, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
 import { matchBarcodeProduct, searchProducts } from '../../services/catalogService';
 import { useProductAddToCart } from '../../hooks/useProductAddToCart';
+import { screenProductName } from '../../utils/productName';
 import { formatQuantity } from '../../utils/quantity';
 import { colors } from '../../theme/colors';
 import { radius, spacing, typography } from '../../theme/layout';
@@ -17,6 +20,7 @@ type Props = NativeStackScreenProps<MainStackParamList, 'BarcodeScanner'>;
  * so scanning is a focused text field instead of the camera.
  */
 export default function BarcodeScannerScreen({ navigation }: Props) {
+  const t = useT();
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -41,7 +45,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
       const results = await searchProducts(value);
       if (!results.length) {
         setNotice(null);
-        setMessage(`No product for barcode: ${value}`);
+        setMessage(t('No product for barcode: {{code}}', { code: value }));
         setCode('');
         refocus();
         return;
@@ -50,16 +54,16 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
       requestScanAdd(product);
       const qty = product.scannedQuantity && product.scannedQuantity > 0 ? product.scannedQuantity : 1;
       setMessage(null);
-      setNotice(`${product.productName} · +${formatQuantity(qty, product.uom)}`);
+      setNotice(`${screenProductName(product.productName, product.productNameMr)} · +${formatQuantity(qty, product.uom)}`);
       setCode('');
       refocus();
     } catch {
-      setMessage('Failed to look up product. Check your connection and try again.');
+      setMessage(t('Failed to look up product. Check your connection and try again.'));
       refocus();
     } finally {
       setBusy(false);
     }
-  }, [busy, code, refocus, requestScanAdd]);
+  }, [busy, code, refocus, requestScanAdd, t]);
 
   return (
     <View style={styles.container}>
@@ -67,15 +71,15 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
         <View style={styles.iconWrap}>
           <Icon name="barcode-scan" size={44} color={colors.primary} />
         </View>
-        <Text style={styles.title}>Scan barcode</Text>
+        <Text style={styles.title}>{t('Scan barcode')}</Text>
         <Text style={styles.sub}>
-          Each scan adds the item to the bill automatically. Scan the next item, or close when done.
+          {t('Each scan adds the item to the bill automatically. Scan the next item, or close when done.')}
         </Text>
 
-        <TextInput
+        <AppTextInput
           ref={inputRef}
           mode="outlined"
-          label="Barcode"
+          label={t('Barcode')}
           value={code}
           onChangeText={setCode}
           onSubmitEditing={handleSubmit}
@@ -92,7 +96,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
 
         <View style={styles.actions}>
           <Button mode="outlined" onPress={() => navigation.goBack()} style={styles.btn}>
-            Close
+            {t('Close')}
           </Button>
           <Button
             mode="contained"
@@ -102,7 +106,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
             buttonColor={colors.primary}
             style={styles.btn}
           >
-            Add to bill
+            {t('Add to bill')}
           </Button>
         </View>
       </View>

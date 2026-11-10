@@ -7,6 +7,7 @@ import type { MainStackParamList } from '../../navigation/MainNavigator';
 import SectionCard from '../../components/ui/SectionCard';
 import { fetchPurchaseBill } from '../../services/inventoryService';
 import type { PurchaseBill } from '../../services/inventoryService';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
@@ -14,6 +15,7 @@ import { common, radius, spacing, typography } from '../../theme/layout';
 type Props = NativeStackScreenProps<MainStackParamList, 'PurchaseBillDetail'>;
 
 export default function PurchaseBillDetailScreen({ route }: Props) {
+  const t = useT();
   const [bill, setBill] = useState<PurchaseBill | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -47,8 +49,8 @@ export default function PurchaseBillDetailScreen({ route }: Props) {
     return (
       <View style={[common.screen, styles.center]}>
         <Icon name="file-alert-outline" size={48} color={colors.textMuted} />
-        <Text style={styles.errorText}>{error || 'Purchase bill not found'}</Text>
-        <Button mode="contained" onPress={load}>Retry</Button>
+        <Text style={styles.errorText}>{error || t('Purchase bill not found')}</Text>
+        <Button mode="contained" onPress={load}>{t('Retry')}</Button>
       </View>
     );
   }
@@ -64,7 +66,7 @@ export default function PurchaseBillDetailScreen({ route }: Props) {
         <Text style={styles.total}>₹{parseFloat(String(bill.total_amount)).toFixed(2)}</Text>
       </View>
 
-      <SectionCard title={`Items (${bill.items?.length || 0})`} icon="package-variant">
+      <SectionCard title={t('Items ({{count}})', { count: bill.items?.length || 0 })} icon="package-variant">
         {bill.items?.map((item) => (
           <View key={item.id} style={styles.item}>
             <View style={common.rowBetween}>
@@ -102,7 +104,7 @@ const styles = StyleSheet.create({
   total: { ...typography.money, fontSize: 32, color: colors.secondary, marginTop: spacing.md },
   item: {
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
 });

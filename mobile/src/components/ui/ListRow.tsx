@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     ...shadow.sm,
   },
   pressable: {

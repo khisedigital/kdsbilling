@@ -72,6 +72,7 @@ function initBillingModels(sequelize, refs) {
     quantity: { type: DataTypes.DECIMAL(15, 3), allowNull: false },
     returned_quantity: { type: DataTypes.DECIMAL(15, 3), defaultValue: 0 },
     unit_price: { type: DataTypes.DECIMAL(15, 4), allowNull: false },
+    mrp: { type: DataTypes.DECIMAL(15, 4), allowNull: true, defaultValue: null },
     cost_price: { type: DataTypes.DECIMAL(15, 4), defaultValue: 0 },
     discount_amount: { type: DataTypes.DECIMAL(15, 4), defaultValue: 0 },
     discount_percent: { type: DataTypes.DECIMAL(8, 4), defaultValue: 0 },
@@ -186,6 +187,8 @@ function initBillingModels(sequelize, refs) {
     total_sales: { type: DataTypes.DECIMAL(15, 4), defaultValue: 0 },
     total_expenses: { type: DataTypes.DECIMAL(15, 4), defaultValue: 0 },
     notes: DataTypes.TEXT,
+    /** JSON: payments, cash breakdown, denominations, varianceReason, remarks */
+    details: DataTypes.TEXT,
     created_by: { type: DataTypes.UUID, allowNull: false },
   }, { tableName: 'daily_closings' });
 
@@ -236,6 +239,7 @@ function initBillingModels(sequelize, refs) {
   Expense.belongsTo(User, { foreignKey: 'created_by', as: 'creator' });
 
   DailyClosing.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
+  DailyClosing.belongsTo(User, { foreignKey: 'created_by', as: 'creator' });
   Printer.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
 
   return {

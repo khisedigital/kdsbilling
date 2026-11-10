@@ -55,7 +55,9 @@ router.get('/expense-categories', requirePermission(PERMISSIONS.EXPENSE_MANAGE),
 router.get('/expenses', requirePermission(PERMISSIONS.EXPENSE_MANAGE), asyncHandler(biz.listExpenses));
 router.post('/expenses', requirePermission(PERMISSIONS.EXPENSE_MANAGE), asyncHandler(biz.createExpense));
 router.get('/offers', requirePermission(PERMISSIONS.BILL_CREATE), asyncHandler(biz.listOffers));
+router.get('/daily-closings/preview', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.previewClosing));
 router.get('/daily-closings', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.listClosings));
+router.get('/daily-closings/:id', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.getClosing));
 router.post('/daily-closings', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.createClosing));
 
 // Printers

@@ -4,6 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
 import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
@@ -50,6 +51,7 @@ function readHeldCart(item: HeldBillRow): HeldCart {
 type Props = NativeStackScreenProps<MainStackParamList, 'HeldBills'>;
 
 export default function HeldBillsScreen({ navigation }: Props) {
+  const t = useT();
   const [held, setHeld] = useState<HeldBillRow[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -63,9 +65,9 @@ export default function HeldBillsScreen({ navigation }: Props) {
     try {
       setHeld(await fetchHeldBills());
     } catch (err) {
-      Alert.alert('Load failed', apiError(err, 'Could not load held bills'));
+      Alert.alert(t('Load failed'), apiError(err, 'Could not load held bills'));
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     setLoading(true);
@@ -102,11 +104,11 @@ export default function HeldBillsScreen({ navigation }: Props) {
   const resume = (item: HeldBillRow) => {
     if (cartItems.length && resumedHeldId !== item.id) {
       Alert.alert(
-        'Replace current bill?',
-        'Resuming this held bill will replace items currently on New Bill.',
+        t('Replace current bill?'),
+        t('Resuming this held bill will replace items currently on New Bill.'),
         [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Replace', style: 'destructive', onPress: () => applyResume(item) },
+          { text: t('Cancel'), style: 'cancel' },
+          { text: t('Replace'), style: 'destructive', onPress: () => applyResume(item) },
         ],
       );
       return;
@@ -122,20 +124,20 @@ export default function HeldBillsScreen({ navigation }: Props) {
       }
       setHeld((rows) => rows.filter((row) => row.id !== id));
     } catch (err) {
-      Alert.alert('Cancel failed', apiError(err, 'Could not cancel held bill'));
+      Alert.alert(t('Cancel failed'), apiError(err, 'Could not cancel held bill'));
     }
   };
 
   const confirmCancel = (item: HeldBillRow) => {
     const openOnCounter = resumedHeldId === item.id;
     Alert.alert(
-      'Cancel held bill?',
+      t('Cancel held bill?'),
       openOnCounter
-        ? `"${item.name}" will be removed, and the items currently on the bill will be cleared.`
-        : `"${item.name}" will be removed from held bills.`,
+        ? t('"{{name}}" will be removed, and the items currently on the bill will be cleared.', { name: item.name })
+        : t('"{{name}}" will be removed from held bills.', { name: item.name }),
       [
-        { text: 'Keep', style: 'cancel' },
-        { text: 'Cancel bill', style: 'destructive', onPress: () => cancelHeld(item.id) },
+        { text: t('Keep'), style: 'cancel' },
+        { text: t('Cancel bill'), style: 'destructive', onPress: () => cancelHeld(item.id) },
       ],
     );
   };
@@ -149,7 +151,7 @@ export default function HeldBillsScreen({ navigation }: Props) {
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search held bills..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search held bills...')} />
       <FlatList
         data={filtered}
         keyExtractor={(i) => i.id}
@@ -159,8 +161,8 @@ export default function HeldBillsScreen({ navigation }: Props) {
           loading ? null : (
             <EmptyState
               icon="pause-circle-outline"
-              title={search.trim() ? 'No matching held bills' : 'No held bills'}
-              subtitle={search.trim() ? 'Try a different search' : 'Hold a bill from billing. Cancel it here if you do not want to sell it.'}
+              title={search.trim() ? t('No matching held bills') : t('No held bills')}
+              subtitle={search.trim() ? t('Try a different search') : t('Hold a bill from billing. Cancel it here if you do not want to sell it.')}
             />
           )
         }
@@ -174,14 +176,14 @@ export default function HeldBillsScreen({ navigation }: Props) {
               iconColor={colors.warning}
               iconBg={colors.warningLight}
               badge={openOnCounter
-                ? { label: 'On bill', color: colors.secondary, bg: colors.secondaryLight }
-                : { label: 'Held', color: colors.warning, bg: colors.warningLight }}
+                ? { label: t('On bill'), color: colors.secondary, bg: colors.secondaryLight }
+                : { label: t('Held'), color: colors.warning, bg: colors.warningLight }}
               onPress={() => resume(item)}
               trailing={(
                 <Pressable
                   onPress={() => confirmCancel(item)}
                   hitSlop={8}
-                  accessibilityLabel={`Cancel ${item.name}`}
+                  accessibilityLabel={t('Cancel {{name}}', { name: item.name })}
                   style={styles.cancelBtn}>
                   <Icon name="close-circle-outline" size={22} color={colors.error} />
                 </Pressable>

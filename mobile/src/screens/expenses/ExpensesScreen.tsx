@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, Dialog, FAB, Portal, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import ReportPeriodFilter from '../../components/reports/ReportPeriodFilter';
@@ -12,9 +13,10 @@ import {
   type PeriodMode,
 } from '../../reports/reportDates';
 import { createExpense, fetchExpenseCategories, fetchExpenses } from '../../services/businessService';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing, typography } from '../../theme/layout';
+import { common, radius, spacing, typography, dialogCard} from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Expenses'>;
 
@@ -26,6 +28,7 @@ type ExpenseRow = {
 };
 
 export default function ExpensesScreen({}: Props) {
+  const t = useT();
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [search, setSearch] = useState('');
@@ -46,9 +49,9 @@ export default function ExpensesScreen({}: Props) {
       setCategories(await fetchExpenseCategories());
     } catch (err) {
       setCategories([]);
-      Alert.alert('Categories failed', apiError(err, 'Could not load expense categories'));
+      Alert.alert(t('Categories failed'), apiError(err, t('Could not load expense categories')));
     }
-  }, []);
+  }, [t]);
 
   const loadExpenses = useCallback(async () => {
     setListLoading(true);
@@ -56,11 +59,11 @@ export default function ExpensesScreen({}: Props) {
       setExpenses(await fetchExpenses({ from: range.from, to: range.to, limit: 500 }));
     } catch (err) {
       setExpenses([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load expenses'));
+      Alert.alert(t('Load failed'), apiError(err, t('Could not load expenses')));
     } finally {
       setListLoading(false);
     }
-  }, [range.from, range.to]);
+  }, [range.from, range.to, t]);
 
   useEffect(() => {
     loadCategories();
@@ -107,7 +110,7 @@ export default function ExpensesScreen({}: Props) {
       setCategoryId('');
       await loadExpenses();
     } catch (err) {
-      setFormError(apiError(err, 'Could not save expense'));
+      setFormError(apiError(err, t('Could not save expense')));
     } finally {
       setLoading(false);
     }
@@ -123,10 +126,14 @@ export default function ExpensesScreen({}: Props) {
           onAnchorChange={setAnchor}
           onShift={(delta) => setAnchor((prev) => shiftAnchor(periodMode, prev, delta))}
         />
-        <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search expenses..." embedded />
+        <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search expenses...')} embedded />
         <View style={styles.summary}>
           <Text style={styles.summaryLabel}>
-            {listLoading ? 'Loading…' : `${filteredExpenses.length} expense${filteredExpenses.length === 1 ? '' : 's'}`}
+            {listLoading
+              ? t('Loading…')
+              : filteredExpenses.length === 1
+                ? t('{{count}} expense', { count: filteredExpenses.length })
+                : t('{{count}} expenses', { count: filteredExpenses.length })}
           </Text>
           <Text style={styles.summaryTotal}>₹{periodTotal.toFixed(2)}</Text>
         </View>
@@ -138,7 +145,7 @@ export default function ExpensesScreen({}: Props) {
         {filteredExpenses.map((e) => (
           <ListRow
             key={e.id}
-            title={e.category?.name || 'Expense'}
+            title={e.category?.name || t('Expense')}
             subtitle={e.expense_date}
             icon="receipt"
             right={`₹${parseFloat(String(e.amount)).toFixed(2)}`}
@@ -149,15 +156,15 @@ export default function ExpensesScreen({}: Props) {
         {!listLoading && !filteredExpenses.length ? (
           <Text style={styles.emptyText}>
             {search.trim()
-              ? 'No matching expenses in this period'
-              : 'No expenses in this period. Tap + to add one.'}
+              ? t('No matching expenses in this period')
+              : t('No expenses in this period. Tap + to add one.')}
           </Text>
         ) : null}
       </ScrollView>
 
       <FAB
         icon="plus"
-        label="Add"
+        label={t('Add')}
         style={common.fab}
         color={colors.textOnPrimary}
         onPress={openAdd}
@@ -165,10 +172,10 @@ export default function ExpensesScreen({}: Props) {
 
       <Portal>
         <Dialog visible={addOpen} onDismiss={() => setAddOpen(false)} style={styles.dialog}>
-          <Dialog.Title>Add expense</Dialog.Title>
+          <Dialog.Title>{t('Add expense')}</Dialog.Title>
           <Dialog.ScrollArea style={styles.dialogScroll}>
             <ScrollView keyboardShouldPersistTaps="handled">
-              <Text style={styles.label}>Category</Text>
+              <Text style={styles.label}>{t('Category')}</Text>
               <View style={styles.catWrap}>
                 {categories.map((c) => (
                   <Button
@@ -182,8 +189,8 @@ export default function ExpensesScreen({}: Props) {
                   </Button>
                 ))}
               </View>
-              <TextInput
-                label="Amount"
+              <AppTextInput
+                label={t('Amount')}
                 value={amount}
                 onChangeText={setAmount}
                 keyboardType="decimal-pad"
@@ -191,8 +198,8 @@ export default function ExpensesScreen({}: Props) {
                 autoFocus={false}
                 style={styles.input}
               />
-              <TextInput
-                label="Notes"
+              <AppTextInput
+                label={t('Notes')}
                 value={notes}
                 onChangeText={setNotes}
                 mode="outlined"
@@ -203,12 +210,12 @@ export default function ExpensesScreen({}: Props) {
             </ScrollView>
           </Dialog.ScrollArea>
           <Dialog.Actions>
-            <Button onPress={() => setAddOpen(false)}>Cancel</Button>
+            <Button onPress={() => setAddOpen(false)}>{t('Cancel')}</Button>
             <Button
               onPress={handleSave}
               loading={loading}
               disabled={!categoryId || !amount || loading}>
-              Save
+              {t('Save')}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -223,7 +230,7 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
+    borderBottomColor: colors.border,
   },
   summary: {
     flexDirection: 'row',
@@ -244,7 +251,7 @@ const styles = StyleSheet.create({
   emptyList: { flexGrow: 1, justifyContent: 'center' },
   emptyText: { ...typography.bodySm, textAlign: 'center', paddingHorizontal: spacing.lg },
   row: { marginBottom: spacing.xs, borderRadius: radius.md },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
   dialogScroll: { maxHeight: 360, paddingHorizontal: 0 },
   label: { ...typography.label, marginBottom: spacing.sm, paddingHorizontal: spacing.lg },
   catWrap: {

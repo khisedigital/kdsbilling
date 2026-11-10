@@ -194,6 +194,7 @@ function defineMasterCategory(sequelize) {
       id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
       business_type_id: { type: DataTypes.UUID, allowNull: false },
       name: { type: DataTypes.STRING(150), allowNull: false },
+      name_mr: DataTypes.STRING(150),
       description: DataTypes.TEXT,
       status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
       sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -209,6 +210,7 @@ function defineMasterBrand(sequelize) {
       id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
       business_type_id: { type: DataTypes.UUID, allowNull: false },
       name: { type: DataTypes.STRING(150), allowNull: false },
+      name_mr: DataTypes.STRING(150),
       description: DataTypes.TEXT,
       status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
       sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -226,6 +228,7 @@ function defineMasterProduct(sequelize) {
       category_id: DataTypes.UUID,
       brand_id: DataTypes.UUID,
       name: { type: DataTypes.STRING(200), allowNull: false },
+      name_mr: DataTypes.STRING(200),
       description: DataTypes.TEXT,
       uom_code: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'pcs' },
       selling_price: { type: DataTypes.DECIMAL(15, 4), allowNull: false, defaultValue: 0 },
@@ -237,6 +240,34 @@ function defineMasterProduct(sequelize) {
       sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
     },
     { tableName: 'master_products' }
+  );
+}
+
+function defineMasterProductVariant(sequelize) {
+  return sequelize.define(
+    'MasterProductVariant',
+    {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      master_product_id: { type: DataTypes.UUID, allowNull: false },
+      size: DataTypes.STRING(30),
+      selling_price: { type: DataTypes.DECIMAL(15, 4), allowNull: false, defaultValue: 0 },
+      mrp: DataTypes.DECIMAL(15, 4),
+      sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+    },
+    { tableName: 'master_product_variants' }
+  );
+}
+
+function defineMasterVariantBarcode(sequelize) {
+  return sequelize.define(
+    'MasterVariantBarcode',
+    {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      variant_id: { type: DataTypes.UUID, allowNull: false },
+      barcode: { type: DataTypes.STRING(50), allowNull: false },
+      is_primary: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    },
+    { tableName: 'master_variant_barcodes' }
   );
 }
 
@@ -379,6 +410,8 @@ function initMasterModels(sequelize) {
   const MasterCategory = defineMasterCategory(sequelize);
   const MasterBrand = defineMasterBrand(sequelize);
   const MasterProduct = defineMasterProduct(sequelize);
+  const MasterProductVariant = defineMasterProductVariant(sequelize);
+  const MasterVariantBarcode = defineMasterVariantBarcode(sequelize);
   const ShopifyShop = defineShopifyShop(sequelize);
   const ShopifySyncJob = defineShopifySyncJob(sequelize);
 
@@ -404,6 +437,19 @@ function initMasterModels(sequelize) {
   MasterBrand.hasMany(MasterProduct, { foreignKey: 'brand_id', as: 'products' });
   MasterProduct.belongsTo(MasterBrand, { foreignKey: 'brand_id', as: 'brand' });
 
+  MasterProduct.hasMany(MasterProductVariant, {
+    foreignKey: 'master_product_id',
+    as: 'variants',
+    onDelete: 'CASCADE',
+  });
+  MasterProductVariant.belongsTo(MasterProduct, { foreignKey: 'master_product_id', as: 'product' });
+  MasterProductVariant.hasMany(MasterVariantBarcode, {
+    foreignKey: 'variant_id',
+    as: 'barcodes',
+    onDelete: 'CASCADE',
+  });
+  MasterVariantBarcode.belongsTo(MasterProductVariant, { foreignKey: 'variant_id', as: 'variant' });
+
   Tenant.hasMany(TenantUserIndex, { foreignKey: 'tenant_id', as: 'userIndexes' });
   TenantUserIndex.belongsTo(Tenant, { foreignKey: 'tenant_id', as: 'tenant' });
 
@@ -420,6 +466,8 @@ function initMasterModels(sequelize) {
     MasterCategory,
     MasterBrand,
     MasterProduct,
+    MasterProductVariant,
+    MasterVariantBarcode,
     ShopifyShop,
     ShopifySyncJob,
   };

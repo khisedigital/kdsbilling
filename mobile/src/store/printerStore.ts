@@ -28,20 +28,54 @@ export interface PrinterSettings {
 }
 
 /** Physical sticker height in mm (width is always 50). Wrong height → gap sensor skips a label. */
-export type LabelHeightMm = 25 | 28;
+export type LabelHeightMm = 25 | 28 | 30;
+
+/**
+ * How many stickers per USB/spool write.
+ * 0 = continuous (all copies in one job) — works on most printers.
+ * 3 = batched — only for heads that cut/drift after a few stickers in one job.
+ */
+export type LabelBatchSize = 0 | 3;
 
 /**
  * Gap-label / barcode sticker printer — stored separately from billing.
  */
 export interface LabelPrinterSettings {
   type: PrinterType;
-  /** Sticker height for the loaded roll (50×28 or 50×25). */
+  /** Sticker height for the loaded roll (50×30 / 50×28 / 50×25). */
   labelHeightMm?: LabelHeightMm;
+  /** 0 = continuous (default). 3 = batch for picky gap printers (e.g. Seznik). */
+  labelBatchSize?: LabelBatchSize;
+  /** Remember Continuous vs Batched per Windows printer queue name. */
+  labelBatchByPrinter?: Record<string, LabelBatchSize>;
   bluetoothAddress?: string;
   bluetoothName?: string;
   systemPrinterName?: string;
   networkHost?: string;
   networkPort?: number;
+}
+
+/** Heuristic when a printer is first selected (user can still override). */
+export function suggestLabelBatchSize(printerName: string): LabelBatchSize {
+  const n = String(printerName || '').toLowerCase();
+  // Seznik / Sezink-class heads only keep ~3 stickers of ESC/POS in the buffer.
+  if (/sez?n[iy]?k|sezenik/.test(n)) return 3;
+  // Poshiflow and similar handle a full continuous job.
+  if (/poshi|poshiflow/.test(n)) return 0;
+  return 0;
+}
+
+export function resolveLabelBatchSize(
+  settings: LabelPrinterSettings,
+  printerName?: string | null,
+): LabelBatchSize {
+  const key = String(printerName || settings.systemPrinterName || '').trim();
+  if (key && settings.labelBatchByPrinter && key in settings.labelBatchByPrinter) {
+    return normalizeLabelBatchSize(settings.labelBatchByPrinter[key]);
+  }
+  if (settings.labelBatchSize === 3) return 3;
+  if (key) return suggestLabelBatchSize(key);
+  return 0;
 }
 
 const BILLING_KEY = 'billing_printer_settings';
@@ -58,10 +92,27 @@ export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
 export const DEFAULT_LABEL_PRINTER_SETTINGS: LabelPrinterSettings = {
   type: IS_DESKTOP ? 'system' : 'bluetooth',
   labelHeightMm: 28,
+  labelBatchSize: 0,
 };
 
 function normalizeLabelHeightMm(value: unknown): LabelHeightMm {
-  return value === 25 ? 25 : 28;
+  if (value === 25 || value === 30) return value;
+  return 28;
+}
+
+export function normalizeLabelBatchSize(value: unknown): LabelBatchSize {
+  return value === 3 ? 3 : 0;
+}
+
+function normalizeLabelBatchByPrinter(value: unknown): Record<string, LabelBatchSize> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const out: Record<string, LabelBatchSize> = {};
+  for (const [key, batch] of Object.entries(value as Record<string, unknown>)) {
+    const name = String(key || '').trim();
+    if (!name) continue;
+    out[name] = normalizeLabelBatchSize(batch);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function normalizePrinterSettings(raw: string | null): PrinterSettings {
@@ -94,6 +145,8 @@ function normalizeLabelPrinterSettings(raw: string | null): LabelPrinterSettings
   const saved: LabelPrinterSettings = {
     type: !IS_DESKTOP && type === 'system' ? 'bluetooth' : type,
     labelHeightMm: normalizeLabelHeightMm(stored.labelHeightMm),
+    labelBatchSize: normalizeLabelBatchSize(stored.labelBatchSize),
+    labelBatchByPrinter: normalizeLabelBatchByPrinter(stored.labelBatchByPrinter),
     bluetoothAddress: stored.bluetoothAddress,
     bluetoothName: stored.bluetoothName,
     systemPrinterName: stored.systemPrinterName,

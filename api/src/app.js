@@ -65,6 +65,16 @@ app.use(
       directives: {
         'upgrade-insecure-requests': null,
         'script-src': ["'self'"],
+        'connect-src': [
+          "'self'",
+          'https://world.openfoodfacts.org',
+          'https://in.openfoodfacts.org',
+          'https://world.openfoodfacts.net',
+          'https://world.openbeautyfacts.org',
+          'https://in.openbeautyfacts.org',
+          'https://world.openproductsfacts.org',
+          'https://prices.openfoodfacts.org',
+        ],
         'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
         'font-src': ["'self'", 'https://fonts.gstatic.com', 'data:'],
         'img-src': ["'self'", 'data:', 'blob:'],

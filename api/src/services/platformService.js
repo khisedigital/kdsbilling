@@ -13,6 +13,7 @@ const planService = require('./planService');
 const unitService = require('./unitService');
 const masterPreloadService = require('./masterPreloadService');
 const catalogMasterService = require('./catalogMasterService');
+const openFoodFactsService = require('./openFoodFactsService');
 const { buildTenantSubscriptionFromPlan } = require('../utils/planHelpers');
 const { normalizePhone, placeholderEmailForPhone } = require('../utils/phone');
 
@@ -634,6 +635,22 @@ async function importMasterProducts(data) {
   return catalogMasterService.bulkImportMasterProducts(data);
 }
 
+async function importMasterCategories(data) {
+  return catalogMasterService.bulkImportMasterCategories(data);
+}
+
+async function importMasterBrands(data) {
+  return catalogMasterService.bulkImportMasterBrands(data);
+}
+
+async function searchOpenFoodFacts(query) {
+  return openFoodFactsService.searchOpenFoodFacts(query);
+}
+
+async function importOpenFoodToMaster(businessTypeId, body) {
+  return openFoodFactsService.importOpenFoodToMaster(businessTypeId, body);
+}
+
 module.exports = {
   getDashboard,
   listTenants,
@@ -675,5 +692,9 @@ module.exports = {
   updateMasterProduct,
   deleteMasterProduct,
   importMasterProducts,
+  importMasterCategories,
+  importMasterBrands,
+  searchOpenFoodFacts,
+  importOpenFoodToMaster,
   STATUSES,
 };

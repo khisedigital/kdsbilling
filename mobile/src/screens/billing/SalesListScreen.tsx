@@ -4,6 +4,7 @@ import { Chip, Text } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
 import ReportPeriodFilter from '../../components/reports/ReportPeriodFilter';
 import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
@@ -41,6 +42,7 @@ type Bill = {
 const STATUS_FILTERS = ['all', 'completed', 'partially_returned', 'fully_returned', 'void'] as const;
 
 export default function SalesListScreen({ navigation }: Props) {
+  const t = useT();
   const [bills, setBills] = useState<Bill[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<(typeof STATUS_FILTERS)[number]>('all');
@@ -64,9 +66,9 @@ export default function SalesListScreen({ navigation }: Props) {
       setBills(result?.items || []);
     } catch (err) {
       setBills([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load sales'));
+      Alert.alert(t('Load failed'), apiError(err, 'Could not load sales'));
     }
-  }, [statusFilter, range.from, range.to]);
+  }, [statusFilter, range.from, range.to, t]);
 
   React.useEffect(() => {
     setLoading(true);
@@ -75,8 +77,8 @@ export default function SalesListScreen({ navigation }: Props) {
       run();
       return;
     }
-    const t = setTimeout(run, 280);
-    return () => clearTimeout(t);
+    const timer = setTimeout(run, 280);
+    return () => clearTimeout(timer);
   }, [load, search]);
 
   useFocusEffect(
@@ -101,8 +103,8 @@ export default function SalesListScreen({ navigation }: Props) {
   };
 
   const emptyTitle = search || statusFilter !== 'all'
-    ? 'No matching bills'
-    : 'No sales in this period';
+    ? t('No matching bills')
+    : t('No sales in this period');
 
   return (
     <View style={common.screen}>
@@ -114,15 +116,15 @@ export default function SalesListScreen({ navigation }: Props) {
           onAnchorChange={setAnchor}
           onShift={(delta) => setAnchor((prev) => shiftAnchor(periodMode, prev, delta))}
         />
-        <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search bill number..." embedded />
+        <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search bill number...')} embedded />
         <View style={styles.statRow}>
           <SurfaceCard style={styles.statCard} padding>
             <Text style={styles.statNum}>{stats.count}</Text>
-            <Text style={styles.statLbl}>Bills</Text>
+            <Text style={styles.statLbl}>{t('Bills')}</Text>
           </SurfaceCard>
           <SurfaceCard style={styles.statCard} padding>
             <Text style={[styles.statNum, { color: colors.secondary }]}>₹{stats.total.toFixed(0)}</Text>
-            <Text style={styles.statLbl}>Revenue</Text>
+            <Text style={styles.statLbl}>{t('Revenue')}</Text>
           </SurfaceCard>
         </View>
         <ScrollView
@@ -138,7 +140,7 @@ export default function SalesListScreen({ navigation }: Props) {
               style={styles.chip}
               compact
               showSelectedOverlay>
-              {s === 'all' ? 'All' : getBillStatus(s).label}
+              {s === 'all' ? t('All') : getBillStatus(s).label}
             </Chip>
           ))}
         </ScrollView>
@@ -154,7 +156,7 @@ export default function SalesListScreen({ navigation }: Props) {
             <EmptyState
               icon="receipt-text-outline"
               title={emptyTitle}
-              subtitle="Try another day, month, or year"
+              subtitle={t('Try another day, month, or year')}
             />
           )
         }
@@ -189,7 +191,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.sm,
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
+    borderBottomColor: colors.border,
   },
   statRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
   statCard: { flex: 1, marginBottom: 0, alignItems: 'center' },

@@ -1,10 +1,12 @@
 import React from 'react';
-import { Image, Platform, StatusBar, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Platform, StatusBar, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CommonActions, useNavigation, useNavigationState } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { APP_DISPLAY_NAME } from '../constants/branding';
+import LanguageToggle from '../i18n/LanguageToggle';
+import { useT } from '../i18n';
 import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/colors';
 import { spacing } from '../theme/layout';
@@ -18,6 +20,7 @@ interface AppHeaderProps {
 }
 
 export default function AppHeader({ title }: AppHeaderProps) {
+  const t = useT();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const open = useDrawerStore((s) => s.open);
@@ -30,9 +33,7 @@ export default function AppHeader({ title }: AppHeaderProps) {
   const isRoot = !canGoBack;
   const isHome = currentRoute === 'Dashboard';
   const showHome = !isHome;
-  const subtitle = isRoot
-    ? tenant?.name || APP_DISPLAY_NAME
-    : [user?.branch?.name, user?.name].filter(Boolean).join(' · ');
+  const subtitle = isRoot ? '' : [user?.branch?.name, user?.name].filter(Boolean).join(' · ');
 
   const goHome = () => {
     navigation.dispatch(
@@ -58,7 +59,6 @@ export default function AppHeader({ title }: AppHeaderProps) {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar barStyle="dark-content" backgroundColor={colors.surface} />
-      <View style={styles.accentBar} />
       <View style={styles.toolbar}>
         {pinned && !canGoBack ? (
           <View style={styles.iconButton} />
@@ -68,7 +68,7 @@ export default function AppHeader({ title }: AppHeaderProps) {
             style={styles.iconButton}
             activeOpacity={0.7}
             hitSlop={8}
-            accessibilityLabel={canGoBack ? 'Go back' : 'Open menu'}>
+            accessibilityLabel={canGoBack ? t('Go back') : t('Open menu')}>
             <View style={styles.iconCircle}>
               <Icon
                 name={canGoBack ? 'arrow-left' : 'menu'}
@@ -81,20 +81,10 @@ export default function AppHeader({ title }: AppHeaderProps) {
 
         <View style={styles.center}>
           {isRoot ? (
-            <View style={styles.brandRow}>
-              <Image
-                source={require('../assets/logo.png')}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-              <View style={styles.titleBlock}>
-                <Text style={styles.brandTitle} numberOfLines={1}>{APP_DISPLAY_NAME}</Text>
-                <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
-              </View>
-            </View>
+            <Text style={styles.brandTitle} numberOfLines={1}>{tenant?.name || APP_DISPLAY_NAME}</Text>
           ) : (
             <View style={styles.titleBlockCentered}>
-              <Text style={styles.screenTitle} numberOfLines={1}>{title}</Text>
+              <Text style={styles.screenTitle} numberOfLines={1}>{t(title)}</Text>
               {subtitle ? (
                 <Text style={styles.subtitleCentered} numberOfLines={1}>{subtitle}</Text>
               ) : null}
@@ -108,17 +98,18 @@ export default function AppHeader({ title }: AppHeaderProps) {
             style={styles.newBillBtn}
             activeOpacity={0.8}
             hitSlop={6}
-            accessibilityLabel="New Bill">
+            accessibilityLabel={t('New Bill')}>
             <Icon name="point-of-sale" size={18} color={colors.textOnPrimary} />
-            <Text style={styles.newBillLabel}>New Bill</Text>
+            <Text style={styles.newBillLabel}>{t('New Bill')}</Text>
           </TouchableOpacity>
+          <LanguageToggle />
           {showHome ? (
             <TouchableOpacity
               onPress={goHome}
               style={styles.iconButton}
               activeOpacity={0.7}
               hitSlop={8}
-              accessibilityLabel="Go to home">
+              accessibilityLabel={t('Go to home')}>
               <View style={styles.homeCircle}>
                 <Icon name="home" size={22} color={colors.primary} />
               </View>
@@ -137,7 +128,7 @@ export default function AppHeader({ title }: AppHeaderProps) {
               style={styles.iconButton}
               activeOpacity={0.7}
               hitSlop={8}
-              accessibilityLabel="Open menu">
+              accessibilityLabel={t('Open menu')}>
               <View style={styles.avatar}>
                 <Text style={styles.avatarText}>
                   {(user?.name || 'U').split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase()}
@@ -154,7 +145,7 @@ export default function AppHeader({ title }: AppHeaderProps) {
 const styles = StyleSheet.create({
   container: {
     backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
     ...Platform.select({
       ios: {
@@ -165,10 +156,6 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 3 },
     }),
-  },
-  accentBar: {
-    height: 3,
-    backgroundColor: colors.primary,
   },
   toolbar: {
     height: TOOLBAR_HEIGHT,
@@ -224,19 +211,6 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.xs,
     justifyContent: 'center',
   },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  logo: {
-    width: 34,
-    height: 34,
-    marginRight: spacing.sm,
-  },
-  titleBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
   titleBlockCentered: {
     alignItems: 'center',
   },
@@ -251,11 +225,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
     letterSpacing: -0.2,
-  },
-  subtitle: {
-    fontSize: 12,
-    color: colors.textMuted,
-    marginTop: 1,
   },
   subtitleCentered: {
     fontSize: 11,

@@ -1,7 +1,15 @@
 import { useCallback, useState } from 'react';
+import { useLanguageStore } from '../i18n';
 import type { SearchProductResult } from '../services/catalogService';
 import { useCartStore, type CartItem } from '../store/cartStore';
 import { needsQuantityPrompt } from '../utils/quantity';
+
+function cartProductName(product: SearchProductResult): string {
+  if (useLanguageStore.getState().bill === 'mr' && product.productNameMr?.trim()) {
+    return product.productNameMr.trim();
+  }
+  return product.productName;
+}
 
 export function useProductAddToCart() {
   const addItem = useCartStore((s) => s.addItem);
@@ -13,12 +21,14 @@ export function useProductAddToCart() {
   const buildCartItem = useCallback(
     (product: SearchProductResult, quantity: number): CartItem => ({
       variantId: product.variantId,
-      productName: product.productName,
+      productName: cartProductName(product),
+      productNameMr: product.productNameMr?.trim() || null,
       sku: product.sku,
       size: product.size,
       color: product.color,
       quantity,
       unitPrice: product.sellingPrice,
+      mrp: product.mrp != null ? Number(product.mrp) || null : null,
       uom: product.uom || undefined,
       allowDecimalQty: product.allowDecimalQty || product.isWeightBased,
       stockQty: product.stockQty ?? 0,
@@ -59,10 +69,12 @@ export function useProductAddToCart() {
         variantId: item.variantId,
         productId: '',
         productName: item.productName,
+        productNameMr: item.productNameMr,
         sku: item.sku,
         size: item.size,
         color: item.color,
         sellingPrice: item.unitPrice,
+        mrp: item.mrp ?? null,
         uom: item.uom || { code: 'pcs', type: 'count' },
         allowDecimalQty: item.allowDecimalQty === true,
         stockQty: item.stockQty,

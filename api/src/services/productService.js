@@ -19,6 +19,14 @@ function isValidBarcodeValue(value) {
   return isNumericBarcode(value);
 }
 
+function cleanNameMr(value) {
+  const name = String(value || '').trim();
+  if (name.length > 200) {
+    throw new AppError('Marathi product name is too long', 400, 'VALIDATION_ERROR');
+  }
+  return name || null;
+}
+
 const productIncludes = (db) => [
   { model: db.Category, as: 'category', attributes: ['id', 'name'] },
   { model: db.Brand, as: 'brand', attributes: ['id', 'name'] },
@@ -134,30 +142,6 @@ function findReusableVariant(rows, incoming, claimedIds) {
   return deleted[0] || null;
 }
 
-/** Split total qty across N sizes. Remainder goes to the first sizes (pcs-friendly). */
-function splitStockQuantity(total, count, allowDecimal = false) {
-  const n = Math.max(0, count);
-  if (n === 0) return [];
-  const qty = toDecimal(total) || 0;
-  if (qty <= 0) return Array.from({ length: n }, () => 0);
-
-  if (!allowDecimal) {
-    const whole = Math.round(qty);
-    const base = Math.floor(whole / n);
-    let rem = whole - base * n;
-    return Array.from({ length: n }, () => {
-      const share = base + (rem > 0 ? 1 : 0);
-      if (rem > 0) rem -= 1;
-      return share;
-    });
-  }
-
-  const base = Math.floor((qty / n) * 1000) / 1000;
-  const shares = Array.from({ length: n }, () => base);
-  shares[0] = toDecimal(qty - base * (n - 1));
-  return shares;
-}
-
 async function setVariantStockQty(db, {
   branchId,
   variantId,
@@ -180,9 +164,9 @@ async function setVariantStockQty(db, {
         variantId,
         quantityChange: change,
         movementType: MOVEMENT_TYPES.ADJUSTMENT,
-        referenceType: 'product_size_split',
+        referenceType: 'product_variant_stock',
         referenceId: productId || null,
-        notes: notes || 'Stock split across sizes',
+        notes: notes || 'Variant stock update',
         userId,
         allowNegative: true,
       },
@@ -194,111 +178,39 @@ async function setVariantStockQty(db, {
 }
 
 /**
- * After size variants change, divide each branch's existing product stock
- * evenly across the kept sizes (or apply explicit stockQty for one branch).
+ * Apply per-variant stock when the client sends explicit stockQty values.
+ * Never divides product stock across sizes — each variant keeps its own qty.
+ * Removed sizes keep their balance on the soft-deleted variant (not redistributed).
  */
 async function redistributeVariantStock(db, {
   product,
-  existingVariantIds,
   keptVariants,
   incomingVariants,
   branchId,
   userId,
 }, transaction) {
-  const { StockBalance } = db;
   if (!keptVariants.length) return;
-
-  const allowDecimal = !!(product.allow_decimal_qty || product.is_weight_based);
-  const oldIds = existingVariantIds.filter(Boolean);
-  if (!oldIds.length && !incomingVariants.some((v) => v.stockQty !== undefined)) return;
-
-  const balances = oldIds.length
-    ? await StockBalance.findAll({
-        where: { variant_id: { [Op.in]: oldIds } },
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      })
-    : [];
-
-  const branchTotals = new Map();
-  for (const row of balances) {
-    const qty = toDecimal(row.quantity) || 0;
-    if (!qty) continue;
-    branchTotals.set(row.branch_id, toDecimal((branchTotals.get(row.branch_id) || 0) + qty));
-  }
+  if (!branchId) return;
 
   const hasExplicit =
-    !!branchId &&
     incomingVariants.length === keptVariants.length &&
     incomingVariants.every((v) => v.stockQty !== undefined && v.stockQty !== null);
 
-  const sizeSetChanged =
-    oldIds.length !== keptVariants.length ||
-    keptVariants.some((v) => !oldIds.includes(v.id)) ||
-    oldIds.some((id) => !keptVariants.some((v) => v.id === id));
+  if (!hasExplicit) return;
 
-  // Append-only (new sizes only, no removals, no explicit stock): keep existing balances as-is.
-  // Otherwise purchase/label flows that add a size would split stock across all sizes.
-  const onlyAdditions =
-    oldIds.length > 0
-    && oldIds.every((id) => keptVariants.some((v) => v.id === id))
-    && keptVariants.length >= oldIds.length;
-  if (onlyAdditions && !hasExplicit) return;
-
-  // Nothing to do if sizes unchanged and no explicit stock payload
-  if (!sizeSetChanged && !hasExplicit) return;
-
-  // Ensure every branch that had stock (or the current branch for explicit qty) is covered
-  if (hasExplicit && !branchTotals.has(branchId)) {
-    branchTotals.set(branchId, 0);
-  }
-
-  if (!branchTotals.size && !hasExplicit) return;
-
-  const branchIds = new Set([...branchTotals.keys()]);
-  if (hasExplicit) branchIds.add(branchId);
-
-  for (const bId of branchIds) {
-    let targets;
-    if (hasExplicit && bId === branchId) {
-      targets = incomingVariants.map((v) => toDecimal(v.stockQty) || 0);
-    } else {
-      const total = branchTotals.get(bId) || 0;
-      if (!sizeSetChanged || total <= 0) continue;
-      targets = splitStockQuantity(total, keptVariants.length, allowDecimal);
-    }
-
-    // Zero stock on variants that will be removed (still active until soft-delete)
-    for (const oldId of oldIds) {
-      if (keptVariants.some((v) => v.id === oldId)) continue;
-      await setVariantStockQty(
-        db,
-        {
-          branchId: bId,
-          variantId: oldId,
-          targetQty: 0,
-          userId,
-          productId: product.id,
-          notes: 'Stock moved while splitting sizes',
-        },
-        transaction
-      );
-    }
-
-    for (let i = 0; i < keptVariants.length; i++) {
-      await setVariantStockQty(
-        db,
-        {
-          branchId: bId,
-          variantId: keptVariants[i].id,
-          targetQty: targets[i] ?? 0,
-          userId,
-          productId: product.id,
-          notes: 'Stock split across sizes',
-        },
-        transaction
-      );
-    }
+  for (let i = 0; i < keptVariants.length; i++) {
+    await setVariantStockQty(
+      db,
+      {
+        branchId,
+        variantId: keptVariants[i].id,
+        targetQty: toDecimal(incomingVariants[i].stockQty) || 0,
+        userId,
+        productId: product.id,
+        notes: 'Per-variant stock update',
+      },
+      transaction
+    );
   }
 }
 
@@ -313,6 +225,7 @@ async function listProducts(db, query, branchId = null) {
   if (query.search) {
     where[Op.or] = [
       { name: { [Op.like]: `%${query.search}%` } },
+      { name_mr: { [Op.like]: `%${query.search}%` } },
       { tax_code: { [Op.like]: `%${query.search}%` } },
     ];
   }
@@ -463,6 +376,7 @@ async function createProduct(db, data, options = {}) {
     const product = await Product.create(
       {
         name: data.name.trim(),
+        name_mr: cleanNameMr(data.nameMr),
         description: data.description || null,
         category_id: data.categoryId || null,
         brand_id: data.brandId || null,
@@ -483,6 +397,11 @@ async function createProduct(db, data, options = {}) {
           {
             sku: data.sku,
             barcode: data.barcode,
+            barcodes: Array.isArray(data.barcodes)
+              ? data.barcodes
+              : data.barcode
+                ? [data.barcode]
+                : undefined,
             costPrice: data.costPrice,
             sellingPrice: data.sellingPrice,
             mrp: data.mrp,
@@ -627,6 +546,93 @@ async function createUniquePrimaryBarcode(db, variantId, transaction) {
     }
   }
   throw new AppError('Could not generate a unique barcode, try again', 500, 'BARCODE_GENERATION_FAILED');
+}
+
+/**
+ * Replaces plain (non-quantity) barcodes for a variant.
+ * First entry becomes primary; the rest are alternate scan codes for the same SKU.
+ * Empty strings get a generated EAN-13. Pack/quantity barcodes are never touched.
+ */
+async function syncPlainBarcodes(db, variantId, entries, transaction) {
+  const { Barcode } = db;
+  const Op = db.Sequelize?.Op || require('sequelize').Op;
+  const list = Array.isArray(entries) ? entries : [];
+  const wanted = [];
+  const seenCode = new Set();
+
+  for (const raw of list) {
+    const code = String(typeof raw === 'string' ? raw : raw?.barcode || '').trim();
+    if (code) {
+      if (!isNumericBarcode(code)) {
+        throw new AppError('Barcode must be numbers only', 400, 'VALIDATION_ERROR');
+      }
+      if (seenCode.has(code)) {
+        throw new AppError(`Barcode ${code} is listed twice`, 400, 'VALIDATION_ERROR');
+      }
+      seenCode.add(code);
+    }
+    wanted.push(code);
+  }
+
+  if (!wanted.length) {
+    wanted.push('');
+  }
+
+  const existing = await Barcode.findAll({
+    where: {
+      variant_id: variantId,
+      [Op.or]: [{ quantity: null }, { quantity: { [Op.is]: null } }],
+    },
+    transaction,
+  });
+  // Only plain rows (quantity null). Some dialects store NULL.
+  const plain = existing.filter((row) => row.quantity == null);
+  const byCode = new Map(plain.map((row) => [row.barcode, row]));
+  const keep = new Set();
+  const resolved = [];
+
+  for (let i = 0; i < wanted.length; i += 1) {
+    let code = wanted[i];
+    if (!code) {
+      const reusable = plain.find((row) => !keep.has(row.id) && isNumericBarcode(row.barcode));
+      if (reusable) {
+        keep.add(reusable.id);
+        resolved.push(reusable);
+        continue;
+      }
+      code = await uniqueInStoreBarcode(db, transaction);
+    }
+    const own = byCode.get(code);
+    if (own) {
+      keep.add(own.id);
+      resolved.push(own);
+      continue;
+    }
+    await assertBarcodeFree(db, code, null, transaction);
+    const created = await Barcode.create(
+      {
+        variant_id: variantId,
+        barcode: code,
+        is_primary: false,
+        quantity: null,
+      },
+      { transaction },
+    );
+    keep.add(created.id);
+    byCode.set(code, created);
+    resolved.push(created);
+  }
+
+  for (const row of plain) {
+    if (!keep.has(row.id)) await row.destroy({ transaction });
+  }
+
+  for (let i = 0; i < resolved.length; i += 1) {
+    const shouldPrimary = i === 0;
+    if (Boolean(resolved[i].is_primary) !== shouldPrimary) {
+      await resolved[i].update({ is_primary: shouldPrimary }, { transaction });
+    }
+  }
 }
 
 /**
@@ -792,7 +798,11 @@ async function syncProductVariants(db, product, variants, transaction, options =
 
       // A new row that matches a size already on this product must not replace
       // that size's barcode with a freshly generated number.
-      await assignVariantBarcode(variant, v, { keepExisting: !v.id });
+      if (Array.isArray(v.barcodes)) {
+        await syncPlainBarcodes(db, variant.id, v.barcodes, transaction);
+      } else {
+        await assignVariantBarcode(variant, v, { keepExisting: !v.id });
+      }
       if (Array.isArray(v.quantityBarcodes)) {
         await syncQuantityBarcodes(db, variant.id, v.quantityBarcodes, transaction);
       }
@@ -873,6 +883,7 @@ async function updateProduct(db, id, data, options = {}) {
 
     await product.update({
       name: data.name?.trim() ?? product.name,
+      ...(data.nameMr !== undefined ? { name_mr: cleanNameMr(data.nameMr) } : {}),
       description: data.description !== undefined ? data.description : product.description,
       category_id: data.categoryId !== undefined ? data.categoryId || null : product.category_id,
       brand_id: data.brandId !== undefined ? data.brandId || null : product.brand_id,
@@ -901,7 +912,7 @@ async function updateProduct(db, id, data, options = {}) {
 
       const variantFields = [
         'variantId', 'sku', 'sellingPrice', 'costPrice', 'mrp', 'wholesalePrice', 'reorderLevel', 'barcode',
-        'size', 'color',
+        'barcodes', 'quantityBarcodes', 'size', 'color',
       ];
       const hasVariantUpdate = variantFields.some((f) => data[f] !== undefined);
 
@@ -936,8 +947,13 @@ async function updateProduct(db, id, data, options = {}) {
             await variant.update(variantUpdates, { transaction });
           }
 
-          if (data.barcode !== undefined) {
+          if (Array.isArray(data.barcodes)) {
+            await syncPlainBarcodes(db, variant.id, data.barcodes, transaction);
+          } else if (data.barcode !== undefined) {
             await upsertVariantBarcode(db, variant.id, data.barcode?.trim() || null, transaction);
+          }
+          if (Array.isArray(data.quantityBarcodes)) {
+            await syncQuantityBarcodes(db, variant.id, data.quantityBarcodes, transaction);
           }
         }
       }
@@ -960,6 +976,42 @@ async function deleteProduct(db, id) {
   await product.update({ deleted_at: now, status: 'inactive' });
   await ProductVariant.update({ deleted_at: now, status: 'inactive' }, { where: { product_id: id } });
   return { deleted: true };
+}
+
+/** Soft-delete every product in this shop and free their barcodes for a fresh import. */
+async function deleteAllProducts(db) {
+  const total = await db.Product.count({ where: { deleted_at: null } });
+  if (!total) return { deleted: 0 };
+
+  const now = new Date();
+  const transaction = await db.sequelize.transaction();
+  try {
+    await db.sequelize.query(
+      `DELETE b FROM barcodes b
+       INNER JOIN product_variants v ON v.id = b.variant_id
+       INNER JOIN products p ON p.id = v.product_id
+       WHERE p.deleted_at IS NULL`,
+      { transaction },
+    );
+    await db.sequelize.query(
+      `UPDATE product_variants v
+       INNER JOIN products p ON p.id = v.product_id
+       SET v.deleted_at = :now, v.status = 'inactive', v.updated_at = :now
+       WHERE p.deleted_at IS NULL AND v.deleted_at IS NULL`,
+      { replacements: { now }, transaction },
+    );
+    await db.sequelize.query(
+      `UPDATE products
+       SET deleted_at = :now, status = 'inactive', updated_at = :now
+       WHERE deleted_at IS NULL`,
+      { replacements: { now }, transaction },
+    );
+    await transaction.commit();
+    return { deleted: total };
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
 }
 
 async function searchProducts(db, query, branchId = null) {
@@ -1044,6 +1096,7 @@ async function searchProducts(db, query, branchId = null) {
         { size: { [Op.like]: `%${q}%` } },
         { color: { [Op.like]: `%${q}%` } },
         { '$product.name$': { [Op.like]: `%${q}%` } },
+        { '$product.name_mr$': { [Op.like]: `%${q}%` } },
       ],
     },
     include: [
@@ -1086,13 +1139,16 @@ async function formatSearchResult(db, variant, productOverride = null) {
     variantId: variant.id,
     productId: product.id,
     productName: product.name,
+    productNameMr: product.name_mr || null,
     sku: variant.sku,
     size: variant.size,
     color: variant.color,
     sellingPrice: parseFloat(variant.selling_price),
     costPrice: parseFloat(variant.cost_price),
     mrp: variant.mrp ? parseFloat(variant.mrp) : null,
-    barcodes: sortBarcodes(variant.barcodes).map((b) => b.barcode),
+    barcodes: sortBarcodes(variant.barcodes)
+      .filter((b) => b.quantity == null)
+      .map((b) => b.barcode),
     quantityBarcodes: (variant.barcodes || [])
       .filter((b) => b.quantity != null)
       .map((b) => ({ barcode: b.barcode, quantity: toDecimal(b.quantity) }))
@@ -1339,6 +1395,11 @@ async function getProductBarcodeStatus(db, productId) {
       : null,
     variants: variants.map((v) => {
       const classified = classifyBarcodeStatus(v.barcodes, occupancyByCode);
+      const primaryCode = classified.barcode || null;
+      const plainSorted = sortBarcodes(v.barcodes).filter((barcode) => barcode.quantity == null);
+      const alternateBarcodes = plainSorted
+        .map((barcode) => classifyCode(barcode.barcode, occupancyByCode))
+        .filter((row) => row.barcode && row.barcode !== primaryCode);
       const quantityBarcodes = (v.barcodes || [])
         .filter((barcode) => barcode.quantity != null && Number(barcode.quantity) > 0)
         .map((barcode) => {
@@ -1359,10 +1420,11 @@ async function getProductBarcodeStatus(db, productId) {
         mrp: v.mrp != null ? parseFloat(String(v.mrp)) : null,
         sellingPrice: parseFloat(String(v.selling_price)) || 0,
         costPrice: parseFloat(String(v.cost_price)) || 0,
-        barcode: classified.barcode || null,
+        barcode: primaryCode,
         barcodeType: classified.barcodeType,
         status: classified.status,
         stockQty: v.stockQty ?? null,
+        alternateBarcodes,
         quantityBarcodes,
       };
     }),
@@ -1437,6 +1499,113 @@ async function ensureQuantityBarcodes(db, items) {
   return results;
 }
 
+/**
+ * Bulk edit from Price Management: update name / prices / barcode / absolute stock.
+ * `items`: [{ productId?, variantId, name?, sellingPrice?, costPrice?, mrp?, barcode?, stockQty? }]
+ */
+async function bulkUpdateVariantPricing(db, branchId, userId, items) {
+  if (!Array.isArray(items) || !items.length) {
+    throw new AppError('No price rows to update', 400, 'VALIDATION_ERROR');
+  }
+  if (items.length > 500) {
+    throw new AppError('Update at most 500 rows at a time', 400, 'VALIDATION_ERROR');
+  }
+  if (!branchId) throw new AppError('Branch required', 400, 'VALIDATION_ERROR');
+
+  const { Product, ProductVariant } = db;
+  const { applyStockMovement, MOVEMENT_TYPES } = require('./stockEngine');
+  const results = [];
+
+  for (const raw of items) {
+    const variantId = raw.variantId || raw.variant_id;
+    if (!variantId) throw new AppError('variantId is required on each row', 400, 'VALIDATION_ERROR');
+
+    const transaction = await db.sequelize.transaction();
+    try {
+      const variant = await ProductVariant.findOne({
+        where: { id: variantId, deleted_at: null },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!variant) throw new AppError(`Variant not found: ${variantId}`, 404, 'NOT_FOUND');
+
+      const product = await Product.findOne({
+        where: { id: variant.product_id, deleted_at: null },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!product) throw new AppError(`Product not found for variant ${variantId}`, 404, 'NOT_FOUND');
+
+      if (raw.name !== undefined) {
+        const nextName = String(raw.name || '').trim();
+        if (!nextName) throw new AppError('Product name cannot be empty', 400, 'VALIDATION_ERROR');
+        if (nextName !== product.name) {
+          await product.update({ name: nextName }, { transaction });
+        }
+      }
+
+      const variantUpdates = {};
+      if (raw.sellingPrice !== undefined && raw.sellingPrice !== null && raw.sellingPrice !== '') {
+        const price = parseFloat(raw.sellingPrice);
+        if (!(price > 0)) throw new AppError(`Invalid selling price for ${product.name}`, 400, 'VALIDATION_ERROR');
+        variantUpdates.selling_price = price;
+      }
+      if (raw.costPrice !== undefined && raw.costPrice !== null && raw.costPrice !== '') {
+        variantUpdates.cost_price = parseFloat(raw.costPrice) || 0;
+      }
+      if (raw.mrp !== undefined) {
+        if (raw.mrp === null || raw.mrp === '') variantUpdates.mrp = null;
+        else variantUpdates.mrp = parseFloat(raw.mrp) || 0;
+      }
+      if (Object.keys(variantUpdates).length) {
+        await variant.update(variantUpdates, { transaction });
+      }
+
+      if (Array.isArray(raw.barcodes)) {
+        await syncPlainBarcodes(db, variant.id, raw.barcodes, transaction);
+      } else if (raw.barcode !== undefined) {
+        const code = String(raw.barcode || '').trim();
+        if (code) await upsertVariantBarcode(db, variant.id, code, transaction);
+      }
+
+      if (raw.stockQty !== undefined && raw.stockQty !== null && raw.stockQty !== '') {
+        const target = parseFloat(raw.stockQty);
+        if (Number.isNaN(target) || target < 0) {
+          throw new AppError(`Invalid stock for ${product.name}`, 400, 'VALIDATION_ERROR');
+        }
+        const balance = await db.StockBalance.findOne({
+          where: { branch_id: branchId, variant_id: variant.id },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        const current = parseFloat(balance?.quantity) || 0;
+        const delta = Math.round((target - current) * 1000) / 1000;
+        if (delta !== 0) {
+          await applyStockMovement(db, {
+            branchId,
+            variantId: variant.id,
+            quantityChange: delta,
+            movementType: MOVEMENT_TYPES.ADJUSTMENT,
+            referenceType: 'price_management',
+            referenceId: product.id,
+            notes: 'Price management stock edit',
+            userId,
+            allowNegative: true,
+          }, transaction);
+        }
+      }
+
+      await transaction.commit();
+      results.push({ variantId: variant.id, productId: product.id, ok: true });
+    } catch (err) {
+      await transaction.rollback();
+      throw err;
+    }
+  }
+
+  return { updated: results.length, items: results };
+}
+
 module.exports = {
   generateBarcodes,
   ensureQuantityBarcodes,
@@ -1446,8 +1615,10 @@ module.exports = {
   createProduct,
   updateProduct,
   deleteProduct,
+  deleteAllProducts,
   searchProducts,
   bulkImport,
+  bulkUpdateVariantPricing,
   listTaxGroups,
   listUnits,
   generateSku,

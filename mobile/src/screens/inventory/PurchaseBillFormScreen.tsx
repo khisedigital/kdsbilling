@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Button, Dialog, HelperText, Portal, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -28,10 +29,11 @@ import {
   updateProduct,
   type SearchProductResult,
 } from '../../services/catalogService';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { variantLabel } from '../../utils/variantLabel';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing, typography } from '../../theme/layout';
+import { common, radius, spacing, typography, dialogCard} from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'PurchaseBillForm'>;
 
@@ -145,6 +147,7 @@ function sameVariantKey(size?: string | null, color?: string | null) {
 }
 
 export default function PurchaseBillFormScreen({ route, navigation }: Props) {
+  const t = useT();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierId, setSupplierId] = useState(route.params?.supplierId || '');
   const [loadingSuppliers, setLoadingSuppliers] = useState(true);
@@ -196,27 +199,27 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       return;
     }
     let cancelled = false;
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       setSearching(true);
       setSearchError('');
       try {
         const found = await searchProducts(q);
         if (cancelled) return;
         setResults(found);
-        if (!found.length) setSearchError(`No product for "${q}"`);
+        if (!found.length) setSearchError(t('No product for "{{q}}"', { q }));
       } catch {
         if (cancelled) return;
         setResults([]);
-        setSearchError('Search failed. Try again.');
+        setSearchError(t('Search failed. Try again.'));
       } finally {
         if (!cancelled) setSearching(false);
       }
     }, 280);
     return () => {
       cancelled = true;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
-  }, [search]);
+  }, [search, t]);
 
   const upsertLine = (product: SearchProductResult & { productId?: string }, quantity: number, unitCost: number) => {
     if (!(quantity > 0)) return;
@@ -293,7 +296,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
         .map((v) => productVariantToSearchResult(product, v));
 
       if (!activeVariants.length) {
-        setError('No active variants found for this product');
+        setError(t('No active variants found for this product'));
         return;
       }
 
@@ -309,12 +312,12 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
           group.productId,
           group.productName,
           fallback,
-          'Could not load all sizes. Showing search matches.',
+          t('Could not load all sizes. Showing search matches.'),
         );
       } else if (fallback[0]) {
         addSingleVariant(fallback[0]);
       } else {
-        setError('Could not load product variants');
+        setError(t('Could not load product variants'));
       }
     } finally {
       setLoadingVariants(false);
@@ -388,7 +391,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
     if (!activeProduct) return;
     const selected = activeProduct.drafts.filter((row) => (parseFloat(row.quantity) || 0) > 0);
     if (!selected.length) {
-      setVariantError('Enter quantity greater than 0 for at least one variant');
+      setVariantError(t('Enter quantity greater than 0 for at least one variant'));
       return;
     }
 
@@ -403,27 +406,33 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       const qty = parseFloat(row.quantity);
       const unitCost = parseFloat(row.unitCost);
       if (Number.isNaN(qty) || qty <= 0) {
-        setVariantError(`Invalid quantity for ${variantLabel(row.size, row.color) || row.sku || 'new size'}`);
+        setVariantError(t('Invalid quantity for {{name}}', {
+          name: variantLabel(row.size, row.color) || row.sku || t('new size'),
+        }));
         return;
       }
       if (Number.isNaN(unitCost) || unitCost < 0) {
-        setVariantError(`Enter a valid purchase price for ${variantLabel(row.size, row.color) || 'new size'}`);
+        setVariantError(t('Enter a valid purchase price for {{name}}', {
+          name: variantLabel(row.size, row.color) || t('new size'),
+        }));
         return;
       }
       if (row.isNew && !(row.size || '').trim() && !(row.color || '').trim()) {
-        setVariantError('New variant needs a size or colour');
+        setVariantError(t('New variant needs a size or colour'));
         return;
       }
       const sell = parseFloat(row.sellingPrice);
       if (row.isNew && (Number.isNaN(sell) || sell < 0)) {
-        setVariantError('New variant needs a valid selling price (0 allowed)');
+        setVariantError(t('New variant needs a valid selling price (0 allowed)'));
         return;
       }
       if (row.isNew) {
         const key = sameVariantKey(row.size, row.color);
         if (existingKeys.has(key) || seenNew.has(key)) {
           setVariantError(
-            `Size ${variantLabel(row.size, row.color) || 'Default'} already exists — use the existing row`,
+            t('Size {{name}} already exists — use the existing row', {
+              name: variantLabel(row.size, row.color) || t('Default'),
+            }),
           );
           return;
         }
@@ -519,7 +528,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
   const handleAddSupplier = async () => {
     setSupplierError('');
     if (!newSupplierName.trim()) {
-      setSupplierError('Supplier name is required');
+      setSupplierError(t('Supplier name is required'));
       return;
     }
     setSavingSupplier(true);
@@ -547,7 +556,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
 
     const byProduct = new Map<string, LineItem[]>();
     for (const line of newLines) {
-      if (!line.productId) throw new Error('New variant is missing product id');
+      if (!line.productId) throw new Error(t('New variant is missing product id'));
       const list = byProduct.get(line.productId) || [];
       list.push(line);
       byProduct.set(line.productId, list);
@@ -605,7 +614,10 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
             );
           if (!match?.id) {
             throw new Error(
-              `Could not create variant ${variantLabel(line.size, line.color) || ''} on ${line.productName}`,
+              t('Could not create variant {{label}} on {{product}}', {
+                label: variantLabel(line.size, line.color) || '',
+                product: line.productName,
+              }),
             );
           }
           idMap.set(line.variantId, match.id);
@@ -618,7 +630,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
     return purchaseLines.map((line) => {
       if (!line.isNewVariant) return line;
       const realId = idMap.get(line.variantId);
-      if (!realId) throw new Error('Failed to resolve new variant id');
+      if (!realId) throw new Error(t('Failed to resolve new variant id'));
       return {
         ...line,
         variantId: realId,
@@ -630,15 +642,15 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
   const handleSubmit = async () => {
     setError('');
     if (!supplierId) {
-      setError('Select or add a supplier');
+      setError(t('Select or add a supplier'));
       return;
     }
     if (!lines.length) {
-      setError('Add at least one product');
+      setError(t('Add at least one product'));
       return;
     }
     if (activeProduct) {
-      setError('Finish adding the selected product variants first (or clear them)');
+      setError(t('Finish adding the selected product variants first (or clear them)'));
       return;
     }
 
@@ -648,7 +660,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       return Number.isNaN(qty) || qty <= 0 || Number.isNaN(cost) || cost < 0;
     });
     if (invalid) {
-      setError('Each item needs a valid quantity and unit cost');
+      setError(t('Each item needs a valid quantity and unit cost'));
       return;
     }
 
@@ -656,7 +668,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       (line) => line.isNewVariant && !(line.size || '').trim() && !(line.color || '').trim(),
     );
     if (newInvalid) {
-      setError('New variants need a size or colour');
+      setError(t('New variants need a size or colour'));
       return;
     }
 
@@ -672,9 +684,9 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
           unitCost: parseFloat(line.unitCost),
         })),
       });
-      Alert.alert('Purchase saved', `${bill.bill_number} · stock updated`, [
+      Alert.alert(t('Purchase saved'), t('{{bill}} · stock updated', { bill: bill.bill_number }), [
         {
-          text: 'OK',
+          text: t('OK'),
           onPress: () => navigation.replace('PurchaseBillDetail', { billId: bill.id }),
         },
       ]);
@@ -690,24 +702,24 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
   return (
     <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Purchase Entry</Text>
-        <Text style={styles.subtitle}>Buy stock from supplier — quantity goes into inventory</Text>
+        <Text style={styles.title}>{t('Purchase Entry')}</Text>
+        <Text style={styles.subtitle}>{t('Buy stock from supplier — quantity goes into inventory')}</Text>
 
         <SectionCard
-          title="Supplier"
+          title={t('Supplier')}
           icon="truck"
           action={
             <Button compact mode="text" icon="plus" onPress={() => setSupplierDialog(true)} textColor={colors.primary}>
-              Add
+              {t('Add')}
             </Button>
           }>
           {loadingSuppliers ? (
             <ActivityIndicator color={colors.primary} />
           ) : suppliers.length === 0 ? (
             <View style={styles.emptySupplier}>
-              <Text style={styles.emptySupplierText}>No suppliers yet. Add one to continue.</Text>
+              <Text style={styles.emptySupplierText}>{t('No suppliers yet. Add one to continue.')}</Text>
               <Button mode="contained" icon="truck-plus" onPress={() => setSupplierDialog(true)}>
-                Add supplier
+                {t('Add supplier')}
               </Button>
             </View>
           ) : (
@@ -736,16 +748,16 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
             </View>
           )}
           {selectedSupplier ? (
-            <Text style={styles.selectedHint}>Selected: {selectedSupplier.name}</Text>
+            <Text style={styles.selectedHint}>{t('Selected: {{name}}', { name: selectedSupplier.name })}</Text>
           ) : null}
         </SectionCard>
 
         <SectionCard
-          title="Add products"
+          title={t('Add products')}
           icon="package-variant"
-          subtitle="Search a product. Variants open inline — you can also add a new size here.">
-          <TextInput
-            label="Search product"
+          subtitle={t('Search a product. Variants open inline — you can also add a new size here.')}>
+          <AppTextInput
+            label={t('Search product')}
             value={search}
             onChangeText={setSearch}
             mode="outlined"
@@ -768,7 +780,9 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                   const first = group.variants[0];
                   const cost = first ? defaultUnitCost(first) : 0;
                   const sizeHint = multi
-                    ? `${group.variants.length > 1 ? `${group.variants.length}+ sizes` : variantLabel(first?.size, first?.color) || 'sizes'}`
+                    ? (group.variants.length > 1
+                      ? t('{{count}}+ sizes', { count: group.variants.length })
+                      : variantLabel(first?.size, first?.color) || t('sizes'))
                     : null;
                   return (
                     <Pressable
@@ -783,11 +797,15 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                         </Text>
                         <Text style={styles.resultMeta} numberOfLines={1}>
                           {multi
-                            ? 'Tap to enter qty per size (inline)'
-                            : `${first?.sku || ''} · Cost ${money(cost)} · Stock ${first?.stockQty ?? 0}`}
+                            ? t('Tap to enter qty per size (inline)')
+                            : t('{{sku}} · Cost {{cost}} · Stock {{stock}}', {
+                              sku: first?.sku || '',
+                              cost: money(cost),
+                              stock: first?.stockQty ?? 0,
+                            })}
                         </Text>
                       </View>
-                      <Text style={styles.resultAdd}>{multi ? 'Open' : 'Add'}</Text>
+                      <Text style={styles.resultAdd}>{multi ? t('Open') : t('Add')}</Text>
                     </Pressable>
                   );
                 })
@@ -801,7 +819,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                 <View style={styles.flex}>
                   <Text style={styles.inlineTitle}>{activeProduct.productName}</Text>
                   <Text style={styles.inlineHint}>
-                    Qty 0 = skip. New sizes are saved on this product when you save the purchase.
+                    {t('Qty 0 = skip. New sizes are saved on this product when you save the purchase.')}
                   </Text>
                 </View>
                 <Pressable
@@ -816,7 +834,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
               </View>
 
               {activeProduct.drafts.map((row) => {
-                const size = variantLabel(row.size, row.color) || (row.isNew ? 'New size' : 'Default');
+                const size = variantLabel(row.size, row.color) || (row.isNew ? t('New size') : t('Default'));
                 const qty = parseFloat(row.quantity) || 0;
                 const cost = parseFloat(row.unitCost) || 0;
                 return (
@@ -824,22 +842,22 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                     {row.isNew ? (
                       <>
                         <View style={styles.newBadgeRow}>
-                          <Text style={styles.newBadge}>New variant</Text>
+                          <Text style={styles.newBadge}>{t('New variant')}</Text>
                           <Pressable onPress={() => removeDraft(row.key)} hitSlop={8}>
                             <Icon name="delete-outline" size={18} color={colors.error} />
                           </Pressable>
                         </View>
                         <View style={styles.variantFields}>
-                          <TextInput
-                            label="Size *"
+                          <AppTextInput
+                            label={t('Size *')}
                             value={row.size || ''}
                             onChangeText={(v) => updateDraft(row.key, { size: v })}
                             mode="outlined"
                             dense
                             style={styles.variantQty}
                           />
-                          <TextInput
-                            label="Colour"
+                          <AppTextInput
+                            label={t('Colour')}
                             value={row.color || ''}
                             onChangeText={(v) => updateDraft(row.key, { color: v })}
                             mode="outlined"
@@ -847,8 +865,8 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                             style={styles.variantCost}
                           />
                         </View>
-                        <TextInput
-                          label="Selling price ₹ *"
+                        <AppTextInput
+                          label={t('Selling price ₹ *')}
                           value={row.sellingPrice}
                           onChangeText={(v) => updateDraft(row.key, { sellingPrice: v })}
                           keyboardType="decimal-pad"
@@ -860,20 +878,21 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                     ) : (
                       <>
                         <Text style={styles.variantSize}>{size}</Text>
-                        <Text style={styles.variantSku}>SKU {row.sku}</Text>
+                        <Text style={styles.variantSku}>{t('SKU {{sku}}', { sku: row.sku })}</Text>
                         <Text style={styles.variantBarcode} numberOfLines={1}>
-                          {row.barcode ? `Barcode ${row.barcode}` : 'No barcode yet'}
+                          {row.barcode ? t('Barcode {{code}}', { code: row.barcode }) : t('No barcode yet')}
                         </Text>
                         <Text style={styles.variantRef}>
-                          MRP {row.mrp != null && row.mrp > 0 ? money(row.mrp) : '—'}
-                          {'  ·  '}
-                          Sell {money(parseFloat(row.sellingPrice) || 0)}
+                          {t('MRP {{mrp}}  ·  Sell {{sell}}', {
+                            mrp: row.mrp != null && row.mrp > 0 ? money(row.mrp) : '—',
+                            sell: money(parseFloat(row.sellingPrice) || 0),
+                          })}
                         </Text>
                       </>
                     )}
                     <View style={styles.variantFields}>
-                      <TextInput
-                        label="Qty"
+                      <AppTextInput
+                        label={t('Qty')}
                         value={row.quantity}
                         onChangeText={(v) => updateDraft(row.key, { quantity: v })}
                         keyboardType="decimal-pad"
@@ -881,8 +900,8 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                         dense
                         style={styles.variantQty}
                       />
-                      <TextInput
-                        label="Purchase ₹"
+                      <AppTextInput
+                        label={t('Purchase ₹')}
                         value={row.unitCost}
                         onChangeText={(v) => updateDraft(row.key, { unitCost: v })}
                         keyboardType="decimal-pad"
@@ -892,7 +911,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                       />
                     </View>
                     {qty > 0 ? (
-                      <Text style={styles.variantLineTotal}>Line {money(qty * cost)}</Text>
+                      <Text style={styles.variantLineTotal}>{t('Line {{amount}}', { amount: money(qty * cost) })}</Text>
                     ) : null}
                   </View>
                 );
@@ -904,17 +923,20 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                   icon="plus"
                   onPress={addNewVariantDraft}
                   style={styles.addVariantBtn}>
-                  Add variant
+                  {t('Add variant')}
                 </Button>
                 <Button mode="contained" onPress={confirmInlineVariants} style={styles.addPurchaseBtn}>
-                  Add to purchase
+                  {t('Add to purchase')}
                 </Button>
               </View>
 
               {variantDraftTotals.lines > 0 ? (
                 <View style={styles.variantTotals}>
                   <Text style={styles.variantTotalsText}>
-                    Selected {variantDraftTotals.lines} · Qty {variantDraftTotals.qty}
+                    {t('Selected {{lines}} · Qty {{qty}}', {
+                      lines: variantDraftTotals.lines,
+                      qty: variantDraftTotals.qty,
+                    })}
                   </Text>
                   <Text style={styles.variantTotalsAmount}>{money(variantDraftTotals.amount)}</Text>
                 </View>
@@ -924,9 +946,9 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
           ) : null}
         </SectionCard>
 
-        <SectionCard title="Purchase items" icon="clipboard-list-outline" subtitle={`${lines.length} line${lines.length === 1 ? '' : 's'}`}>
+        <SectionCard title={t('Purchase items')} icon="clipboard-list-outline" subtitle={t(lines.length === 1 ? '{{count}} line' : '{{count}} lines', { count: lines.length })}>
           {!lines.length ? (
-            <Text style={styles.emptyLines}>Search and add products above</Text>
+            <Text style={styles.emptyLines}>{t('Search and add products above')}</Text>
           ) : (
             lines.map((line) => {
               const size = variantLabel(line.size, line.color);
@@ -938,10 +960,10 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                       <Text style={styles.lineName} numberOfLines={2}>
                         {line.productName}
                         {size ? ` · ${size}` : ''}
-                        {line.isNewVariant ? ' · New' : ''}
+                        {line.isNewVariant ? t(' · New') : ''}
                       </Text>
                       <Text style={styles.lineSku}>
-                        {line.isNewVariant ? 'Will be created on save' : line.sku}
+                        {line.isNewVariant ? t('Will be created on save') : line.sku}
                       </Text>
                     </View>
                     <Pressable onPress={() => removeLine(line.key)} hitSlop={10} style={styles.removeBtn}>
@@ -949,8 +971,8 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                     </Pressable>
                   </View>
                   <View style={styles.lineFields}>
-                    <TextInput
-                      label={`Qty${line.uomCode ? ` (${line.uomCode})` : ''}`}
+                    <AppTextInput
+                      label={line.uomCode ? t('Qty ({{uom}})', { uom: line.uomCode }) : t('Qty')}
                       value={line.quantity}
                       onChangeText={(v) => updateLine(line.key, { quantity: v })}
                       keyboardType="decimal-pad"
@@ -958,8 +980,8 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                       style={styles.lineInput}
                       dense
                     />
-                    <TextInput
-                      label="Unit cost ₹"
+                    <AppTextInput
+                      label={t('Unit cost ₹')}
                       value={line.unitCost}
                       onChangeText={(v) => updateLine(line.key, { unitCost: v })}
                       keyboardType="decimal-pad"
@@ -968,16 +990,16 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
                       dense
                     />
                   </View>
-                  <Text style={styles.lineTotal}>Line {money(lineTotal)}</Text>
+                  <Text style={styles.lineTotal}>{t('Line {{amount}}', { amount: money(lineTotal) })}</Text>
                 </View>
               );
             })
           )}
         </SectionCard>
 
-        <SectionCard title="Notes" icon="note-text-outline">
-          <TextInput
-            label="Optional notes"
+        <SectionCard title={t('Notes')} icon="note-text-outline">
+          <AppTextInput
+            label={t('Optional notes')}
             value={notes}
             onChangeText={setNotes}
             mode="outlined"
@@ -987,11 +1009,11 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
 
         <View style={styles.totalBar}>
           <View>
-            <Text style={styles.totalLabel}>Total qty</Text>
+            <Text style={styles.totalLabel}>{t('Total qty')}</Text>
             <Text style={styles.totalQtyValue}>{totalQuantity}</Text>
           </View>
           <View style={styles.totalAmountWrap}>
-            <Text style={styles.totalLabel}>Bill total</Text>
+            <Text style={styles.totalLabel}>{t('Bill total')}</Text>
             <Text style={styles.totalValue}>{money(totalAmount)}</Text>
           </View>
         </View>
@@ -1007,24 +1029,24 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
           style={styles.submit}
           contentStyle={styles.submitContent}
           labelStyle={styles.submitLabel}>
-          Save purchase & stock in
+          {t('Save purchase & stock in')}
         </Button>
       </ScrollView>
 
       <Portal>
         <Dialog visible={supplierDialog} onDismiss={() => setSupplierDialog(false)} style={styles.dialog}>
-          <Dialog.Title>Add supplier</Dialog.Title>
+          <Dialog.Title>{t('Add supplier')}</Dialog.Title>
           <Dialog.Content>
-            <TextInput
-              label="Name *"
+            <AppTextInput
+              label={t('Name *')}
               value={newSupplierName}
               onChangeText={setNewSupplierName}
               mode="outlined"
               style={styles.input}
               autoFocus
             />
-            <TextInput
-              label="Phone"
+            <AppTextInput
+              label={t('Phone')}
               value={newSupplierPhone}
               onChangeText={setNewSupplierPhone}
               mode="outlined"
@@ -1034,8 +1056,8 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
             {supplierError ? <HelperText type="error">{supplierError}</HelperText> : null}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setSupplierDialog(false)} disabled={savingSupplier}>Cancel</Button>
-            <Button onPress={handleAddSupplier} loading={savingSupplier}>Save</Button>
+            <Button onPress={() => setSupplierDialog(false)} disabled={savingSupplier}>{t('Cancel')}</Button>
+            <Button onPress={handleAddSupplier} loading={savingSupplier}>{t('Save')}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -1089,8 +1111,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   resultPressed: { backgroundColor: colors.primaryLight },
   resultBody: { flex: 1, minWidth: 0 },
@@ -1114,7 +1136,7 @@ const styles = StyleSheet.create({
   emptyLines: { color: colors.textMuted, fontSize: 14, paddingVertical: spacing.sm },
   lineCard: {
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     borderRadius: radius.md,
     padding: spacing.md,
     marginBottom: spacing.sm,
@@ -1157,10 +1179,10 @@ const styles = StyleSheet.create({
   submit: { marginTop: spacing.sm, borderRadius: radius.md },
   submitContent: { minHeight: 50 },
   submitLabel: { fontSize: 16, fontWeight: '700' },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
   variantCard: {
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     borderRadius: radius.md,
     padding: spacing.md,
     marginBottom: spacing.sm,
@@ -1202,7 +1224,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: spacing.sm,
     paddingTop: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
   },
   variantTotalsText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },

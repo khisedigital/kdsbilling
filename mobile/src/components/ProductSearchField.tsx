@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Searchbar, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useT } from '../i18n';
 import { searchProducts, type SearchProductResult } from '../services/catalogService';
 import { colors } from '../theme/colors';
 import { radius, spacing } from '../theme/layout';
@@ -49,6 +50,7 @@ export default function ProductSearchField({
   minChars = 2,
   groupByProduct = false,
 }: Props) {
+  const t = useT();
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<SearchProductResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -72,15 +74,16 @@ export default function ProductSearchField({
     try {
       const found = await searchProducts(q);
       setResults(found);
-      if (!found.length) setSearchError(`No product found for "${q}"`);
+      if (!found.length) setSearchError(t('No product found for "{{query}}"', { query: q }));
     } catch (err: unknown) {
       setResults([]);
       const axiosErr = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
-      setSearchError(axiosErr?.response?.data?.error?.message || axiosErr?.message || 'Search failed');
+      const message = axiosErr?.response?.data?.error?.message || axiosErr?.message;
+      setSearchError(message ? t(message) : t('Search failed'));
     } finally {
       setSearching(false);
     }
-  }, [minChars]);
+  }, [minChars, t]);
 
   useEffect(() => {
     if (!search.trim()) {
@@ -108,7 +111,7 @@ export default function ProductSearchField({
   return (
     <View style={styles.wrap}>
       <Searchbar
-        placeholder={label}
+        placeholder={t(label)}
         value={search}
         onChangeText={setSearch}
         onSubmitEditing={() => runSearch(search)}
@@ -123,7 +126,7 @@ export default function ProductSearchField({
         <View style={styles.selectedChip}>
           <Icon name="check-circle" size={18} color={colors.secondary} />
           <View style={styles.selectedText}>
-            <Text style={styles.selectedLabel}>Selected product</Text>
+            <Text style={styles.selectedLabel}>{t('Selected product')}</Text>
             <Text style={styles.selectedName} numberOfLines={1}>{selectedLabel}</Text>
           </View>
         </View>
@@ -134,7 +137,7 @@ export default function ProductSearchField({
           {searching ? (
             <View style={styles.resultsLoading}>
               <ActivityIndicator size="small" color={colors.primary} />
-              <Text variant="bodySmall" style={styles.resultsHint}>Searching...</Text>
+              <Text variant="bodySmall" style={styles.resultsHint}>{t('Searching...')}</Text>
             </View>
           ) : searchError ? (
             <View style={styles.noResult}>
@@ -151,7 +154,9 @@ export default function ProductSearchField({
                   || Boolean(group.variants[0]?.size || group.variants[0]?.color);
                 const first = group.variants[0];
                 const meta = multi
-                  ? `${group.variants.length > 1 ? `${group.variants.length} sizes` : variantLabel(first?.size, first?.color) || 'sizes'}`
+                  ? (group.variants.length > 1
+                    ? t('{{count}} sizes', { count: group.variants.length })
+                    : variantLabel(first?.size, first?.color) || t('sizes'))
                   : first?.sku;
                 return (
                   <Pressable
@@ -167,7 +172,7 @@ export default function ProductSearchField({
                         {[meta, first?.uom?.code].filter(Boolean).join(' · ')}
                       </Text>
                     </View>
-                    <Text style={styles.resultAdd}>{multi ? 'Sizes' : 'Select'}</Text>
+                    <Text style={styles.resultAdd}>{multi ? t('Sizes') : t('Select')}</Text>
                   </Pressable>
                 );
               })}
@@ -251,7 +256,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
   resultPressed: { backgroundColor: colors.primaryLight },

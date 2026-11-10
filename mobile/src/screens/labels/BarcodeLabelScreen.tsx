@@ -9,11 +9,13 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Checkbox, Dialog, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, Checkbox, Dialog, Portal, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import ProductSearchField from '../../components/ProductSearchField';
 import { encodeBarcode } from '../../print/barcodeEncode';
 import {
+  calibrateGapLabelPrinter,
   isDesktopLabelPrintAvailable,
   isGapLabelPrintAvailable,
   LABEL_HEIGHT_OPTIONS,
@@ -39,24 +41,35 @@ import {
   type VariantBarcodeStatus,
   type VariantBarcodeStatusKind,
 } from '../../services/catalogService';
-import { getShopSettings } from '../../services/shopSettingsService';
+import { getShopSettings, shopTextForBill } from '../../services/shopSettingsService';
 import {
   getLabelPrinterSettings,
+  resolveLabelBatchSize,
   saveLabelPrinterSettings,
+  suggestLabelBatchSize,
+  type LabelBatchSize,
   type LabelPrinterSettings,
 } from '../../store/printerStore';
+import { useLanguageStore, useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { dialogCard, radius, spacing } from '../../theme/layout';
 import { formatQuantity, getQuantityPresets, parseQuantityForUom, quantityHint, type UomInfo } from '../../utils/quantity';
 import { productDisplayName, variantLabel } from '../../utils/variantLabel';
 
-type ListedPrinter = { name: string; address: string };
+type ListedPrinter = {
+  name: string;
+  address: string;
+  driverName?: string;
+  rawFriendly?: boolean;
+};
 
 type VariantRow = VariantBarcodeStatus & {
   selected: boolean;
   labelQty: string;
   rowKey: string;
   packQuantity: number | null;
+  /** 2+ when this row is an alternate plain barcode for the same variant. */
+  altIndex?: number;
 };
 
 type LastPrintJob = {
@@ -91,10 +104,23 @@ function statusMeta(status: VariantBarcodeStatusKind): {
 function expandLabelRows(
   data: ProductBarcodeStatus,
   extras: { variantId: string; barcode?: string | null; quantity: number }[] = [],
-): Array<VariantBarcodeStatus & { rowKey: string; packQuantity: number | null }> {
-  const rows: Array<VariantBarcodeStatus & { rowKey: string; packQuantity: number | null }> = [];
+): Array<VariantBarcodeStatus & { rowKey: string; packQuantity: number | null; altIndex?: number }> {
+  const rows: Array<VariantBarcodeStatus & { rowKey: string; packQuantity: number | null; altIndex?: number }> = [];
   for (const variant of data.variants) {
     rows.push({ ...variant, rowKey: variant.variantId, packQuantity: null });
+    (variant.alternateBarcodes || []).forEach((alt, index) => {
+      const code = String(alt.barcode || '').trim();
+      if (!code) return;
+      rows.push({
+        ...variant,
+        rowKey: `${variant.variantId}:alt:${index}:${code}`,
+        barcode: alt.barcode,
+        barcodeType: alt.barcodeType,
+        status: alt.status,
+        packQuantity: null,
+        altIndex: index + 2,
+      });
+    });
     if (data.hasVariants) continue;
     const packs = [...(variant.quantityBarcodes || [])];
     for (const extra of extras) {
@@ -139,10 +165,21 @@ function sameQty(a: number | null | undefined, b: number | null | undefined): bo
   return Math.abs(a - b) < 0.0001;
 }
 
-function rowTitle(row: VariantRow, hasVariants: boolean, uom?: UomInfo | null): string {
+function rowTitle(
+  row: VariantRow,
+  hasVariants: boolean,
+  uom: UomInfo | null | undefined,
+  tr: (text: string, vars?: Record<string, string | number>) => string,
+): string {
   if (row.packQuantity) return formatQuantity(row.packQuantity, uom);
+  if (row.altIndex) {
+    const base = hasVariants
+      ? variantLabel(row.size, row.color) || tr('Default')
+      : formatQuantity(1, uom);
+    return tr('{{base}} · barcode {{index}}', { base, index: row.altIndex });
+  }
   if (!hasVariants) return formatQuantity(1, uom);
-  return variantLabel(row.size, row.color) || 'Default';
+  return variantLabel(row.size, row.color) || tr('Default');
 }
 
 function itemQtyLabel(row: VariantRow, uom?: UomInfo | null): string {
@@ -174,6 +211,7 @@ function LabelPreview({
   width: number;
   height: number;
 }) {
+  const t = useT();
   let modules = '';
   try {
     modules = barcode ? encodeBarcode(barcode) : '';
@@ -194,16 +232,16 @@ function LabelPreview({
     runs.push({ bar: false, n: quiet });
   }
 
-  const right = [qtyLabel, price].filter(Boolean).join('  ');
+  const right = [qtyLabel, price].filter(Boolean).join('   ');
 
   return (
     <View style={[styles.previewCard, { width, height }]}>
       <Text style={styles.previewShop} numberOfLines={1}>
-        {shopName || 'Shop'}
+        {shopName || t('Shop')}
       </Text>
       <View style={styles.previewRow}>
         <Text style={styles.previewProduct} numberOfLines={1}>
-          {productName || 'Product'}
+          {productName || t('Product')}
         </Text>
         <Text style={styles.previewRight} numberOfLines={1}>
           {right || '—'}
@@ -212,16 +250,23 @@ function LabelPreview({
       <View style={styles.previewDivider} />
       {runs.length ? (
         <View style={styles.previewBarcode}>
-          {runs.map((run, index) => (
-            <View
-              key={index}
-              style={{ flex: run.n, backgroundColor: run.bar ? '#000' : '#FFF' }}
-            />
-          ))}
+          {runs.map((run, index) => {
+            const total = runs.reduce((sum, item) => sum + item.n, 0) || 1;
+            const barW = Math.max(120, width - 20);
+            return (
+              <View
+                key={index}
+                style={{
+                  width: (barW * run.n) / total,
+                  backgroundColor: run.bar ? '#000' : '#FFF',
+                }}
+              />
+            );
+          })}
         </View>
       ) : (
         <View style={styles.previewBarcodeEmpty}>
-          <Text style={styles.muted}>Barcode</Text>
+          <Text style={styles.muted}>{t('Barcode')}</Text>
         </View>
       )}
       <Text style={styles.previewDigits} numberOfLines={1}>
@@ -232,6 +277,7 @@ function LabelPreview({
 }
 
 export default function BarcodeLabelScreen() {
+  const t = useT();
   const useSdk = isNativeLabelPrinterAvailable();
   const useDesktop = isDesktopLabelPrintAvailable();
   const canPrint = isGapLabelPrintAvailable();
@@ -240,6 +286,7 @@ export default function BarcodeLabelScreen() {
 
   const [shopName, setShopName] = useState('My Shop');
   const [labelHeightMm, setLabelHeightMm] = useState<LabelHeightMm>(28);
+  const [labelBatchSize, setLabelBatchSize] = useState<LabelBatchSize>(0);
   const previewH = previewW * (labelHeightMm / LABEL_WIDTH_MM);
   const [productMeta, setProductMeta] = useState<ProductBarcodeStatus | null>(null);
   const [rows, setRows] = useState<VariantRow[]>([]);
@@ -262,10 +309,18 @@ export default function BarcodeLabelScreen() {
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
   const [status, setStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const applyDesktopLabelPrinter = useCallback((settings: LabelPrinterSettings) => {
     setLabelHeightMm(normalizeLabelHeightMm(settings.labelHeightMm));
+    const printerKey =
+      settings.type === 'system'
+        ? settings.systemPrinterName
+        : settings.type === 'bluetooth'
+          ? settings.bluetoothAddress
+          : settings.networkHost;
+    setLabelBatchSize(resolveLabelBatchSize(settings, printerKey));
     if (settings.type === 'network' && settings.networkHost?.trim()) {
       const host = settings.networkHost.trim();
       const port = settings.networkPort || 9100;
@@ -307,20 +362,69 @@ export default function BarcodeLabelScreen() {
         });
         showStatus(
           'ok',
-          `Label size set to ${LABEL_WIDTH_MM}×${heightMm} mm. Print one test label to check alignment.`,
+          t('Label size set to {{width}}×{{height}} mm. Print one test label to check alignment.', {
+            width: LABEL_WIDTH_MM,
+            height: heightMm,
+          }),
         );
       } catch (err) {
-        showStatus('err', err instanceof Error ? err.message : 'Could not save label size.');
+        showStatus('err', err instanceof Error ? t(err.message) : t('Could not save label size.'));
       }
     },
-    [showStatus],
+    [showStatus, t],
   );
+
+  const persistLabelBatchSize = useCallback(
+    async (batchSize: LabelBatchSize) => {
+      setLabelBatchSize(batchSize);
+      try {
+        const current = await getLabelPrinterSettings();
+        const key = (
+          current.type === 'system'
+            ? current.systemPrinterName
+            : current.type === 'bluetooth'
+              ? current.bluetoothAddress
+              : current.networkHost
+        )?.trim();
+        const byPrinter = { ...(current.labelBatchByPrinter || {}) };
+        if (key) byPrinter[key] = batchSize;
+        await saveLabelPrinterSettings({
+          ...current,
+          labelBatchSize: batchSize,
+          labelBatchByPrinter: byPrinter,
+        });
+        showStatus(
+          'ok',
+          batchSize === 0
+            ? t('Print mode: Continuous (Poshiflow-style — all copies in one job).')
+            : t('Print mode: Batched ×3 (Seznik-style — waits between every 3 stickers).'),
+        );
+      } catch (err) {
+        showStatus('err', err instanceof Error ? t(err.message) : t('Could not save print mode.'));
+      }
+    },
+    [showStatus, t],
+  );
+
+  const runCalibrate = useCallback(async () => {
+    if (!connected || calibrating || printing) return;
+    setCalibrating(true);
+    try {
+      await calibrateGapLabelPrinter();
+      showStatus('ok', t('Gap sensor calibrated. Print a test label to confirm alignment.'));
+    } catch (err) {
+      showStatus('err', err instanceof Error ? t(err.message) : t('Calibrate failed.'));
+    } finally {
+      setCalibrating(false);
+    }
+  }, [calibrating, connected, printing, showStatus, t]);
 
   const applyBarcodeStatus = useCallback((
     data: ProductBarcodeStatus,
     opts?: { preferSelectAvailable?: boolean; preserveRows?: VariantRow[]; selectPackQty?: number },
   ) => {
-    const preferSelectAvailable = opts?.preferSelectAvailable !== false;
+    // Default off — user picks which variants to print (Select all is still available).
+    const preferSelectAvailable = opts?.preferSelectAvailable === true;
     const expanded = expandLabelRows(data, extraPacksRef.current);
     const previous = new Map((opts?.preserveRows || []).map((row) => [row.rowKey, row]));
     const uom = data.uom || searchUomRef.current || null;
@@ -362,24 +466,24 @@ export default function BarcodeLabelScreen() {
         const data = await fetchProductBarcodeStatus(productId);
         const preserveRows = preserveSelection ? rowsRef.current : undefined;
         applyBarcodeStatus(data, {
-          preferSelectAvailable: !preserveSelection,
+          preferSelectAvailable: false,
           preserveRows,
           selectPackQty,
         });
       } catch (err) {
         setProductMeta(null);
         setRows([]);
-        showStatus('err', err instanceof Error ? err.message : 'Could not load barcodes.');
+        showStatus('err', err instanceof Error ? t(err.message) : t('Could not load barcodes.'));
       } finally {
         setLoadingProduct(false);
       }
     },
-    [applyBarcodeStatus, showStatus],
+    [applyBarcodeStatus, showStatus, t],
   );
 
   const onSelectProduct = async (item: SearchProductResult) => {
     if (!item.productId) {
-      showStatus('err', 'Selected product has no id.');
+      showStatus('err', t('Selected product has no id.'));
       return;
     }
     extraPacksRef.current = (item.quantityBarcodes || []).map((pack) => ({
@@ -403,7 +507,7 @@ export default function BarcodeLabelScreen() {
   useEffect(() => {
     getShopSettings()
       .then((shop) => {
-        const name = shop.shopName?.trim();
+        const name = shopTextForBill(shop, useLanguageStore.getState().bill).shopName;
         if (name) setShopName(name);
       })
       .catch(() => {});
@@ -412,6 +516,7 @@ export default function BarcodeLabelScreen() {
       .then((settings) => {
         setLabelHeightMm(normalizeLabelHeightMm(settings.labelHeightMm));
         if (useDesktop) applyDesktopLabelPrinter(settings);
+        else setLabelBatchSize(resolveLabelBatchSize(settings, settings.bluetoothAddress));
       })
       .catch(() => {});
 
@@ -458,14 +563,19 @@ export default function BarcodeLabelScreen() {
   }, [rows, previewRowKey, printableRows]);
 
   const previewName = useMemo(() => {
-    if (!productMeta || !previewRow) return 'Product';
+    if (!productMeta || !previewRow) return t('Product');
     return productDisplayName(productMeta.productName, previewRow.size, previewRow.color);
-  }, [productMeta, previewRow]);
+  }, [productMeta, previewRow, t]);
 
   const previewQty = useMemo(() => {
     if (!previewRow) return '';
     return itemQtyLabel(previewRow, productMeta?.uom);
   }, [productMeta, previewRow]);
+
+  const previewSellPrice = useMemo(() => {
+    if (!previewRow) return '';
+    return formatMoney(priceForQty(previewRow.sellingPrice, previewRow));
+  }, [previewRow]);
 
   const updateRow = (rowKey: string, patch: Partial<VariantRow>) => {
     setRows((prev) => prev.map((row) => (row.rowKey === rowKey ? { ...row, ...patch } : row)));
@@ -493,7 +603,7 @@ export default function BarcodeLabelScreen() {
     )];
     const packs = rows.filter((r) => r.packQuantity && needsNumberBarcode(r));
     if (!unitIds.length && !packs.length) {
-      showStatus('ok', 'Already has number barcodes.');
+      showStatus('ok', t('Already has number barcodes.'));
       return;
     }
     setGenerating(true);
@@ -508,11 +618,13 @@ export default function BarcodeLabelScreen() {
       showStatus(
         'ok',
         created
-          ? `Generated ${created} number barcode${created === 1 ? '' : 's'}. Print new labels — old letter stickers will not scan.`
-          : 'No new barcodes needed',
+          ? (created === 1
+            ? t('Generated {{count}} number barcode. Print new labels — old letter stickers will not scan.', { count: created })
+            : t('Generated {{count}} number barcodes. Print new labels — old letter stickers will not scan.', { count: created }))
+          : t('No new barcodes needed'),
       );
     } catch (err) {
-      showStatus('err', err instanceof Error ? err.message : 'Could not generate barcodes.');
+      showStatus('err', err instanceof Error ? t(err.message) : t('Could not generate barcodes.'));
     } finally {
       setGenerating(false);
     }
@@ -522,7 +634,7 @@ export default function BarcodeLabelScreen() {
     if (!productMeta || productMeta.hasVariants || addingPack || generating) return;
     const variantId = productMeta.variants[0]?.variantId;
     if (!variantId || !(qty > 0)) {
-      showStatus('err', 'Enter a quantity greater than 0.');
+      showStatus('err', t('Enter a quantity greater than 0.'));
       return;
     }
     const existing = rows.find((row) => sameQty(row.packQuantity, qty));
@@ -546,7 +658,7 @@ export default function BarcodeLabelScreen() {
       setPackDraft('');
       await loadBarcodeStatus(productMeta.productId, true, Number(saved?.quantity ?? qty));
     } catch (err) {
-      showStatus('err', err instanceof Error ? err.message : 'Could not add that quantity.');
+      showStatus('err', err instanceof Error ? t(err.message) : t('Could not add that quantity.'));
     } finally {
       setAddingPack(false);
     }
@@ -556,7 +668,7 @@ export default function BarcodeLabelScreen() {
     if (!productMeta) return;
     const parsed = parseQuantityForUom(packDraft, productMeta.uom);
     if (parsed == null || !(parsed > 0)) {
-      showStatus('err', productMeta.uom ? quantityHint(productMeta.uom) : 'Enter a quantity greater than 0.');
+      showStatus('err', productMeta.uom ? t(quantityHint(productMeta.uom)) : t('Enter a quantity greater than 0.'));
       return;
     }
     addPackQuantity(parsed);
@@ -564,7 +676,7 @@ export default function BarcodeLabelScreen() {
 
   const loadPrinters = useCallback(async () => {
     if (!canPrint) {
-      showStatus('err', 'Label printing needs the desktop app or Android Microlan printer.');
+      showStatus('err', t('Label printing needs the desktop app or Android Microlan printer.'));
       return;
     }
     setLoadingPrinters(true);
@@ -577,20 +689,22 @@ export default function BarcodeLabelScreen() {
           listed.map((p) => ({
             name: p.displayName || p.name,
             address: p.name,
+            driverName: p.driverName,
+            rawFriendly: p.rawFriendly,
           })),
         );
       }
     } catch (err) {
       setPrinters([]);
-      showStatus('err', err instanceof Error ? err.message : 'Could not list printers.');
+      showStatus('err', err instanceof Error ? t(err.message) : t('Could not list printers.'));
     } finally {
       setLoadingPrinters(false);
     }
-  }, [canPrint, useSdk, showStatus]);
+  }, [canPrint, useSdk, showStatus, t]);
 
   const openPrinter = () => {
     if (!canPrint) {
-      showStatus('err', 'Label printing needs the desktop app or Android Microlan printer.');
+      showStatus('err', t('Label printing needs the desktop app or Android Microlan printer.'));
       return;
     }
     setPrinterOpen(true);
@@ -607,40 +721,65 @@ export default function BarcodeLabelScreen() {
         setPrinterName(result.name || printer.name);
         setPrinterAddress(result.address || printer.address);
         setPrinterOpen(false);
-        showStatus('ok', `Connected · ${result.name || printer.name}`);
+        showStatus('ok', t('Connected · {{name}}', { name: result.name || printer.name }));
         return;
       }
 
       const current = await getLabelPrinterSettings();
+      const known = current.labelBatchByPrinter?.[printer.address];
+      const batchForPrinter =
+        known === 0 || known === 3 ? known : suggestLabelBatchSize(printer.address || printer.name);
+      const byPrinter = {
+        ...(current.labelBatchByPrinter || {}),
+        [printer.address]: batchForPrinter,
+      };
       const next: LabelPrinterSettings = {
         ...current,
         type: 'system',
         systemPrinterName: printer.address,
         labelHeightMm,
+        labelBatchSize: batchForPrinter,
+        labelBatchByPrinter: byPrinter,
       };
       await saveLabelPrinterSettings(next);
       applyDesktopLabelPrinter(next);
       setPrinterOpen(false);
-      showStatus('ok', `Label printer · ${printer.name}`);
+      const modeNote =
+        batchForPrinter === 3
+          ? t('Print mode set to Batched ×3 (Seznik-style).')
+          : t('Print mode set to Continuous (Poshiflow-style).');
+      if (printer.rawFriendly === false) {
+        showStatus(
+          'err',
+          t('Selected “{{name}}”. {{mode}} Driver may break labels — prefer Generic / Text Only.', {
+            name: printer.name,
+            mode: modeNote,
+          }),
+        );
+      } else {
+        showStatus('ok', t('Label printer · {{name}}. {{mode}}', { name: printer.name, mode: modeNote }));
+      }
     } catch (err) {
       setConnected(false);
-      showStatus('err', err instanceof Error ? err.message : 'Connect failed.');
+      showStatus('err', err instanceof Error ? t(err.message) : t('Connect failed.'));
     } finally {
       setConnecting(false);
     }
   };
 
   const buildLabelContent = (row: VariantRow): GapLabelContent => {
-    if (!productMeta) throw new Error('Select a product first.');
+    if (!productMeta) throw new Error(t('Select a product first.'));
     const barcode = (row.barcode || '').trim();
-    if (!barcode) throw new Error(`Barcode missing for ${variantLabel(row.size, row.color) || row.sku}`);
+    if (!barcode) throw new Error(t('Barcode missing for {{name}}', { name: variantLabel(row.size, row.color) || row.sku }));
+    const sell = priceForQty(row.sellingPrice, row);
     return {
       shopName,
       productName: productDisplayName(productMeta.productName, row.size, row.color),
       detail: itemQtyLabel(row, productMeta.uom),
       barcode,
       mrp: '',
-      price: '',
+      // Selling price for this pack qty — prints after quantity on the label.
+      price: sell != null && sell > 0 ? formatMoney(sell) : '',
     };
   };
 
@@ -654,42 +793,42 @@ export default function BarcodeLabelScreen() {
   const onPrint = async () => {
     if (printing || connecting || generating) return;
     if (!productMeta) {
-      showStatus('err', 'Select a product first.');
+      showStatus('err', t('Select a product first.'));
       return;
     }
     if (!printableRows.length) {
-      showStatus('err', 'Select at least one variant with an available barcode.');
+      showStatus('err', t('Select at least one variant with an available barcode.'));
       return;
     }
     if (totalLabels <= 0) {
-      showStatus('err', 'Set label quantity (1–99) for selected variants.');
+      showStatus('err', t('Set label quantity (1–99) for selected variants.'));
       return;
     }
     if (!canPrint) {
       showStatus(
         'err',
         useDesktop
-          ? 'Open the KDSPOZ desktop app to print labels.'
-          : 'Needs Android app with Microlan SDK.',
+          ? t('Open the KDSPOZ desktop app to print labels.')
+          : t('Needs Android app with Microlan SDK.'),
       );
       return;
     }
     if (!connected) {
       showStatus(
         'err',
-        useDesktop ? 'Select your USB label printer first.' : 'Connect a printer first.',
+        useDesktop ? t('Select your USB label printer first.') : t('Connect a printer first.'),
       );
       return;
     }
 
     const blocked = rows.filter((r) => r.selected && r.status !== 'available');
     if (blocked.length) {
-      showStatus('err', 'Resolve missing/duplicate barcodes before printing selected variants.');
+      showStatus('err', t('Resolve missing/duplicate barcodes before printing selected variants.'));
       return;
     }
     const letterSelected = printableRows.filter((r) => r.barcodeType === 'code128');
     if (letterSelected.length) {
-      showStatus('err', 'Selected labels use letter barcodes. Generate number barcodes first so the scanner can read them.');
+      showStatus('err', t('Selected labels use letter barcodes. Generate number barcodes first so the scanner can read them.'));
       return;
     }
 
@@ -701,7 +840,7 @@ export default function BarcodeLabelScreen() {
       for (const row of printableRows) {
         const copies = Math.floor(Number(row.labelQty));
         if (!(copies > 0) || copies > 99) {
-          throw new Error(`Invalid label qty for ${variantLabel(row.size, row.color) || row.sku}`);
+          throw new Error(t('Invalid label qty for {{name}}', { name: variantLabel(row.size, row.color) || row.sku }));
         }
         labels.push(buildLabelContent(row));
         copiesPerLabel.push(copies);
@@ -711,10 +850,12 @@ export default function BarcodeLabelScreen() {
       setLastJob(job);
       showStatus(
         'ok',
-        `Printed ${totalLabels} label${totalLabels === 1 ? '' : 's'} · inventory unchanged`,
+        totalLabels === 1
+          ? t('Printed {{count}} label · inventory unchanged', { count: totalLabels })
+          : t('Printed {{count}} labels · inventory unchanged', { count: totalLabels }),
       );
     } catch (err) {
-      showStatus('err', err instanceof Error ? err.message : 'Print failed.');
+      showStatus('err', err instanceof Error ? t(err.message) : t('Print failed.'));
     } finally {
       setPrinting(false);
     }
@@ -723,7 +864,7 @@ export default function BarcodeLabelScreen() {
   const onReprint = async () => {
     if (!lastJob || printing) return;
     if (!connected) {
-      showStatus('err', 'Connect / select a label printer first.');
+      showStatus('err', t('Connect / select a label printer first.'));
       return;
     }
     setPrinting(true);
@@ -731,9 +872,14 @@ export default function BarcodeLabelScreen() {
     try {
       await runPrintJob(lastJob);
       const total = lastJob.copiesPerLabel.reduce((a, b) => a + b, 0);
-      showStatus('ok', `Reprinted ${total} label${total === 1 ? '' : 's'}`);
+      showStatus(
+        'ok',
+        total === 1
+          ? t('Reprinted {{count}} label', { count: total })
+          : t('Reprinted {{count}} labels', { count: total }),
+      );
     } catch (err) {
-      showStatus('err', err instanceof Error ? err.message : 'Reprint failed.');
+      showStatus('err', err instanceof Error ? t(err.message) : t('Reprint failed.'));
     } finally {
       setPrinting(false);
     }
@@ -741,21 +887,25 @@ export default function BarcodeLabelScreen() {
 
   const printLabel =
     printing
-      ? 'Printing…'
+      ? t('Printing…')
       : !productMeta
-        ? 'Select product'
+        ? t('Select product')
         : !connected
           ? useDesktop
-            ? 'Select USB printer'
-            : 'Connect printer'
+            ? t('Select USB printer')
+            : t('Connect printer')
           : totalLabels > 0
-            ? `Print · ${totalLabels} label${totalLabels === 1 ? '' : 's'}`
+            ? (totalLabels === 1
+              ? t('Print · {{count}} label', { count: totalLabels })
+              : t('Print · {{count}} labels', { count: totalLabels }))
             : productMeta.hasVariants
-              ? 'Select variants'
-              : 'Select a quantity';
+              ? t('Select variants')
+              : t('Select a quantity');
 
   const selectedLabel = productMeta
-    ? `${productMeta.productName}${productMeta.hasVariants ? ` · ${rows.length} variants` : ''}`
+    ? (productMeta.hasVariants
+      ? t('{{name}} · {{count}} variants', { name: productMeta.productName, count: rows.length })
+      : productMeta.productName)
     : undefined;
 
   return (
@@ -780,20 +930,23 @@ export default function BarcodeLabelScreen() {
             shopName={shopName}
             productName={previewName}
             qtyLabel={previewQty}
-            price=""
+            price={previewSellPrice}
             barcode={previewRow?.barcode || ''}
             width={previewW}
             height={previewH}
           />
           <Text style={styles.previewCaption}>
-            {LABEL_WIDTH_MM}×{labelHeightMm} mm · preview only (no barcode is auto-generated)
+            {t('{{width}}×{{height}} mm · preview only (no barcode is auto-generated)', {
+              width: LABEL_WIDTH_MM,
+              height: labelHeightMm,
+            })}
           </Text>
         </View>
 
         <View style={styles.block}>
-          <Text style={styles.blockTitle}>Label size</Text>
+          <Text style={styles.blockTitle}>{t('Label size')}</Text>
           <Text style={styles.muted}>
-            Match the sticker roll in the printer. Wrong height skips a blank label between prints.
+            {t('Must match the roll (measure one sticker). Wrong size cuts labels after a few prints and can hide the barcode number.')}
           </Text>
           <View style={styles.sizeRow}>
             {LABEL_HEIGHT_OPTIONS.map((heightMm) => {
@@ -804,16 +957,49 @@ export default function BarcodeLabelScreen() {
                   onPress={() => persistLabelHeight(heightMm)}
                   style={[styles.sizeChip, active && styles.sizeChipOn]}>
                   <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
-                    {LABEL_WIDTH_MM}×{heightMm} mm
+                    {t('{{width}}×{{height}} mm', { width: LABEL_WIDTH_MM, height: heightMm })}
                   </Text>
                 </Pressable>
               );
             })}
           </View>
+          <Text style={[styles.blockTitle, { marginTop: spacing.md }]}>{t('Print mode')}</Text>
+          <Text style={styles.muted}>
+            {t('Poshiflow → Continuous. Seznik → Batched ×3 (saved per printer). Batched waits for the printer to finish each burst of 3 so the buffer does not overrun.')}
+          </Text>
+          <View style={styles.sizeRow}>
+            {(
+              [
+                { value: 0 as LabelBatchSize, label: 'Continuous' },
+                { value: 3 as LabelBatchSize, label: 'Batched ×3' },
+              ] as const
+            ).map((opt) => {
+              const active = labelBatchSize === opt.value;
+              return (
+                <Pressable
+                  key={opt.label}
+                  onPress={() => persistLabelBatchSize(opt.value)}
+                  style={[styles.sizeChip, active && styles.sizeChipOn]}>
+                  <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
+                    {t(opt.label)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Button
+            mode="outlined"
+            icon="target"
+            onPress={runCalibrate}
+            loading={calibrating}
+            disabled={!connected || calibrating || printing}
+            style={styles.calibrateBtn}>
+            {calibrating ? t('Calibrating…') : t('Calibrate gap (fix cut/drift)')}
+          </Button>
         </View>
 
         <View style={styles.block}>
-          <Text style={styles.blockTitle}>1 · Product</Text>
+          <Text style={styles.blockTitle}>{t('1 · Product')}</Text>
           <ProductSearchField
             groupByProduct
             onSelect={onSelectProduct}
@@ -823,20 +1009,22 @@ export default function BarcodeLabelScreen() {
             <View style={styles.productActions}>
               <Text style={styles.metaLine}>
                 {productMeta.hasVariants
-                  ? `${rows.length} active variant${rows.length === 1 ? '' : 's'} · each needs its own barcode`
-                  : 'Single product · uses its variant barcode'}
+                  ? (rows.length === 1
+                    ? t('{{count}} active variant · each needs its own barcode', { count: rows.length })
+                    : t('{{count}} active variants · each needs its own barcode', { count: rows.length }))
+                  : t('Single product · uses its variant barcode')}
               </Text>
               <Pressable onPress={clearProduct} hitSlop={8}>
-                <Text style={styles.link}>Clear</Text>
+                <Text style={styles.link}>{t('Clear')}</Text>
               </Pressable>
             </View>
           ) : (
-            <Text style={styles.muted}>Search by name, SKU or barcode</Text>
+            <Text style={styles.muted}>{t('Search by name, SKU or barcode')}</Text>
           )}
           {loadingProduct ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={styles.muted}>Loading barcodes…</Text>
+              <Text style={styles.muted}>{t('Loading barcodes…')}</Text>
             </View>
           ) : null}
         </View>
@@ -844,14 +1032,14 @@ export default function BarcodeLabelScreen() {
         {rows.length ? (
           <View style={styles.block}>
             <View style={styles.tableHeader}>
-              <Text style={styles.blockTitle}>{productMeta?.hasVariants ? '2 · Variants' : '2 · Quantity'}</Text>
+              <Text style={styles.blockTitle}>{productMeta?.hasVariants ? t('2 · Variants') : t('2 · Quantity')}</Text>
               <View style={styles.headerActions}>
                 <Pressable onPress={selectAllPrintable} disabled={printing || generating}>
-                  <Text style={styles.link}>Select all</Text>
+                  <Text style={styles.link}>{t('Select all')}</Text>
                 </Pressable>
                 <Text style={styles.dot}>·</Text>
                 <Pressable onPress={selectNone} disabled={printing || generating}>
-                  <Text style={styles.link}>Select none</Text>
+                  <Text style={styles.link}>{t('Select none')}</Text>
                 </Pressable>
               </View>
             </View>
@@ -865,15 +1053,15 @@ export default function BarcodeLabelScreen() {
                 disabled={generating || printing}
                 style={styles.generateBtn}>
                 {letterCount > 0 && missingCount === 0
-                  ? `Convert to number barcodes (${letterCount})`
-                  : `Generate number barcodes (${missingCount + letterCount})`}
+                  ? t('Convert to number barcodes ({{count}})', { count: letterCount })
+                  : t('Generate number barcodes ({{count}})', { count: missingCount + letterCount })}
               </Button>
             ) : null}
 
             {productMeta && !productMeta.hasVariants ? (
               <View style={styles.packBlock}>
                 <Text style={styles.tableHint}>
-                  Tap a quantity to print that pack. Labels is how many stickers. Printing does not change stock.
+                  {t('Tap a quantity to print that pack. Labels is how many stickers. Printing does not change stock.')}
                 </Text>
                 <View style={styles.sizeRow}>
                   {packPresets(productMeta.uom).map((preset) => {
@@ -885,16 +1073,16 @@ export default function BarcodeLabelScreen() {
                         onPress={() => addPackQuantity(preset.quantity)}
                         disabled={addingPack || printing || generating}
                         style={[styles.sizeChip, on && styles.sizeChipOn]}>
-                        <Text style={[styles.sizeChipText, on && styles.sizeChipTextOn]}>{preset.label}</Text>
+                        <Text style={[styles.sizeChipText, on && styles.sizeChipTextOn]}>{t(preset.label)}</Text>
                       </Pressable>
                     );
                   })}
                 </View>
                 <View style={styles.packAddRow}>
-                  <TextInput
+                  <AppTextInput
                     value={packDraft}
                     onChangeText={setPackDraft}
-                    placeholder={productMeta.uom ? quantityHint(productMeta.uom) : 'Quantity'}
+                    placeholder={productMeta.uom ? t(quantityHint(productMeta.uom)) : t('Quantity')}
                     mode="outlined"
                     dense
                     disabled={addingPack || printing || generating}
@@ -906,21 +1094,21 @@ export default function BarcodeLabelScreen() {
                     onPress={addCustomPack}
                     loading={addingPack}
                     disabled={addingPack || printing || generating}>
-                    Add qty
+                    {t('Add qty')}
                   </Button>
                 </View>
               </View>
             ) : (
               <Text style={styles.tableHint}>
-                Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.
+                {t('Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.')}
               </Text>
             )}
 
             {rows.map((row) => {
               const meta = statusMeta(row.status);
               const name = productMeta
-                ? rowTitle(row, productMeta.hasVariants, productMeta.uom)
-                : 'Default';
+                ? rowTitle(row, productMeta.hasVariants, productMeta.uom, t)
+                : t('Default');
               const disabledSelect = !meta.printable;
               return (
                 <View
@@ -943,29 +1131,24 @@ export default function BarcodeLabelScreen() {
                       <Text style={styles.variantName}>{name}</Text>
                       <Text style={styles.variantSku}>SKU {row.sku}</Text>
                       <Text style={styles.variantPrice}>
-                        MRP {row.mrp != null && row.mrp > 0 ? formatMoney(priceForQty(row.mrp, row)) : '—'}
+                        {t('MRP')} {row.mrp != null && row.mrp > 0 ? formatMoney(priceForQty(row.mrp, row)) : '—'}
                         {'  ·  '}
-                        Sell {formatMoney(priceForQty(row.sellingPrice, row))}
+                        {t('Sell')} {formatMoney(priceForQty(row.sellingPrice, row))}
                       </Text>
                       <Text style={styles.variantBarcode} numberOfLines={1}>
-                        {row.barcode || 'No barcode'}
+                        {row.barcode || t('No barcode')}
                         {row.barcodeType ? ` · ${row.barcodeType.toUpperCase()}` : ''}
                       </Text>
                     </View>
                     <View style={[styles.statusPill, { backgroundColor: meta.bg }]}>
-                      <Text style={[styles.statusText, { color: meta.color }]}>{meta.label}</Text>
+                      <Text style={[styles.statusText, { color: meta.color }]}>{t(meta.label)}</Text>
                     </View>
                   </Pressable>
                   <View style={styles.qtyRow}>
-                    <Text style={styles.qtyLabel}>Labels</Text>
-                    <TextInput
+                    <Text style={styles.qtyLabel}>{t('Labels')}</Text>
+                    <AppTextInput
                       value={row.labelQty}
-                      onChangeText={(v) =>
-                        updateRow(row.rowKey, {
-                          labelQty: v,
-                          selected: meta.printable ? true : row.selected,
-                        })
-                      }
+                      onChangeText={(v) => updateRow(row.rowKey, { labelQty: v })}
                       onFocus={() => setPreviewRowKey(row.rowKey)}
                       keyboardType="number-pad"
                       mode="outlined"
@@ -975,16 +1158,16 @@ export default function BarcodeLabelScreen() {
                     />
                   </View>
                   {row.status === 'missing' ? (
-                    <Text style={styles.warnLine}>Generate a number barcode before printing this row.</Text>
+                    <Text style={styles.warnLine}>{t('Generate a number barcode before printing this row.')}</Text>
                   ) : null}
                   {row.barcodeType === 'code128' ? (
                     <Text style={styles.warnLine}>
-                      Letter barcode — scanners cannot read it. Convert to a number barcode, then print again.
+                      {t('Letter barcode — scanners cannot read it. Convert to a number barcode, then print again.')}
                     </Text>
                   ) : null}
                   {row.status === 'duplicate' ? (
                     <Text style={styles.warnLine}>
-                      Duplicate barcode detected — fix the assignment before printing.
+                      {t('Duplicate barcode detected — fix the assignment before printing.')}
                     </Text>
                   ) : null}
                 </View>
@@ -992,7 +1175,7 @@ export default function BarcodeLabelScreen() {
             })}
 
             <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total labels</Text>
+              <Text style={styles.totalLabel}>{t('Total labels')}</Text>
               <Text style={styles.totalValue}>{totalLabels}</Text>
             </View>
           </View>
@@ -1015,10 +1198,12 @@ export default function BarcodeLabelScreen() {
           </View>
           <View style={styles.flex}>
             <Text style={styles.printerTitle}>
-              {connected ? 'Label printer ready' : '3 · Label printer'}
+              {connected ? t('Label printer ready') : t('3 · Label printer')}
             </Text>
             <Text style={styles.printerName} numberOfLines={1}>
-              {printerName}
+              {printerName === 'Tap to select' || printerName === 'Select label printer' || printerName === 'Printer'
+                ? t(printerName)
+                : printerName}
             </Text>
           </View>
           {connecting ? (
@@ -1035,7 +1220,7 @@ export default function BarcodeLabelScreen() {
             onPress={onReprint}
             disabled={printing || connecting}
             style={styles.reprintBtn}>
-            Reprint last labels
+            {t('Reprint last labels')}
           </Button>
         ) : null}
 
@@ -1061,18 +1246,18 @@ export default function BarcodeLabelScreen() {
           visible={printerOpen}
           onDismiss={() => !connecting && setPrinterOpen(false)}
           style={styles.dialog}>
-          <Dialog.Title>Label printer</Dialog.Title>
+          <Dialog.Title>{t('Label printer')}</Dialog.Title>
           <Dialog.Content>
             <Text style={styles.muted}>
               {useDesktop
-                ? 'Choose the sticker / gap-label printer only. Billing uses a separate printer under Billing Printer.'
-                : 'Paired Bluetooth label printers (separate from the billing printer).'}
+                ? t('Choose the sticker / gap-label printer only. Billing uses a separate printer under Billing Printer. On Windows, the queue must use driver “Generic / Text Only” (not the DeTong/Xprinter graphics driver) or labels cut wrong / print blank.')
+                : t('Paired Bluetooth label printers (separate from the billing printer).')}
             </Text>
             {loadingPrinters || connecting ? (
               <View style={styles.loadingRow}>
                 <ActivityIndicator color={colors.primary} />
                 <Text style={styles.muted}>
-                  {connecting ? 'Connecting…' : 'Loading…'}
+                  {connecting ? t('Connecting…') : t('Loading…')}
                 </Text>
               </View>
             ) : null}
@@ -1093,6 +1278,11 @@ export default function BarcodeLabelScreen() {
                     <View style={styles.flex}>
                       <Text style={styles.rowName}>{printer.name}</Text>
                       <Text style={styles.rowAddr}>{printer.address}</Text>
+                      {useDesktop && printer.rawFriendly === false ? (
+                        <Text style={styles.warnLine}>
+                          {t('Not Generic/Text — reinstall with “Generic / Text Only” for reliable labels.')}
+                        </Text>
+                      ) : null}
                     </View>
                   </Pressable>
                 );
@@ -1100,8 +1290,8 @@ export default function BarcodeLabelScreen() {
               {!loadingPrinters && !printers.length ? (
                 <Text style={styles.muted}>
                   {useDesktop
-                    ? 'No printers found. Install/add the USB label printer in macOS or Windows, then Refresh.'
-                    : 'No printers found. Pair the label printer in Bluetooth settings.'}
+                    ? t('No printers found. On Windows: add the USB label printer with driver Generic / Text Only, then Refresh.')
+                    : t('No printers found. Pair the label printer in Bluetooth settings.')}
                 </Text>
               ) : null}
             </ScrollView>
@@ -1112,12 +1302,12 @@ export default function BarcodeLabelScreen() {
               loading={loadingPrinters}
               disabled={connecting}
               style={styles.refresh}>
-              Refresh
+              {t('Refresh')}
             </Button>
           </Dialog.Content>
           <Dialog.Actions>
             <Button disabled={connecting} onPress={() => setPrinterOpen(false)}>
-              Close
+              {t('Close')}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -1169,48 +1359,50 @@ const styles = StyleSheet.create({
   },
   sizeChipText: { fontSize: 14, fontWeight: '600', color: colors.text },
   sizeChipTextOn: { color: colors.primary },
+  calibrateBtn: { marginTop: spacing.md, borderRadius: radius.md },
   previewCard: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 4,
   },
   previewShop: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#000',
+    fontSize: 17,
+    fontWeight: '500',
+    color: '#111',
     textAlign: 'center',
-    marginBottom: 8,
-    letterSpacing: 0.3,
+    marginBottom: 4,
   },
   previewRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 8,
+    gap: 6,
+    marginBottom: 2,
   },
-  previewProduct: { flex: 1, fontSize: 15, fontWeight: '700', color: '#000' },
-  previewRight: { fontSize: 16, fontWeight: '700', color: '#000', textAlign: 'right' },
-  previewDivider: { height: 2, backgroundColor: '#000', marginBottom: 8 },
-  previewBarcode: { flexDirection: 'row', height: 30, width: '100%', backgroundColor: '#fff' },
+  previewProduct: { flex: 1, fontSize: 16, fontWeight: '500', color: '#111' },
+  previewRight: { fontSize: 16, fontWeight: '500', color: '#111', textAlign: 'right' },
+  previewDivider: { height: 1, backgroundColor: '#000', marginBottom: 4 },
+  previewBarcode: { flexDirection: 'row', flex: 1, minHeight: 40, width: '100%', backgroundColor: '#fff' },
   previewBarcodeEmpty: {
-    height: 30,
+    flex: 1,
+    minHeight: 40,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surfaceVariant,
     borderRadius: 3,
   },
   previewDigits: {
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '500',
     fontFamily: 'monospace',
-    color: '#000',
+    color: '#111',
     textAlign: 'center',
-    marginTop: 6,
-    letterSpacing: 0.5,
+    marginTop: 4,
+    letterSpacing: 1,
   },
   previewCaption: {
     marginTop: 8,
@@ -1224,7 +1416,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.md,
   },
@@ -1256,7 +1448,7 @@ const styles = StyleSheet.create({
 
   variantCard: {
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     borderRadius: radius.md,
     padding: spacing.sm,
     marginBottom: spacing.sm,
@@ -1301,7 +1493,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: spacing.sm,
     paddingTop: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
   },
   totalLabel: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
@@ -1342,19 +1534,14 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: Platform.OS === 'ios' ? spacing.lg : spacing.md,
     backgroundColor: colors.surface,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
   },
   printBtn: { borderRadius: radius.md },
   printBtnContent: { paddingVertical: 8 },
   printBtnLabel: { fontSize: 15, fontWeight: '400' },
 
-  dialog: {
-    width: 440,
-    maxWidth: '94%',
-    alignSelf: 'center',
-    borderRadius: radius.lg,
-  },
+  dialog: { ...dialogCard },
   printerList: { maxHeight: 260, marginTop: spacing.sm },
   printerRow: {
     flexDirection: 'row',

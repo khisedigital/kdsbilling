@@ -111,6 +111,11 @@ async function createSupplier(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function bulkImportSuppliers(req, res) {
+  const data = await purchaseService.bulkImportSuppliers(req.db, req.body.rows);
+  res.status(201).json({ success: true, data });
+}
+
 async function updateSupplier(req, res) {
   const data = await purchaseService.updateSupplier(req.db, req.params.id, req.body);
   res.json({ success: true, data });
@@ -187,6 +192,7 @@ module.exports = {
   getTransfer,
   listSuppliers,
   createSupplier,
+  bulkImportSuppliers,
   updateSupplier,
   deleteSupplier,
   listPurchaseBills,

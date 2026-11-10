@@ -25,6 +25,33 @@ async function resolveTenant(shopCode) {
   return tenant;
 }
 
+async function serializeTenant(tenant) {
+  let businessType = null;
+  if (tenant.business_type_id) {
+    const { BusinessType } = getMasterModels();
+    const row = await BusinessType.findByPk(tenant.business_type_id, {
+      attributes: ['id', 'code', 'name'],
+    });
+    if (row) {
+      businessType = {
+        id: row.id,
+        code: row.code,
+        name: row.name,
+      };
+    }
+  }
+  return {
+    id: tenant.id,
+    name: tenant.name,
+    slug: tenant.slug,
+    currencyCode: tenant.currency_code,
+    countryCode: tenant.country_code,
+    businessTypeId: tenant.business_type_id || null,
+    businessTypeCode: businessType?.code || null,
+    businessTypeName: businessType?.name || null,
+  };
+}
+
 function resolveLoginIdentifier(body = {}) {
   const mobile = normalizePhone(body.mobile || body.phone);
   if (mobile) return { type: 'mobile', value: mobile };
@@ -153,13 +180,7 @@ async function login({ shopCode, mobile, phone, email, password, deviceInfo }) {
       })),
       permissions,
     },
-    tenant: {
-      id: tenant.id,
-      name: tenant.name,
-      slug: tenant.slug,
-      currencyCode: tenant.currency_code,
-      countryCode: tenant.country_code,
-    },
+    tenant: await serializeTenant(tenant),
   };
 }
 
@@ -298,4 +319,5 @@ module.exports = {
   refresh,
   logout,
   verifyPin,
+  serializeTenant,
 };

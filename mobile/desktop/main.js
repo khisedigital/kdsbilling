@@ -94,6 +94,8 @@ async function listDesktopPrinters(webContents) {
         name: p.name,
         displayName: p.displayName || p.name,
         isDefault: defaults.has(p.name),
+        driverName: p.driverName || '',
+        rawFriendly: Boolean(p.rawFriendly),
       }));
     } catch (err) {
       startupLog(`listWindowsPrinters failed: ${err && err.message ? err.message : err}`);
@@ -233,6 +235,38 @@ function registerAppProtocol(appDir) {
  */
 const API_URL_PATTERNS = ['https://khisedigital.info/kdspozr/*'];
 const CORS_HEADER = /^access-control-allow-(origin|headers|methods|credentials)$/i;
+
+/**
+ * After an upgrade, drop Chromium HTTP/code caches so Windows does not keep an old
+ * webpack bundle. App settings in localStorage / AsyncStorage are left alone.
+ */
+async function clearCachesAfterUpgrade() {
+  const version = app.getVersion();
+  const markerPath = path.join(app.getPath('userData'), 'kdspoz-app-version.txt');
+  let previous = '';
+  try {
+    previous = String(await fs.readFile(markerPath, 'utf8')).trim();
+  } catch {
+    previous = '';
+  }
+  if (previous === version) return;
+  startupLog(`upgrade ${previous || '(none)'} → ${version}; clearing session caches`);
+  try {
+    const ses = session.defaultSession;
+    await ses.clearCache();
+    await ses.clearCodeCaches({});
+    await ses.clearStorageData({
+      storages: ['shadercache', 'cachestorage', 'serviceworkers'],
+    });
+  } catch (err) {
+    startupLog(`cache clear failed: ${err && err.message ? err.message : err}`);
+  }
+  try {
+    await fs.writeFile(markerPath, `${version}\n`, 'utf8');
+  } catch (err) {
+    startupLog(`version marker write failed: ${err && err.message ? err.message : err}`);
+  }
+}
 
 function allowOwnApiCors() {
   session.defaultSession.webRequest.onHeadersReceived({ urls: API_URL_PATTERNS }, (details, callback) => {
@@ -425,22 +459,22 @@ function registerIpc() {
   });
 
   ipcMain.handle('printers:print-raw', async (_event, options) => {
-    const { host, port, base64 } = options || {};
+    const { host, port, base64, copies, batchSize } = options || {};
     if (typeof host !== 'string' || !host.trim()) throw new Error('No network printer IP configured.');
     const portNumber = Number(port) || 9100;
     if (portNumber < 1 || portNumber > 65535) throw new Error('Invalid printer port.');
     const data = Buffer.from(String(base64 || ''), 'base64');
     if (!data.length) throw new Error('Nothing to print.');
 
-    await sendRaw(host.trim(), portNumber, data);
+    await sendRaw(host.trim(), portNumber, data, { copies, batchSize });
   });
 
   /** 58/80 mm POS: raw ESC/POS to an OS printer queue (same as mobile). */
   ipcMain.handle('printers:print-raw-system', async (_event, options) => {
-    const { printerName, base64 } = options || {};
+    const { printerName, base64, copies, batchSize } = options || {};
     const data = Buffer.from(String(base64 || ''), 'base64');
     if (!data.length) throw new Error('Nothing to print.');
-    await sendRawToSystemPrinter(printerName, data);
+    await sendRawToSystemPrinter(printerName, data, { copies, batchSize });
   });
 
   ipcMain.handle('files:save', async (event, options) => {
@@ -486,7 +520,7 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     const appDir = resolveAppDir();
     startupLog(`ready packaged=${app.isPackaged} arch=${process.arch} platform=${process.platform} appDir=${appDir}`);
     if (!fsSync.existsSync(path.join(appDir, 'index.html'))) {
@@ -509,6 +543,7 @@ if (!app.requestSingleInstanceLock()) {
         /* ignore */
       }
     }
+    await clearCachesAfterUpgrade();
     registerAppProtocol(appDir);
     allowOwnApiCors();
     registerIpc();

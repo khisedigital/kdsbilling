@@ -5,15 +5,25 @@ const productService = require('./productService');
 
 function serializeMasterForImport(row) {
   const r = row.toJSON ? row.toJSON() : row;
+  const variants = (r.variants || []).map((variant) => ({
+    size: variant.size || null,
+    barcodes: (variant.barcodes || []).map((barcode) => barcode.barcode).filter(Boolean),
+    sellingPrice: Number(variant.selling_price) || 0,
+    mrp: variant.mrp != null ? Number(variant.mrp) : null,
+  }));
   return {
     id: r.id,
     name: r.name,
+    nameMr: r.name_mr || null,
     categoryId: r.category_id,
     categoryName: r.category?.name || null,
+    brandName: r.brand?.name || null,
     businessTypeId: r.business_type_id,
     businessTypeName: r.businessType?.name || null,
     businessTypeCode: r.businessType?.code || null,
-    sellingPrice: 0,
+    sellingPrice: variants[0]?.sellingPrice ?? (Number(r.selling_price) || 0),
+    mrp: variants[0]?.mrp ?? (r.mrp != null ? Number(r.mrp) : null),
+    variants,
   };
 }
 
@@ -29,7 +39,7 @@ function resolveTenantBusinessTypeId(tenant, queryBusinessTypeId) {
  * Locked to the tenant's business type when set on the account.
  */
 async function listMasterCatalogForTenant(tenant, query = {}) {
-  const { MasterProduct, MasterCategory, BusinessType } = getMasterModels();
+  const { MasterProduct, MasterCategory, MasterBrand, BusinessType, MasterProductVariant, MasterVariantBarcode } = getMasterModels();
   const where = { status: 'active' };
 
   const businessTypeId = resolveTenantBusinessTypeId(tenant, query.businessTypeId);
@@ -46,7 +56,15 @@ async function listMasterCatalogForTenant(tenant, query = {}) {
     where,
     include: [
       { model: MasterCategory, as: 'category', attributes: ['id', 'name'] },
+      { model: MasterBrand, as: 'brand', attributes: ['id', 'name'] },
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name', 'code'] },
+      {
+        model: MasterProductVariant,
+        as: 'variants',
+        separate: true,
+        order: [['sort_order', 'ASC']],
+        include: [{ model: MasterVariantBarcode, as: 'barcodes', attributes: ['barcode'] }],
+      },
     ],
     order: [['sort_order', 'ASC'], ['name', 'ASC']],
     limit: Math.min(Number(query.limit) || 500, 1000),
@@ -76,6 +94,7 @@ async function listMasterCategoriesForTenant(tenant, query = {}) {
     return {
       id: r.id,
       name: r.name,
+      nameMr: r.name_mr || null,
       businessTypeId: r.business_type_id,
       businessTypeName: r.businessType?.name || null,
     };
@@ -107,19 +126,27 @@ async function listImportableBusinessTypes(tenant) {
   ];
 }
 
-async function ensureTenantCategory(db, categoryName) {
-  if (!categoryName?.trim()) return null;
-  const { Category } = db;
-  const name = categoryName.trim();
-  const [cat] = await Category.findOrCreate({
-    where: { name, deleted_at: null },
-    defaults: {
-      name,
-      status: 'active',
-      description: null,
-    },
+async function ensureTenantNamed(Model, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return null;
+  const existing = await Model.findOne({
+    where: { deleted_at: null, name: { [Op.like]: trimmed } },
   });
-  return cat.id;
+  if (existing && String(existing.name).trim().toLowerCase() === trimmed.toLowerCase()) {
+    return existing.id;
+  }
+  try {
+    const created = await Model.create({ name: trimmed, status: 'active' });
+    return created.id;
+  } catch (err) {
+    if (err.name !== 'SequelizeUniqueConstraintError') throw err;
+    const held = await Model.findOne({ where: { name: { [Op.like]: trimmed } } });
+    if (!held) throw err;
+    if (held.deleted_at || held.status !== 'active') {
+      await held.update({ deleted_at: null, status: 'active' });
+    }
+    return held.id;
+  }
 }
 
 async function resolvePcsUom(db) {
@@ -134,9 +161,28 @@ async function resolvePcsUom(db) {
   return uom;
 }
 
+function shopVariantsFromMaster(row) {
+  const fromRows = (row.variants || [])
+    .map((variant) => ({
+      size: variant.size || undefined,
+      barcodes: (variant.barcodes || []).map((barcode) => barcode.barcode || barcode).filter(Boolean),
+      sellingPrice: Number(variant.selling_price) || 0,
+      mrp: variant.mrp != null ? Number(variant.mrp) : null,
+    }))
+    .filter((variant) => variant.barcodes.length);
+  if (fromRows.length) return fromRows;
+  if (row.barcode) {
+    return [{
+      barcodes: [row.barcode],
+      sellingPrice: Number(row.selling_price) || 0,
+      mrp: row.mrp != null ? Number(row.mrp) : null,
+    }];
+  }
+  return [];
+}
+
 /**
- * Copy selected master products into the client catalog.
- * Client products get name + category; selling price is always 0.
+ * Copy selected master products into the client catalog, including pack sizes and barcodes.
  * Master catalog is never modified.
  */
 async function importMasterProductsToTenant(db, tenant, { masterProductIds, branchId } = {}, options = {}) {
@@ -144,7 +190,7 @@ async function importMasterProductsToTenant(db, tenant, { masterProductIds, bran
     throw new AppError('Select at least one master product to import', 400, 'VALIDATION_ERROR');
   }
 
-  const { MasterProduct, MasterCategory } = getMasterModels();
+  const { MasterProduct, MasterCategory, MasterBrand, MasterProductVariant, MasterVariantBarcode } = getMasterModels();
   const masterWhere = {
     id: { [Op.in]: masterProductIds },
     status: 'active',
@@ -155,7 +201,16 @@ async function importMasterProductsToTenant(db, tenant, { masterProductIds, bran
 
   const masters = await MasterProduct.findAll({
     where: masterWhere,
-    include: [{ model: MasterCategory, as: 'category', attributes: ['id', 'name'] }],
+    include: [
+      { model: MasterCategory, as: 'category', attributes: ['id', 'name'] },
+      { model: MasterBrand, as: 'brand', attributes: ['id', 'name'] },
+      {
+        model: MasterProductVariant,
+        as: 'variants',
+        separate: true,
+        include: [{ model: MasterVariantBarcode, as: 'barcodes' }],
+      },
+    ],
   });
 
   if (!masters.length) {
@@ -185,20 +240,25 @@ async function importMasterProductsToTenant(db, tenant, { masterProductIds, bran
         continue;
       }
 
-      const categoryId = await ensureTenantCategory(db, row.category?.name);
+      const categoryId = await ensureTenantNamed(db.Category, row.category?.name);
+      const brandId = await ensureTenantNamed(db.Brand, row.brand?.name);
+      const variants = shopVariantsFromMaster(row);
       const product = await productService.createProduct(
         db,
         {
           name: row.name,
+          nameMr: row.name_mr || null,
           description: row.description || null,
           categoryId,
-          brandId: null,
+          brandId,
           uomId: uom.id,
-          sellingPrice: 0,
+          sellingPrice: variants[0]?.sellingPrice ?? 0,
           costPrice: 0,
-          mrp: null,
+          mrp: variants[0]?.mrp ?? null,
           sku: undefined,
-          barcode: undefined,
+          barcode: variants.length === 1 ? variants[0].barcodes[0] : undefined,
+          barcodes: variants.length === 1 ? variants[0].barcodes : undefined,
+          variants: variants.length > 1 || variants[0]?.size ? variants : undefined,
         },
         {
           branchId: branchId || options.branchId || null,

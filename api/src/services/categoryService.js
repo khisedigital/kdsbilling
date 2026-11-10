@@ -55,9 +55,65 @@ async function deleteCategory(db, id) {
   return { deleted: true };
 }
 
+/**
+ * Bulk create categories from rows [{ name, description? }].
+ * Skips names that already exist (case-insensitive).
+ */
+async function bulkImportCategories(db, rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    throw new AppError('Import rows array is required', 400, 'VALIDATION_ERROR');
+  }
+  if (rows.length > 500) {
+    throw new AppError('Import at most 500 categories at a time', 400, 'VALIDATION_ERROR');
+  }
+
+  const { Category } = db;
+  const results = { success: 0, skipped: 0, failed: 0, errors: [] };
+  const seen = new Set();
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i] || {};
+    const name = String(row.name || '').trim();
+    if (!name) {
+      results.failed += 1;
+      results.errors.push({ row: i + 1, message: 'Name is required' });
+      continue;
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      results.skipped += 1;
+      continue;
+    }
+    seen.add(key);
+
+    try {
+      const existing = await Category.findOne({
+        where: { deleted_at: null, name: { [Op.like]: name } },
+      });
+      // MySQL LIKE is case-insensitive with default collation; still guard exact match.
+      if (existing && String(existing.name).trim().toLowerCase() === key) {
+        results.skipped += 1;
+        continue;
+      }
+      await Category.create({
+        name,
+        description: row.description ? String(row.description).trim() : null,
+        status: 'active',
+      });
+      results.success += 1;
+    } catch (err) {
+      results.failed += 1;
+      results.errors.push({ row: i + 1, message: err.message || 'Could not create category' });
+    }
+  }
+
+  return results;
+}
+
 module.exports = {
   listCategories,
   createCategory,
   updateCategory,
   deleteCategory,
+  bulkImportCategories,
 };

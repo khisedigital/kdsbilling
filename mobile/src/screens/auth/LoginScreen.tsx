@@ -12,15 +12,19 @@ import {
   View,
 } from 'react-native';
 import { Button, HelperText, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../store/authStore';
+import { useT } from '../../i18n';
+import LanguageToggle from '../../i18n/LanguageToggle';
 import { APP_DISPLAY_NAME } from '../../constants/branding';
 import { formatMobileDisplay } from '../../utils/phone';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
 
 export default function LoginScreen() {
+  const t = useT();
   const insets = useSafeAreaInsets();
   const login = useAuthStore((s) => s.login);
   const savedLogin = useAuthStore((s) => s.savedLogin);
@@ -110,6 +114,10 @@ export default function LoginScreen() {
         <View style={styles.gridFade} />
       </View>
 
+      <View pointerEvents="box-none" style={[styles.langFloat, { top: insets.top + 10, right: spacing.lg }]}>
+        <LanguageToggle tone="onPrimary" />
+      </View>
+
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -141,7 +149,7 @@ export default function LoginScreen() {
             </View>
             <Text style={styles.brand}>{APP_DISPLAY_NAME}</Text>
             <Text style={styles.tagline}>
-              {isReturning ? 'Welcome back to your counter' : 'Fast billing for your shop'}
+              {isReturning ? t('Welcome back to your counter') : t('Fast billing for your shop')}
             </Text>
           </Animated.View>
 
@@ -154,11 +162,11 @@ export default function LoginScreen() {
               },
             ]}>
             <View style={styles.cardAccent} />
-            <Text style={styles.formTitle}>{isReturning ? 'Unlock register' : 'Sign in'}</Text>
+            <Text style={styles.formTitle}>{isReturning ? t('Unlock register') : t('Sign in')}</Text>
             <Text style={styles.formSub}>
               {isReturning
-                ? 'Enter your password to continue'
-                : 'Shop code, mobile number and password'}
+                ? t('Enter your password to continue')
+                : t('Shop code, mobile number and password')}
             </Text>
 
             {isReturning ? (
@@ -174,13 +182,13 @@ export default function LoginScreen() {
                   onPress={switchAccount}
                   hitSlop={10}
                   style={({ pressed }) => [styles.switchBtn, pressed && styles.pressed]}>
-                  <Text style={styles.switch}>Switch</Text>
+                  <Text style={styles.switch}>{t('Switch')}</Text>
                 </Pressable>
               </View>
             ) : (
               <>
-                <TextInput
-                  label="Shop code"
+                <AppTextInput
+                  label={t('Shop code')}
                   value={shopCode}
                   onChangeText={setShopCode}
                   mode="outlined"
@@ -192,8 +200,8 @@ export default function LoginScreen() {
                   activeOutlineColor={colors.primary}
                   left={<TextInput.Icon icon="storefront-outline" color={colors.primary} />}
                 />
-                <TextInput
-                  label="Mobile number"
+                <AppTextInput
+                  label={t('Mobile number')}
                   value={mobile}
                   onChangeText={setMobile}
                   mode="outlined"
@@ -208,8 +216,8 @@ export default function LoginScreen() {
               </>
             )}
 
-            <TextInput
-              label="Password"
+            <AppTextInput
+              label={t('Password')}
               value={password}
               onChangeText={setPassword}
               mode="outlined"
@@ -230,7 +238,7 @@ export default function LoginScreen() {
 
             {error ? (
               <HelperText type="error" visible style={styles.error}>
-                {error}
+                {t(error)}
               </HelperText>
             ) : null}
 
@@ -245,7 +253,7 @@ export default function LoginScreen() {
               contentStyle={styles.btnContent}
               labelStyle={styles.btnLabel}
               icon={loading ? undefined : 'login'}>
-              {loading ? 'Signing in…' : 'Sign in'}
+              {loading ? t('Signing in…') : t('Sign in')}
             </Button>
           </Animated.View>
 
@@ -258,6 +266,7 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#003087' },
+  langFloat: { position: 'absolute', zIndex: 2 },
   flex: { flex: 1 },
   backdrop: {
     ...StyleSheet.absoluteFill,

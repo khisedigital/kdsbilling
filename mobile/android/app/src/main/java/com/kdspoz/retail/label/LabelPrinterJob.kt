@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
 import com.microlan.printersdk2.PrinterCommands
-import com.microlan.printersdk2.PrinterSDK
 import com.microlan.printersdk2.Utils
 import java.io.IOException
 
@@ -13,7 +12,7 @@ import java.io.IOException
  * 50 × H mm label print — same approach as SDKDemoApk:
  * - canvas sized from physical mm (H = 25 or 28 from settings)
  * - fit to print-head width without stretching
- * - PrinterSDK.prepareImageForPrint + Utils.decodeBitmap (ESC/POS raster)
+ * - hard black/white bitmap + Utils.decodeBitmap (no dither)
  * - GS FF form-feed for gap / black-mark (not continuous \n / FEED_LINE)
  *
  * Do not use PrinterSDK.printText(byte[]) for labels — it always appends FEED_LINE.
@@ -46,10 +45,9 @@ object LabelPrinterJob {
       val count = copies.coerceIn(1, 99)
       val fitted = fitToPrinterWidth(bitmap, PRINTER_WIDTH_PX)
       try {
-        val printerSDK = PrinterSDK(socket)
-        // Skip resizeBitmap — receipt-oriented (450×530) and can distort labels
-        val processed = printerSDK.prepareImageForPrint(fitted)
-        val raster = Utils.decodeBitmap(processed)
+        // Do not call prepareImageForPrint — it dithers the sticker, which
+        // prints product name, price, and barcode as a dark blur.
+        val raster = Utils.decodeBitmap(fitted)
           ?: throw IOException("Utils.decodeBitmap returned null.")
 
         Log.i(
@@ -59,17 +57,23 @@ object LabelPrinterJob {
 
         val out = socket.outputStream
           ?: throw IOException("Printer socket has no output stream.")
+        // Continuous stream (same as desktop default). JS may already chunk if user enabled Batched ×3.
         out.write(PrinterCommands.INIT)
         // Left edge of the head. A centered align parks the sticker image in the middle of the roll.
         out.write(byteArrayOf(0x1B, 0x61, 0x00, 0x1D, 0x4C, 0x00, 0x00))
-        repeat(count) {
-          out.write(raster)
-          // Gap / black-mark advance — same as SDKDemoApk (not printNewLine)
-          out.write(LABEL_FORM_FEED)
+        // Two stickers, then wait. A third picture still in the buffer is what cuts the label.
+        var left = count
+        while (left > 0) {
+          val n = minOf(2, left)
+          repeat(n) {
+            out.write(raster)
+            out.write(LABEL_FORM_FEED)
+          }
+          out.flush()
+          left -= n
+          if (left > 0) Thread.sleep(n * 1200L)
         }
-        out.flush()
         Log.i(TAG, "label flushed at ${SystemClock.elapsedRealtime()} connected=${socket.isConnected}")
-        Thread.sleep(400L)
       } finally {
         recycleExtra(fitted, bitmap)
       }

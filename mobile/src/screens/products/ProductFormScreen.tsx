@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -9,22 +9,17 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import {
-  ActivityIndicator,
-  Button,
-  Checkbox,
-  Dialog,
-  HelperText,
-  Portal,
-  Switch,
-  Text,
-  TextInput,
-} from 'react-native-paper';
+import { ActivityIndicator, Button, Checkbox, Dialog, HelperText, Portal, Switch, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import ExtraBarcodesEditor from '../../components/ExtraBarcodesEditor';
+import SearchableSelect from '../../components/ui/SearchableSelect';
 import SectionCard from '../../components/ui/SectionCard';
+import { t as translate, useT } from '../../i18n';
 import VariantTable from './VariantTable';
+import { fetchMe } from '../../services/authService';
 import { barcodeOrGenerated } from '../../utils/barcode';
 import {
   createProduct,
@@ -34,13 +29,16 @@ import {
   fetchTaxGroups,
   fetchUnits,
   mainBarcodeOf,
+  plainBarcodesOf,
   quantityBarcodesOf,
   updateProduct,
 } from '../../services/catalogService';
+import { useAuthStore } from '../../store/authStore';
 import type { Brand, Category, QuantityBarcodeInput, TaxGroup, UnitOfMeasure } from '../../types/catalog';
 import { formatQuantity, parseQuantityForUom } from '../../utils/quantity';
+import { variantProfileForBusinessType } from '../../utils/variantProfile';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing, typography } from '../../theme/layout';
+import { common, dialogCard, radius, spacing, typography } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ProductForm'>;
 
@@ -52,6 +50,8 @@ type SizeRow = {
   size: string;
   sku: string;
   barcode: string;
+  /** Extra plain barcodes for this size (same SKU, different printed codes). */
+  extraBarcodes: string[];
   sellingPrice: string;
   costPrice: string;
   mrp: string;
@@ -66,6 +66,22 @@ type QtyBarcodeRow = {
 
 function digitsOnly(value: string) {
   return value.replace(/\D/g, '').slice(0, 18);
+}
+
+/** Quantity typed on the product form. One decimal point, up to 3 places. */
+function sanitizeStockInput(value: string) {
+  const cleaned = value.replace(/[^\d.]/g, '');
+  const dot = cleaned.indexOf('.');
+  if (dot === -1) return cleaned.slice(0, 10);
+  const whole = cleaned.slice(0, dot).slice(0, 10);
+  const frac = cleaned.slice(dot + 1).replace(/\./g, '').slice(0, 3);
+  return `${whole}.${frac}`;
+}
+
+function parseStockQty(value: string) {
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
 }
 
 /** Keep a barcode only when it is already all digits. Letter codes are left blank so a number is created. */
@@ -87,34 +103,6 @@ function makeSizeSku(baseSku: string, size: string) {
   return `${base}-${suffix}-${token}`.slice(0, 50);
 }
 
-/** Match API: split total across sizes; remainder on first sizes. */
-function splitStockLocal(total: number, count: number, allowDecimal: boolean): number[] {
-  if (count <= 0) return [];
-  if (total <= 0) return Array.from({ length: count }, () => 0);
-  if (!allowDecimal) {
-    const whole = Math.round(total);
-    const base = Math.floor(whole / count);
-    let rem = whole - base * count;
-    return Array.from({ length: count }, () => {
-      const share = base + (rem > 0 ? 1 : 0);
-      if (rem > 0) rem -= 1;
-      return share;
-    });
-  }
-  const base = Math.floor((total / count) * 1000) / 1000;
-  const shares = Array.from({ length: count }, () => base);
-  shares[0] = Math.round((total - base * (count - 1)) * 1000) / 1000;
-  return shares;
-}
-
-function rebalanceRowStock(rows: SizeRow[], total: number, allowDecimal: boolean): SizeRow[] {
-  const shares = splitStockLocal(total, rows.length, allowDecimal);
-  return rows.map((row, index) => ({
-    ...row,
-    stockQty: String(shares[index] ?? 0),
-  }));
-}
-
 type ChoiceFieldProps = {
   label: string;
   value: string;
@@ -124,6 +112,7 @@ type ChoiceFieldProps = {
 };
 
 function ChoiceField({ label, value, choices, placeholder, onChange }: ChoiceFieldProps) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const selected = choices.find((choice) => choice.value === value);
 
@@ -131,7 +120,7 @@ function ChoiceField({ label, value, choices, placeholder, onChange }: ChoiceFie
     <>
       <Pressable onPress={() => setOpen(true)}>
         <View pointerEvents="none">
-          <TextInput
+          <AppTextInput
             label={label}
             value={selected?.label || ''}
             placeholder={placeholder}
@@ -166,7 +155,7 @@ function ChoiceField({ label, value, choices, placeholder, onChange }: ChoiceFie
             </ScrollView>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setOpen(false)}>Cancel</Button>
+            <Button onPress={() => setOpen(false)}>{t('Cancel')}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -186,19 +175,31 @@ function taxLabel(group: TaxGroup) {
 }
 
 function apiError(err: unknown, fallback: string) {
-  return (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message || fallback;
+  const message = (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message;
+  return translate(message || fallback);
 }
 
 export default function ProductFormScreen({ navigation, route }: Props) {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const { width: windowWidth } = useWindowDimensions();
   const twoColumn = windowWidth >= 860;
   const productId = route.params?.productId;
   const isEdit = !!productId;
+  const tenant = useAuthStore((s) => s.tenant);
+  const updateTenant = useAuthStore((s) => s.updateTenant);
+  const variantProfile = useMemo(
+    () => variantProfileForBusinessType(tenant?.businessTypeCode),
+    [tenant?.businessTypeCode],
+  );
 
   const [name, setName] = useState('');
+  const [nameMr, setNameMr] = useState('');
   const [description, setDescription] = useState('');
   const [sku, setSku] = useState('');
   const [barcode, setBarcode] = useState('');
+  const [extraBarcodes, setExtraBarcodes] = useState<string[]>([]);
   const [costPrice, setCostPrice] = useState('');
   const [sellingPrice, setSellingPrice] = useState('');
   const [mrp, setMrp] = useState('');
@@ -206,7 +207,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const [taxCode, setTaxCode] = useState('');
   const [multiSizes, setMultiSizes] = useState(false);
   const [sizeRows, setSizeRows] = useState<SizeRow[]>([]);
-  const [mainStockQty, setMainStockQty] = useState(0);
+  const [mainStockQty, setMainStockQty] = useState('');
   const [isWeightBased, setIsWeightBased] = useState(false);
   const [variantId, setVariantId] = useState<string | null>(null);
   const [qtyRows, setQtyRows] = useState<QtyBarcodeRow[]>([]);
@@ -218,6 +219,8 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   const [categoryId, setCategoryId] = useState('');
   const [brandId, setBrandId] = useState('');
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [brandOpen, setBrandOpen] = useState(false);
   const [uomId, setUomId] = useState('');
   const [taxGroupId, setTaxGroupId] = useState('');
 
@@ -241,6 +244,25 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   // Product-level price only for single-item mode; multi-size prices live on each variant.
   const priceMissing = !multiSizes && (!sellingPrice.trim() || selling <= 0);
   const selectedSizes = useMemo(() => new Set(sizeRows.map((row) => row.size.toUpperCase())), [sizeRows]);
+
+  // Older sessions may not have business type yet — refresh from /auth/me once.
+  useEffect(() => {
+    if (tenant?.businessTypeCode) return;
+    let cancelled = false;
+    fetchMe()
+      .then((data) => {
+        if (cancelled || !data?.tenant) return;
+        updateTenant({
+          businessTypeId: data.tenant.businessTypeId ?? null,
+          businessTypeCode: data.tenant.businessTypeCode ?? null,
+          businessTypeName: data.tenant.businessTypeName ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant?.businessTypeCode, updateTenant]);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,6 +290,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             variants.length > 1 || variants.some((v) => !!(v.size || v.color));
 
           setName(product.name);
+          setNameMr(product.name_mr || '');
           setDescription(product.description || '');
           setCategoryId(product.category_id || '');
           setBrandId(product.brand_id || '');
@@ -277,11 +300,15 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           setIsWeightBased(product.is_weight_based);
           setMultiSizes(useSizes);
           setVariantId(first?.id || null);
-          setMainStockQty(product.stockQty ?? variants.reduce((sum, v) => sum + (v.stockQty || 0), 0));
+          const loadedStock =
+            product.stockQty ?? variants.reduce((sum, v) => sum + (v.stockQty || 0), 0);
+          setMainStockQty(sanitizeStockInput(String(loadedStock || 0)));
 
           if (first) {
             setSku(first.sku || '');
-            setBarcode(numericBarcode(mainBarcodeOf(first)));
+            const plains = plainBarcodesOf(first).map(numericBarcode).filter(Boolean);
+            setBarcode(plains[0] || numericBarcode(mainBarcodeOf(first)));
+            setExtraBarcodes(plains.slice(1));
             const productUom = u.find((x) => x.id === product.uom_id);
             setQtyRows(
               quantityBarcodesOf(first).map((b) => ({
@@ -304,18 +331,23 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             setMrp('');
             setSku('');
             setBarcode('');
+            setExtraBarcodes([]);
             setSizeRows(
-              variants.map((v) => ({
-                key: v.id,
-                id: v.id,
-                size: v.size || 'Default',
-                sku: v.sku || '',
-                barcode: numericBarcode(mainBarcodeOf(v)),
-                sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
-                costPrice: String(parseFloat(String(v.cost_price)) || ''),
-                mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
-                stockQty: String(v.stockQty ?? 0),
-              })),
+              variants.map((v) => {
+                const plains = plainBarcodesOf(v).map(numericBarcode).filter(Boolean);
+                return {
+                  key: v.id,
+                  id: v.id,
+                  size: v.size || 'Default',
+                  sku: v.sku || '',
+                  barcode: plains[0] || numericBarcode(mainBarcodeOf(v)),
+                  extraBarcodes: plains.slice(1),
+                  sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
+                  costPrice: String(parseFloat(String(v.cost_price)) || ''),
+                  mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
+                  stockQty: String(v.stockQty ?? 0),
+                };
+              }),
             );
             const colors = [...new Set(variants.map((v) => v.color).filter(Boolean))];
             if (colors.length === 1) setColor(colors[0] as string);
@@ -328,7 +360,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           setTaxGroupId(zeroTax?.id || '');
         }
       } catch {
-        if (!cancelled) setError('Could not load product');
+        if (!cancelled) setError(tRef.current('Could not load product'));
       } finally {
         if (!cancelled) setLoadingProduct(false);
       }
@@ -344,9 +376,10 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
     setSizeRows((rows) => {
       const reuseExisting = rows.length === 0 && !!variantId;
-      // When converting a single item into sizes, carry its prices onto the first size only.
+      // When converting a single item into sizes, carry prices + stock onto the first size only.
       const seedFromSingle = reuseExisting || (rows.length === 0 && !multiSizes);
-      const next: SizeRow[] = [
+      const openingStock = seedFromSingle ? mainStockQty.trim() || '0' : '0';
+      return [
         ...rows,
         {
           key: newRowKey(),
@@ -354,54 +387,43 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           size,
           sku: makeSizeSku(sku || name.slice(0, 8).toUpperCase(), size),
           barcode: reuseExisting ? barcode : '',
+          extraBarcodes: reuseExisting ? [...extraBarcodes] : [],
           sellingPrice: seedFromSingle ? sellingPrice : '',
           costPrice: seedFromSingle ? costPrice : '',
           mrp: seedFromSingle ? mrp : '',
-          stockQty: '0',
+          // Each variant keeps its own stock — never divide across sizes.
+          stockQty: openingStock,
         },
       ];
-      const totalFromRows = rows.reduce((sum, row) => sum + (parseFloat(row.stockQty) || 0), 0);
-      const total = totalFromRows > 0 ? totalFromRows : mainStockQty;
-      return rebalanceRowStock(next, total, isWeightBased);
     });
     if (!multiSizes) {
       setSellingPrice('');
       setCostPrice('');
       setMrp('');
+      setExtraBarcodes([]);
     }
     setMultiSizes(true);
   };
 
   const removeSizeRow = (key: string) => {
-    setSizeRows((rows) => {
-      const remaining = rows.filter((row) => row.key !== key);
-      if (!remaining.length) return remaining;
-      const total = rows.reduce((sum, row) => sum + (parseFloat(row.stockQty) || 0), 0);
-      return rebalanceRowStock(remaining, total, isWeightBased);
-    });
+    setSizeRows((rows) => rows.filter((row) => row.key !== key));
   };
 
   const updateSizeRow = (key: string, patch: Partial<SizeRow>) => {
     setSizeRows((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
   };
 
-  const splitStockEvenly = () => {
-    setSizeRows((rows) => {
-      if (!rows.length) return rows;
-      const total = rows.reduce((sum, row) => sum + (parseFloat(row.stockQty) || 0), 0) || mainStockQty;
-      return rebalanceRowStock(rows, total, isWeightBased);
-    });
-  };
-
   const toggleMultiSizes = (enabled: boolean) => {
     if (!enabled && sizeRows.filter((row) => row.id).length > 1) {
       Alert.alert(
-        'Turn off multiple sizes?',
-        'Saving after this will keep only one variant and remove the other sizes.',
+        variantProfile.axis === 'apparel' ? t('Turn off multiple sizes?') : t('Turn off pack sizes?'),
+        variantProfile.axis === 'apparel'
+          ? t('Saving after this will keep only one variant and remove the other sizes.')
+          : t('Saving after this will keep only one variant and remove the other packs.'),
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: t('Cancel'), style: 'cancel' },
           {
-            text: 'Turn off',
+            text: t('Turn off'),
             style: 'destructive',
             onPress: () => {
               const first = sizeRows[0];
@@ -409,10 +431,11 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                 setVariantId(first.id || null);
                 setSku(first.sku);
                 setBarcode(numericBarcode(first.barcode));
+                setExtraBarcodes((first.extraBarcodes || []).map(numericBarcode).filter(Boolean));
                 setSellingPrice(first.sellingPrice);
                 setCostPrice(first.costPrice);
                 setMrp(first.mrp);
-                setMainStockQty(parseFloat(first.stockQty) || 0);
+                setMainStockQty(first.stockQty || '0');
               }
               setMultiSizes(false);
             },
@@ -429,21 +452,37 @@ export default function ProductFormScreen({ navigation, route }: Props) {
     [sizeRows],
   );
 
+  /** Primary first, then extras. Blank primary is auto-generated; blank extras are dropped. */
+  const buildPlainBarcodeList = (primary: string, extras: string[], used: Set<string>): string[] => {
+    const codes: string[] = [barcodeOrGenerated(primary, used)];
+    for (const raw of extras) {
+      const code = String(raw || '').trim();
+      if (!code) continue;
+      if (used.has(code)) continue;
+      codes.push(barcodeOrGenerated(code, used));
+    }
+    return codes;
+  };
+
   const buildVariantPayload = () => {
     if (!multiSizes || sizeRows.length === 0) return null;
-    const sharedColor = color.trim() || undefined;
+    const sharedColor = variantProfile.showColor ? (color.trim() || undefined) : undefined;
     const used = new Set<string>();
-    return sizeRows.map((row) => ({
-      id: row.id,
-      size: row.size.trim(),
-      color: sharedColor,
-      sku: row.sku.trim() || undefined,
-      barcode: barcodeOrGenerated(row.barcode, used),
-      costPrice: row.costPrice ? parseFloat(row.costPrice) : 0,
-      sellingPrice: parseFloat(row.sellingPrice),
-      mrp: row.mrp ? parseFloat(row.mrp) : undefined,
-      stockQty: parseFloat(row.stockQty) || 0,
-    }));
+    return sizeRows.map((row) => {
+      const barcodes = buildPlainBarcodeList(row.barcode, row.extraBarcodes || [], used);
+      return {
+        id: row.id,
+        size: row.size.trim(),
+        color: sharedColor,
+        sku: row.sku.trim() || undefined,
+        barcode: barcodes[0],
+        barcodes,
+        costPrice: row.costPrice ? parseFloat(row.costPrice) : 0,
+        sellingPrice: parseFloat(row.sellingPrice),
+        mrp: row.mrp ? parseFloat(row.mrp) : undefined,
+        stockQty: parseFloat(row.stockQty) || 0,
+      };
+    });
   };
 
   const selectedUom = units.find((u) => u.id === uomId);
@@ -460,13 +499,13 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       const raw = row.quantity.trim();
       const code = row.barcode.trim();
       if (!raw && !code) continue;
-      if (!raw) return `Enter a quantity for barcode ${code}`;
+      if (!raw) return t('Enter a quantity for barcode {{code}}', { code });
       const qty = parseQuantityForUom(raw, selectedUom);
-      if (!qty) return `"${raw}" is not a valid quantity`;
+      if (!qty) return t('"{{qty}}" is not a valid quantity', { qty: raw });
       const qtyKey = qty.toFixed(4);
-      if (seenQty.has(qtyKey)) return `Quantity ${raw} is listed twice`;
+      if (seenQty.has(qtyKey)) return t('Quantity {{qty}} is listed twice', { qty: raw });
       seenQty.add(qtyKey);
-      if (code && seenCodes.has(code)) return `Barcode ${code} is used twice`;
+      if (code && seenCodes.has(code)) return t('Barcode {{code}} is used twice', { code });
       const assigned = barcodeOrGenerated(code, seenCodes);
       out.push({ quantity: qty, barcode: assigned });
     }
@@ -476,15 +515,18 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const handleSubmit = async () => {
     setError('');
     if (nameMissing || !uomId) {
-      setError('Please complete the highlighted required fields');
+      setError(t('Please complete the highlighted required fields'));
       return;
     }
     if (!multiSizes && priceMissing) {
-      setError('Please complete the highlighted required fields');
+      setError(t('Please complete the highlighted required fields'));
       return;
     }
     const usedCodes = new Set<string>();
-    const productBarcode = multiSizes ? '' : barcodeOrGenerated(barcode, usedCodes);
+    const productBarcodes = multiSizes
+      ? []
+      : buildPlainBarcodeList(barcode, extraBarcodes, usedCodes);
+    const productBarcode = productBarcodes[0] || '';
     const quantityBarcodes = multiSizes ? undefined : buildQuantityBarcodes(usedCodes);
     if (typeof quantityBarcodes === 'string') {
       setError(quantityBarcodes);
@@ -492,12 +534,15 @@ export default function ProductFormScreen({ navigation, route }: Props) {
     }
     if (multiSizes) {
       if (!sizeRows.length) {
-        setError('Add at least one size (S, M, L…)');
+        setError(t(variantProfile.missingRowsError));
         return;
       }
       const badPrice = sizeRows.find((row) => !(parseFloat(row.sellingPrice) > 0));
       if (badPrice) {
-        setError(`Enter a selling price for size ${badPrice.size}`);
+        setError(t('Enter a selling price for {{sizeLabel}} {{size}}', {
+          sizeLabel: t(variantProfile.sizeLabel).toLowerCase(),
+          size: badPrice.size,
+        }));
         return;
       }
     }
@@ -511,6 +556,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         if (variants) {
           await updateProduct(productId, {
             name: name.trim(),
+            nameMr: nameMr.trim(),
             description: description.trim() || undefined,
             categoryId: categoryId || null,
             brandId: brandId || null,
@@ -524,6 +570,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         } else {
           await updateProduct(productId, {
             name: name.trim(),
+            nameMr: nameMr.trim(),
             description: description.trim() || undefined,
             categoryId: categoryId || null,
             brandId: brandId || null,
@@ -537,11 +584,13 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                 id: variantId || undefined,
                 sku: sku.trim() || undefined,
                 barcode: productBarcode,
+                barcodes: productBarcodes,
                 size: '',
                 color: '',
                 costPrice: costPrice ? parseFloat(costPrice) : 0,
                 sellingPrice: parseFloat(sellingPrice),
                 mrp: mrp ? parseFloat(mrp) : undefined,
+                stockQty: parseStockQty(mainStockQty),
                 quantityBarcodes,
               },
             ],
@@ -551,6 +600,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         // Pricing is only on variants — no product-level sellingPrice/cost/mrp.
         await createProduct({
           name: name.trim(),
+          nameMr: nameMr.trim(),
           description: description.trim() || undefined,
           categoryId: categoryId || undefined,
           brandId: brandId || undefined,
@@ -565,6 +615,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       } else {
         await createProduct({
           name: name.trim(),
+          nameMr: nameMr.trim(),
           description: description.trim() || undefined,
           categoryId: categoryId || undefined,
           brandId: brandId || undefined,
@@ -575,27 +626,29 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           allowDecimalQty: isWeightBased,
           sku: sku.trim() || undefined,
           barcode: productBarcode,
+          barcodes: productBarcodes,
           quantityBarcodes,
           costPrice: costPrice ? parseFloat(costPrice) : 0,
           sellingPrice: parseFloat(sellingPrice),
           mrp: mrp ? parseFloat(mrp) : undefined,
+          stockQty: parseStockQty(mainStockQty),
         });
       }
       navigation.goBack();
     } catch (err: unknown) {
-      setError(apiError(err, isEdit ? 'Failed to update product' : 'Failed to create product'));
+      setError(t(apiError(err, isEdit ? t('Failed to update product') : t('Failed to create product'))));
     } finally {
       setLoading(false);
     }
   };
 
-  const categoryChoices = categories.map((c) => ({
-    value: c.id,
+  const categoryOptions = categories.map((c) => ({
+    id: c.id,
     label: c.name,
   }));
 
-  const brandChoices = brands.map((brand) => ({
-    value: brand.id,
+  const brandOptions = brands.map((brand) => ({
+    id: brand.id,
     label: brand.name,
   }));
 
@@ -614,7 +667,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   const taxChips = (
     <>
-      <Text style={styles.label}>Tax</Text>
+      <Text style={styles.label}>{t('Tax')}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.taxRow}>
         <Pressable
           onPress={() => setTaxGroupId(zeroTaxGroup?.id || '')}
@@ -634,19 +687,19 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               styles.taxChipName,
               (!taxGroupId || taxGroupId === zeroTaxGroup?.id) && styles.taxChipTextActive,
             ]}>
-            No tax
+            {t('No tax')}
           </Text>
         </Pressable>
-        {taxableGroups.map((t) => {
-          const active = taxGroupId === t.id;
+        {taxableGroups.map((group) => {
+          const active = taxGroupId === group.id;
           return (
             <Pressable
-              key={t.id}
-              onPress={() => setTaxGroupId(t.id)}
+              key={group.id}
+              onPress={() => setTaxGroupId(group.id)}
               style={[styles.taxChip, active && styles.taxChipActive]}>
-              <Text style={[styles.taxChipRate, active && styles.taxChipTextActive]}>{taxLabel(t)}</Text>
+              <Text style={[styles.taxChipRate, active && styles.taxChipTextActive]}>{taxLabel(group)}</Text>
               <Text style={[styles.taxChipName, active && styles.taxChipTextActive]} numberOfLines={1}>
-                {t.name.replace(/^GST\s*/i, '')}
+                {group.name.replace(/^GST\s*/i, '')}
               </Text>
             </Pressable>
           );
@@ -656,9 +709,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   );
 
   const productColumn = (
-    <SectionCard title="Product" subtitle="Basic info and pricing" icon="package-variant">
-      <TextInput
-        label="Product name *"
+    <SectionCard title={t('Product')} subtitle={t('Basic info and pricing')} icon="package-variant">
+      <AppTextInput
+        label={t('Product name *')}
         value={name}
         onChangeText={setName}
         mode="outlined"
@@ -667,41 +720,64 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         autoCapitalize="words"
         returnKeyType="next"
       />
-      {!!error && nameMissing ? <HelperText type="error">Enter a product name</HelperText> : null}
+      {!!error && nameMissing ? <HelperText type="error">{t('Enter a product name')}</HelperText> : null}
+      <AppTextInput
+        label={t('Product name (Marathi)')}
+        value={nameMr}
+        onChangeText={setNameMr}
+        mode="outlined"
+        style={styles.input}
+        placeholder={t('मराठी नाव')}
+        maxLength={200}
+      />
 
       <View style={styles.priceRow}>
         <View style={styles.halfInput}>
-          <ChoiceField
-            label="Category"
-            value={categoryId}
-            choices={[{ value: '', label: 'No category' }, ...categoryChoices]}
+          <Text style={styles.fieldLabel}>{t('Category')}</Text>
+          <SearchableSelect
+            options={categoryOptions}
+            value={categoryId || null}
+            onChange={(id) => setCategoryId(id || '')}
+            open={categoryOpen}
+            onOpenChange={(open) => {
+              setCategoryOpen(open);
+              if (open) setBrandOpen(false);
+            }}
             placeholder="Category"
-            onChange={setCategoryId}
+            allLabel="No category"
+            searchPlaceholder="Search categories…"
           />
         </View>
         <View style={styles.halfInput}>
-          <ChoiceField
-            label="Brand"
-            value={brandId}
-            choices={[{ value: '', label: 'No brand' }, ...brandChoices]}
+          <Text style={styles.fieldLabel}>{t('Brand')}</Text>
+          <SearchableSelect
+            options={brandOptions}
+            value={brandId || null}
+            onChange={(id) => setBrandId(id || '')}
+            open={brandOpen}
+            onOpenChange={(open) => {
+              setBrandOpen(open);
+              if (open) setCategoryOpen(false);
+            }}
             placeholder="Brand"
-            onChange={setBrandId}
+            allLabel="No brand"
+            searchPlaceholder="Search brands…"
           />
         </View>
       </View>
 
       <ChoiceField
-        label="Unit *"
+        label={t('Unit *')}
         value={uomId}
         choices={uomChoices}
-        placeholder="Select unit"
+        placeholder={t('Select unit')}
         onChange={setUomId}
       />
 
       <View style={styles.switchRow}>
         <View style={styles.switchText}>
-          <Text style={styles.switchTitle}>Sold by weight / decimal</Text>
-          <Text style={styles.switchHint}>kg, litre, metre, partial qty</Text>
+          <Text style={styles.switchTitle}>{t('Sold by weight / decimal')}</Text>
+          <Text style={styles.switchHint}>{t('kg, litre, metre, partial qty')}</Text>
         </View>
         <Switch value={isWeightBased} onValueChange={setIsWeightBased} color={colors.primary} />
       </View>
@@ -717,18 +793,16 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           color={colors.primary}
         />
         <View style={styles.switchText}>
-          <Text style={styles.switchTitle}>This product has variants</Text>
-          <Text style={styles.switchHint}>
-            Check to enable sizes (S, M, L…) in the right column. Pricing moves to each size.
-          </Text>
+          <Text style={styles.switchTitle}>{t(variantProfile.checkboxTitle)}</Text>
+          <Text style={styles.switchHint}>{t(variantProfile.checkboxHint)}</Text>
         </View>
       </Pressable>
 
       {!multiSizes ? (
         <>
-          <Text style={styles.sectionDivider}>Price</Text>
-          <TextInput
-            label="Selling price *"
+          <Text style={styles.sectionDivider}>{t('Price')}</Text>
+          <AppTextInput
+            label={t('Selling price *')}
             value={sellingPrice}
             onChangeText={setSellingPrice}
             keyboardType="decimal-pad"
@@ -737,11 +811,11 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             error={!!error && priceMissing}
             left={<TextInput.Affix text="₹" />}
           />
-          {!!error && priceMissing ? <HelperText type="error">Enter a valid selling price</HelperText> : null}
+          {!!error && priceMissing ? <HelperText type="error">{t('Enter a valid selling price')}</HelperText> : null}
 
           <View style={styles.priceRow}>
-            <TextInput
-              label="Cost"
+            <AppTextInput
+              label={t('Cost')}
               value={costPrice}
               onChangeText={setCostPrice}
               keyboardType="decimal-pad"
@@ -749,8 +823,8 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               style={[styles.input, styles.halfInput]}
               left={<TextInput.Affix text="₹" />}
             />
-            <TextInput
-              label="MRP"
+            <AppTextInput
+              label={t('MRP')}
               value={mrp}
               onChangeText={setMrp}
               keyboardType="decimal-pad"
@@ -768,34 +842,56 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                 color={profit >= 0 ? colors.secondary : colors.error}
               />
               <Text style={[styles.profitText, profit < 0 && { color: colors.error }]}>
-                {profit >= 0 ? 'Profit' : 'Loss'} ₹{Math.abs(profit).toFixed(2)}
-                {profit >= 0 ? ` · ${margin.toFixed(1)}% margin` : ''}
+                {profit >= 0
+                  ? t('Profit ₹{{amount}} · {{margin}}% margin', {
+                      amount: Math.abs(profit).toFixed(2),
+                      margin: margin.toFixed(1),
+                    })
+                  : t('Loss ₹{{amount}}', { amount: Math.abs(profit).toFixed(2) })}
               </Text>
             </View>
           ) : null}
 
+          <AppTextInput
+            label={t('Stock')}
+            value={mainStockQty}
+            onChangeText={(value) => setMainStockQty(sanitizeStockInput(value))}
+            keyboardType="decimal-pad"
+            mode="outlined"
+            placeholder="0"
+            style={styles.input}
+            right={<TextInput.Affix text={(selectedUom?.code || 'qty').toUpperCase()} />}
+          />
+          <Text style={styles.stockFieldHint}>
+            {isEdit
+              ? t('Quantity in this branch. Saving sets stock to this number.')
+              : t('Opening stock for this product. Leave blank if you have none yet.')}
+          </Text>
+
           <View style={styles.priceRow}>
-            <TextInput
+            <AppTextInput
               label="SKU"
               value={sku}
               onChangeText={setSku}
               mode="outlined"
               style={[styles.input, styles.halfInput]}
             />
-            <TextInput
-              label="Barcode"
+            <AppTextInput
+              label={t('Barcode')}
               value={barcode}
               onChangeText={(value) => setBarcode(digitsOnly(value))}
               keyboardType="number-pad"
               mode="outlined"
-              placeholder="Auto number"
+              placeholder={t('Auto number')}
               style={[styles.input, styles.halfInput]}
             />
           </View>
 
+          <ExtraBarcodesEditor values={extraBarcodes} onChange={setExtraBarcodes} />
+
           <View style={styles.packHeader}>
-            <Text style={styles.packTitle}>Pack barcodes</Text>
-            <Text style={styles.packHint}>Optional · e.g. 500 g pack scans as that qty</Text>
+            <Text style={styles.packTitle}>{t('Pack barcodes')}</Text>
+            <Text style={styles.packHint}>{t('Optional · e.g. 500 g pack scans as that qty')}</Text>
           </View>
           {qtyRows.map((row) => {
             const raw = row.quantity.trim();
@@ -803,14 +899,19 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             const hint = !raw
               ? ''
               : qty
-                ? `Adds ${formatQuantity(qty, selectedUom)}${selling > 0 ? ` · ₹${(selling * qty).toFixed(2)}` : ''}`
-                : 'Not a valid quantity';
+                ? (selling > 0
+                  ? t('Adds {{qty}} · ₹{{amount}}', {
+                      qty: formatQuantity(qty, selectedUom),
+                      amount: (selling * qty).toFixed(2),
+                    })
+                  : t('Adds {{qty}}', { qty: formatQuantity(qty, selectedUom) }))
+                : t('Not a valid quantity');
             return (
               <View key={row.key} style={styles.qtyRow}>
                 <View style={styles.qtyFields}>
                   <View style={styles.priceRow}>
-                    <TextInput
-                      label={`Qty${selectedUom ? ` (${selectedUom.code})` : ''}`}
+                    <AppTextInput
+                      label={selectedUom ? t('Qty ({{code}})', { code: selectedUom.code }) : t('Qty')}
                       value={row.quantity}
                       onChangeText={(value) => updateQtyRow(row.key, { quantity: value })}
                       mode="outlined"
@@ -819,14 +920,14 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                       placeholder={selectedUom?.code === 'kg' ? '500g' : '2'}
                       style={[styles.qtyInput, styles.halfInput]}
                     />
-                    <TextInput
-                      label="Barcode"
+                    <AppTextInput
+                      label={t('Barcode')}
                       value={row.barcode}
                       onChangeText={(value) => updateQtyRow(row.key, { barcode: digitsOnly(value) })}
                       keyboardType="number-pad"
                       mode="outlined"
                       dense
-                      placeholder="Auto number"
+                      placeholder={t('Auto number')}
                       style={[styles.qtyInput, styles.halfInput]}
                     />
                   </View>
@@ -848,25 +949,23 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             icon="plus"
             onPress={() => setQtyRows((rows) => [...rows, { key: newRowKey(), quantity: '', barcode: '' }])}
             style={styles.addQtyBtn}>
-            Add pack barcode
+            {t('Add pack barcode')}
           </Button>
         </>
       ) : (
-        <Text style={styles.variantPriceNote}>
-          Product pricing is off. Set price on each size in the Variants column.
-        </Text>
+        <Text style={styles.variantPriceNote}>{t(variantProfile.priceNote)}</Text>
       )}
 
       <Pressable style={styles.moreToggle} onPress={() => setShowOptional((v) => !v)}>
         <Text style={styles.moreToggleText}>
-          {showOptional ? 'Hide' : 'More'} · description & HSN
+          {showOptional ? t('Hide · description & HSN') : t('More · description & HSN')}
         </Text>
         <Icon name={showOptional ? 'chevron-up' : 'chevron-down'} size={20} color={colors.primary} />
       </Pressable>
       {showOptional ? (
         <View style={styles.moreBox}>
-          <TextInput
-            label="Description"
+          <AppTextInput
+            label={t('Description')}
             value={description}
             onChangeText={setDescription}
             mode="outlined"
@@ -874,8 +973,8 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             multiline
             numberOfLines={2}
           />
-          <TextInput
-            label="HSN / SAC"
+          <AppTextInput
+            label={t('HSN / SAC')}
             value={taxCode}
             onChangeText={setTaxCode}
             mode="outlined"
@@ -889,42 +988,39 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const variantsColumn = (
     <View style={[styles.variantsCol, !multiSizes && styles.variantsColDisabled]} pointerEvents={multiSizes ? 'auto' : 'none'}>
       <SectionCard
-        title="Variants"
-        subtitle={multiSizes ? 'Each size has its own price & barcode' : 'Check “has variants” to enable'}
+        title={t('Variants')}
+        subtitle={multiSizes
+          ? t(variantProfile.variantsSubtitle)
+          : t('Check “{{title}}” to enable', { title: t(variantProfile.checkboxTitle).toLowerCase() })}
         icon="shape-outline"
         iconColor={multiSizes ? colors.secondary : colors.textMuted}
         iconBg={multiSizes ? colors.secondaryLight : colors.surfaceVariant}>
         {!multiSizes ? (
           <View style={styles.variantsLocked}>
             <Icon name="lock-outline" size={36} color={colors.textMuted} />
-            <Text style={styles.variantsLockedTitle}>Variants locked</Text>
-            <Text style={styles.variantsLockedHint}>
-              Tick “This product has variants” in the Product column to add sizes here.
-            </Text>
+            <Text style={styles.variantsLockedTitle}>{t('Variants locked')}</Text>
+            <Text style={styles.variantsLockedHint}>{t(variantProfile.lockedHint)}</Text>
           </View>
         ) : (
           <>
-            <TextInput
-              label="SKU prefix"
+            <AppTextInput
+              label={t('SKU prefix')}
               value={sku}
               onChangeText={setSku}
               mode="outlined"
               style={styles.input}
-              placeholder="Used when adding sizes"
+              placeholder={t(variantProfile.skuPrefixHint)}
             />
 
-            {(mainStockQty > 0 || sizeStockTotal > 0) ? (
+            {(parseStockQty(mainStockQty) > 0 || sizeStockTotal > 0) ? (
               <View style={styles.stockSplitBox}>
                 <Icon name="warehouse" size={18} color={colors.secondary} />
                 <View style={styles.stockSplitText}>
                   <Text style={styles.stockSplitTitle}>
-                    Total stock {sizeStockTotal || mainStockQty}
+                    {t('Total stock {{qty}}', { qty: sizeStockTotal || parseStockQty(mainStockQty) })}
                   </Text>
-                  <Text style={styles.stockSplitHint}>Split across sizes — edit each before save</Text>
+                  <Text style={styles.stockSplitHint}>{t(variantProfile.stockHint)}</Text>
                 </View>
-                <Button mode="text" compact onPress={splitStockEvenly}>
-                  Even
-                </Button>
               </View>
             ) : null}
 
@@ -932,6 +1028,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               rows={sizeRows}
               color={color}
               onColorChange={setColor}
+              profile={variantProfile}
               onChange={(key, patch) => {
                 if (patch.size && selectedSizes.has(patch.size.toUpperCase())) {
                   const own = sizeRows.find((row) => row.key === key);
@@ -941,10 +1038,10 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               }}
               onRemove={removeSizeRow}
               onAdd={() => {
-                const next = ['S', 'M', 'L', 'XL', 'XXL', 'XS', 'Free Size'].find(
+                const next = variantProfile.sizeOptions.find(
                   (preset) => !selectedSizes.has(preset.toUpperCase()),
                 );
-                addSize(next || `Size ${sizeRows.length + 1}`);
+                addSize(next || `${variantProfile.sizeLabel} ${sizeRows.length + 1}`);
               }}
             />
           </>
@@ -955,15 +1052,18 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   return (
     <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={common.screenPad}
+        keyboardShouldPersistTaps="handled"
+        scrollEnabled={!categoryOpen && !brandOpen}>
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
             <Icon name={isEdit ? 'pencil-outline' : 'package-variant'} size={26} color={colors.primary} />
           </View>
           <View style={styles.heroText}>
-            <Text style={styles.heading}>{isEdit ? 'Edit Product' : 'New Product'}</Text>
+            <Text style={styles.heading}>{isEdit ? t('Edit Product') : t('New Product')}</Text>
             <Text style={styles.subheading}>
-              Product on the left · variants on the right when enabled
+              {t('Product on the left · variants on the right when enabled')}
             </Text>
           </View>
         </View>
@@ -976,7 +1076,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         {error ? (
           <View style={styles.errorBox}>
             <Icon name="alert-circle-outline" size={20} color={colors.error} />
-            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.errorText}>{t(error)}</Text>
           </View>
         ) : null}
         <Button
@@ -987,10 +1087,14 @@ export default function ProductFormScreen({ navigation, route }: Props) {
           icon="content-save"
           style={styles.button}
           contentStyle={styles.buttonContent}>
-          {isEdit ? 'Save Changes' : 'Save Product'}
+          {isEdit ? t('Save Changes') : t('Save Product')}
         </Button>
         <Text style={styles.requiredNote}>
-          * Required · name, unit{multiSizes ? ', and a price on each size' : ', selling price'}
+          {multiSizes
+            ? t('* Required · name, unit, and a price on each {{sizeLabel}}', {
+                sizeLabel: t(variantProfile.sizeLabel).toLowerCase(),
+              })
+            : t('* Required · name, unit, selling price')}
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -1062,16 +1166,17 @@ const styles = StyleSheet.create({
   },
   input: { marginBottom: spacing.md, backgroundColor: colors.surface },
   label: { ...typography.label, marginBottom: spacing.sm, marginTop: spacing.xs },
-  choiceDialog: { borderRadius: radius.lg, backgroundColor: colors.surface },
-  choiceContent: { paddingHorizontal: 0, maxHeight: 360 },
-  choiceScroll: { maxHeight: 340 },
+  fieldLabel: { ...typography.label, marginBottom: 0 },
+  choiceDialog: { ...dialogCard },
+  choiceContent: { paddingHorizontal: 0, maxHeight: 280 },
+  choiceScroll: { maxHeight: 260 },
   choiceRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
   },
   choiceRowOn: { backgroundColor: colors.primaryLight },
@@ -1101,6 +1206,12 @@ const styles = StyleSheet.create({
   packHeader: { marginTop: spacing.sm, marginBottom: spacing.sm },
   packTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
   packHint: { ...typography.caption, marginTop: 2 },
+  stockFieldHint: {
+    ...typography.caption,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.md,
+    lineHeight: 16,
+  },
   variantPriceNote: {
     ...typography.bodySm,
     color: colors.textSecondary,

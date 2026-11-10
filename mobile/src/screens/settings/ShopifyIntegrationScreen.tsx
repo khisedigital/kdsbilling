@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, Linking, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Text, TextInput } from 'react-native-paper';
+import { ActivityIndicator, Button, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -8,6 +9,7 @@ import SectionCard from '../../components/ui/SectionCard';
 import * as shopifyService from '../../services/shopifyService';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { formatDateTime } from '../../utils/formatDate';
 import {
@@ -25,9 +27,10 @@ const POLL_MS = 4000;
 const AUTH_WAIT_MS = 5 * 60 * 1000;
 
 function BadgePill({ badge }: { badge: Badge }) {
+  const t = useT();
   return (
     <View style={[styles.badge, { backgroundColor: badge.bg }]}>
-      <Text style={[styles.badgeText, { color: badge.color }]}>{badge.label}</Text>
+      <Text style={[styles.badgeText, { color: badge.color }]}>{t(badge.label)}</Text>
     </View>
   );
 }
@@ -45,6 +48,7 @@ function SyncRow({
   status: shopifyService.ShopifySyncStatus;
   last: string | null;
 }) {
+  const t = useT();
   return (
     <View style={styles.syncRow}>
       <View style={styles.syncIcon}>
@@ -54,7 +58,7 @@ function SyncRow({
         <Text style={styles.syncLabel}>{label}</Text>
         <Text style={styles.syncMeta}>
           {detail ? `${detail} · ` : ''}
-          {last ? formatDateTime(last) : 'Never'}
+          {last ? formatDateTime(last) : t('Never')}
         </Text>
       </View>
       <BadgePill badge={syncBadge(status)} />
@@ -72,6 +76,7 @@ function InfoLine({ label, value }: { label: string; value: string }) {
 }
 
 export default function ShopifyIntegrationScreen({}: Props) {
+  const t = useT();
   const [status, setStatus] = useState<shopifyService.ShopifyStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -90,11 +95,11 @@ export default function ShopifyIntegrationScreen({}: Props) {
       if (next.connected) authStartedAt.current = null;
       if (next.shopDomain) setDomain((d) => d || next.shopDomain || '');
     } catch (err) {
-      if (showErrors && alive.current) Alert.alert('Error', apiError(err, 'Could not load Shopify status'));
+      if (showErrors && alive.current) Alert.alert(t('Error'), apiError(err, t('Could not load Shopify status')));
     } finally {
       if (alive.current) setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     alive.current = true;
@@ -136,7 +141,7 @@ export default function ShopifyIntegrationScreen({}: Props) {
   const handleConnect = async () => {
     const value = domain.trim();
     if (!value) {
-      Alert.alert('Store required', 'Enter your Shopify store domain, e.g. mystore.myshopify.com');
+      Alert.alert(t('Store required'), t('Enter your Shopify store domain, e.g. mystore.myshopify.com'));
       return;
     }
     setConnecting(true);
@@ -146,7 +151,7 @@ export default function ShopifyIntegrationScreen({}: Props) {
       await Linking.openURL(authUrl);
       load();
     } catch (err) {
-      Alert.alert('Could not connect', apiError(err, 'Could not start Shopify connection'));
+      Alert.alert(t('Could not connect'), apiError(err, t('Could not start Shopify connection')));
     } finally {
       setConnecting(false);
     }
@@ -157,7 +162,7 @@ export default function ShopifyIntegrationScreen({}: Props) {
     try {
       setStatus(await shopifyService.syncShopifyNow());
     } catch (err) {
-      Alert.alert('Sync failed', apiError(err, 'Could not start sync'));
+      Alert.alert(t('Sync failed'), apiError(err, t('Could not start sync')));
     } finally {
       setSyncing(false);
     }
@@ -165,19 +170,19 @@ export default function ShopifyIntegrationScreen({}: Props) {
 
   const handleDisconnect = () => {
     Alert.alert(
-      'Disconnect Shopify',
-      'Stock and orders will stop syncing. Your POS products and sales stay as they are.',
+      t('Disconnect Shopify'),
+      t('Stock and orders will stop syncing. Your POS products and sales stay as they are.'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('Cancel'), style: 'cancel' },
         {
-          text: 'Disconnect',
+          text: t('Disconnect'),
           style: 'destructive',
           onPress: async () => {
             setDisconnecting(true);
             try {
               setStatus(await shopifyService.disconnectShopify());
             } catch (err) {
-              Alert.alert('Error', apiError(err, 'Could not disconnect'));
+              Alert.alert(t('Error'), apiError(err, t('Could not disconnect')));
             } finally {
               setDisconnecting(false);
             }
@@ -210,8 +215,8 @@ export default function ShopifyIntegrationScreen({}: Props) {
           <Icon name="shopping" size={28} color={SHOPIFY_GREEN} />
         </View>
         <View style={styles.heroText}>
-          <Text style={styles.title}>Shopify</Text>
-          <Text style={styles.subtitle}>Sync products, stock and online orders with your POS</Text>
+          <Text style={styles.title}>{t('Shopify')}</Text>
+          <Text style={styles.subtitle}>{t('Sync products, stock and online orders with your POS')}</Text>
         </View>
         <BadgePill badge={badge} />
       </View>
@@ -220,23 +225,23 @@ export default function ShopifyIntegrationScreen({}: Props) {
         <View style={styles.notice}>
           <Icon name="information-outline" size={18} color={colors.warning} />
           <Text style={styles.noticeText}>
-            Shopify integration is not enabled on the server yet. Please contact support.
+            {t('Shopify integration is not enabled on the server yet. Please contact support.')}
           </Text>
         </View>
       ) : null}
 
       {!connected ? (
         <SectionCard
-          title={needsReconnect ? 'Reconnect Shopify' : 'Connect Shopify'}
-          subtitle="You will approve access on Shopify, then return here"
+          title={needsReconnect ? t('Reconnect Shopify') : t('Connect Shopify')}
+          subtitle={t('You will approve access on Shopify, then return here')}
           icon="link-variant"
           iconColor={SHOPIFY_GREEN}
           iconBg={SHOPIFY_GREEN_LIGHT}>
           {needsReconnect && status?.lastError ? (
-            <Text style={styles.errorText}>{status.lastError}</Text>
+            <Text style={styles.errorText}>{t(status.lastError)}</Text>
           ) : null}
-          <TextInput
-            label="Store domain"
+          <AppTextInput
+            label={t('Store domain')}
             mode="outlined"
             value={domain}
             onChangeText={setDomain}
@@ -253,12 +258,12 @@ export default function ShopifyIntegrationScreen({}: Props) {
             loading={connecting}
             disabled={connecting || !status?.configured}
             buttonColor={SHOPIFY_GREEN}>
-            {needsReconnect ? 'Reconnect Shopify' : 'Connect Shopify'}
+            {needsReconnect ? t('Reconnect Shopify') : t('Connect Shopify')}
           </Button>
           {awaitingAuth ? (
             <View style={styles.waiting}>
               <ActivityIndicator size="small" color={SHOPIFY_GREEN} />
-              <Text style={styles.waitingText}>Waiting for Shopify approval…</Text>
+              <Text style={styles.waitingText}>{t('Waiting for Shopify approval…')}</Text>
             </View>
           ) : null}
         </SectionCard>
@@ -266,46 +271,57 @@ export default function ShopifyIntegrationScreen({}: Props) {
 
       {connected && status ? (
         <>
-          <SectionCard title="Connected store" icon="store-check-outline" iconColor={SHOPIFY_GREEN} iconBg={SHOPIFY_GREEN_LIGHT}>
-            <InfoLine label="Store" value={status.shopName || status.shopDomain || '—'} />
-            <InfoLine label="Domain" value={status.shopDomain || '—'} />
-            <InfoLine label="Shopify location" value={status.locationName || '—'} />
-            <InfoLine label="POS branch" value={status.branchName || '—'} />
-            <InfoLine label="Connected" value={formatDateTime(status.connectedAt)} />
+          <SectionCard title={t('Connected store')} icon="store-check-outline" iconColor={SHOPIFY_GREEN} iconBg={SHOPIFY_GREEN_LIGHT}>
+            <InfoLine label={t('Store')} value={status.shopName || status.shopDomain || '—'} />
+            <InfoLine label={t('Domain')} value={status.shopDomain || '—'} />
+            <InfoLine label={t('Shopify location')} value={status.locationName || '—'} />
+            <InfoLine label={t('POS branch')} value={status.branchName || '—'} />
+            <InfoLine label={t('Connected')} value={formatDateTime(status.connectedAt)} />
           </SectionCard>
 
           <SectionCard
-            title="Sync status"
-            subtitle={`Last sync: ${status.lastSyncAt ? formatDateTime(status.lastSyncAt) : 'Never'}`}
+            title={t('Sync status')}
+            subtitle={status.lastSyncAt
+              ? t('Last sync: {{time}}', { time: formatDateTime(status.lastSyncAt) })
+              : t('Last sync: Never')}
             icon="sync">
             <SyncRow
               icon="package-variant"
-              label="Products"
-              detail={`${status.productSync.mappedCount} linked`}
+              label={t('Products')}
+              detail={t('{{count}} linked', { count: status.productSync.mappedCount })}
               status={status.productSync.status}
               last={status.productSync.lastSyncAt}
             />
             <SyncRow
               icon="warehouse"
-              label="Inventory"
+              label={t('Inventory')}
               status={status.inventorySync.status}
               last={status.inventorySync.lastSyncAt}
             />
             <SyncRow
               icon="receipt"
-              label="Orders"
-              detail={`${status.orderSync.orderCount} imported`}
+              label={t('Orders')}
+              detail={t('{{count}} imported', { count: status.orderSync.orderCount })}
               status={status.orderSync.status}
               last={status.orderSync.lastSyncAt}
             />
             {status.productSync.summary ? (
               <Text style={styles.summary}>
-                Last product sync: {status.productSync.summary.matched} matched,{' '}
-                {status.productSync.summary.created} created, {status.productSync.summary.updated} updated
-                {status.productSync.summary.errors ? `, ${status.productSync.summary.errors} failed` : ''}
+                {status.productSync.summary.errors
+                  ? t('Last product sync: {{matched}} matched, {{created}} created, {{updated}} updated, {{errors}} failed', {
+                      matched: status.productSync.summary.matched,
+                      created: status.productSync.summary.created,
+                      updated: status.productSync.summary.updated,
+                      errors: status.productSync.summary.errors,
+                    })
+                  : t('Last product sync: {{matched}} matched, {{created}} created, {{updated}} updated', {
+                      matched: status.productSync.summary.matched,
+                      created: status.productSync.summary.created,
+                      updated: status.productSync.summary.updated,
+                    })}
               </Text>
             ) : null}
-            {status.lastError ? <Text style={styles.errorText}>{status.lastError}</Text> : null}
+            {status.lastError ? <Text style={styles.errorText}>{t(status.lastError)}</Text> : null}
             <Button
               mode="contained"
               icon="sync"
@@ -313,13 +329,12 @@ export default function ShopifyIntegrationScreen({}: Props) {
               loading={syncing || syncActive}
               disabled={syncing || syncActive}
               style={styles.btn}>
-              {syncActive ? 'Syncing…' : 'Sync Now'}
+              {syncActive ? t('Syncing…') : t('Sync Now')}
             </Button>
           </SectionCard>
 
           <Text style={styles.hint}>
-            POS is the stock source of truth: POS sales update Shopify, and Shopify orders reduce POS stock for the
-            linked branch automatically.
+            {t('POS is the stock source of truth: POS sales update Shopify, and Shopify orders reduce POS stock for the linked branch automatically.')}
           </Text>
 
           <Button
@@ -330,7 +345,7 @@ export default function ShopifyIntegrationScreen({}: Props) {
             disabled={disconnecting}
             textColor={colors.error}
             style={styles.disconnect}>
-            Disconnect
+            {t('Disconnect')}
           </Button>
         </>
       ) : null}
@@ -372,7 +387,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
   },
   infoLabel: { ...typography.bodySm },
@@ -381,7 +396,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
   },
   syncIcon: {

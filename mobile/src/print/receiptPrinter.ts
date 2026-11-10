@@ -1,8 +1,10 @@
 import api from '../services/api';
 import { fetchBill, type BillDetail } from '../services/businessService';
-import { getShopSettings } from '../services/shopSettingsService';
+import { getShopSettings, shopTextForBill } from '../services/shopSettingsService';
 import { getPrinterSettings, IS_DESKTOP, type PrinterSettings } from '../store/printerStore';
 import { APP_DISPLAY_NAME } from '../constants/branding';
+import { billT } from '../i18n';
+import { useLanguageStore } from '../i18n/languageStore';
 import { A4_CHARS_PER_LINE, buildReceiptPayload } from './buildReceipt';
 import { receiptCharsForPaper } from './escpos';
 import { printViaA4, printViaBluetooth, printViaNetwork, printViaSystem } from './PrintService';
@@ -70,7 +72,10 @@ async function sendPayloadToPrinter(
       if (!billId) {
         throw new Error('Server printer needs a saved bill. Use Bluetooth/Network IP or Complete first.');
       }
-      await api.post(`/bills/${billId}/print-network`, { printerId: settings.serverPrinterId });
+      await api.post(`/bills/${billId}/print-network`, {
+        printerId: settings.serverPrinterId,
+        language: useLanguageStore.getState().bill,
+      });
       return { ok: true, mode: 'server' };
     }
     throw new Error('Configure network printer IP in Printer Settings.');
@@ -109,7 +114,8 @@ function buildTestThermalSample(opts: {
   const dash = '-'.repeat(width);
   const eq = '='.repeat(width);
   const addr = [address, city].filter(Boolean).join(', ');
-  const stamp = new Date().toLocaleString('en-IN');
+  const mrBill = useLanguageStore.getState().bill === 'mr';
+  const stamp = new Date().toLocaleString(mrBill ? 'mr-IN' : 'en-IN');
   const wide = width >= A4_CHARS_PER_LINE;
   const itemW = width <= 30 ? 10 : width <= 32 ? 12 : wide ? 51 : 18;
   const qtyW = width <= 32 ? 3 : wide ? 6 : 4;
@@ -119,28 +125,29 @@ function buildTestThermalSample(opts: {
     const b = t.slice(0, w);
     return right ? b.padStart(w) : b.padEnd(w);
   };
+  const word = (english: string, printed = english) => (mrBill ? billT(english) : printed);
   const header =
-    pad('ITEM', itemW) + ' ' + pad('QTY', qtyW, true) + ' ' + pad('RATE', rateW, true) + ' ' + pad('AMT', amtW, true);
+    pad(word('Item', 'ITEM'), itemW) + ' ' + pad(word('Qty', 'QTY'), qtyW, true) + ' ' + pad(word('Rate', 'RATE'), rateW, true) + ' ' + pad(word('Amount', 'AMT'), amtW, true);
   const row =
-    pad('Sample Item', itemW) + ' ' + pad('1', qtyW, true) + ' ' + pad('10.00', rateW, true) + ' ' + pad('10.00', amtW, true);
+    pad(word('Sample Item'), itemW) + ' ' + pad('1', qtyW, true) + ' ' + pad('10.00', rateW, true) + ' ' + pad('10.00', amtW, true);
 
   const lines = [
     eq,
-    `<CB>${(shopName || APP_DISPLAY_NAME).toUpperCase().slice(0, Math.max(12, Math.floor(width / 2)))}</CB>`,
+    `<CB>${(shopName || APP_DISPLAY_NAME).slice(0, width)}</CB>`,
     eq,
   ];
   if (addr) lines.push(`<C>${addr}</C>`);
-  if (phone) lines.push(`<C>Ph: ${phone}</C>`);
+  if (phone) lines.push(`<C>${word('Ph')}: ${phone}</C>`);
   lines.push(dash);
-  lines.push('<C>TEST PRINT</C>');
+  lines.push(`<C>${word('TEST PRINT')}</C>`);
   lines.push(dash);
-  lines.push(`Date: ${stamp}`);
+  lines.push(`${word('Date')}: ${stamp}`);
   lines.push(eq);
   lines.push(header.slice(0, width));
   lines.push(dash);
   lines.push(row.slice(0, width));
   lines.push(eq);
-  lines.push('<C>Printer check OK</C>');
+  lines.push(`<C>${word('Printer check OK')}</C>`);
   lines.push(star);
   return lines.join('\n');
 }
@@ -152,7 +159,9 @@ function buildTestA4Html(opts: {
   phone: string;
 }): string {
   const { shopName, address, city, phone } = opts;
-  const stamp = new Date().toLocaleString('en-IN');
+  const mr = useLanguageStore.getState().bill === 'mr';
+  const word = (english: string) => (mr ? billT(english) : english);
+  const stamp = new Date().toLocaleString(mr ? 'mr-IN' : 'en-IN');
   const addr = [address, city].filter(Boolean).join(', ');
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><title>Test Print</title>
@@ -172,15 +181,15 @@ function buildTestA4Html(opts: {
   <div class="head">
     <h1 class="shop">${shopName || APP_DISPLAY_NAME}</h1>
     ${addr ? `<p class="meta">${addr}</p>` : ''}
-    ${phone ? `<p class="meta">Ph: ${phone}</p>` : ''}
-    <p class="meta" style="letter-spacing:.16em;margin-top:8px">TEST PRINT</p>
+    ${phone ? `<p class="meta">${word('Ph')}: ${phone}</p>` : ''}
+    <p class="meta" style="letter-spacing:.16em;margin-top:8px">${word('TEST PRINT')}</p>
   </div>
   <p>${stamp}</p>
   <table>
-    <thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amt</th></tr></thead>
-    <tbody><tr><td>Sample Item</td><td class="r">1</td><td class="r">10.00</td><td class="r">10.00</td></tr></tbody>
+    <thead><tr><th>${word('Item')}</th><th class="r">${word('Qty')}</th><th class="r">${word('Rate')}</th><th class="r">${word('Amount')}</th></tr></thead>
+    <tbody><tr><td>${word('Sample Item')}</td><td class="r">1</td><td class="r">10.00</td><td class="r">10.00</td></tr></tbody>
   </table>
-  <p style="text-align:center;margin-top:20px"><strong>Printer check OK</strong></p>
+  <p style="text-align:center;margin-top:20px"><strong>${word('Printer check OK')}</strong></p>
 </body></html>`;
 }
 
@@ -192,9 +201,11 @@ export async function testPrint(): Promise<void> {
   let phone = '';
   try {
     const shop = await getShopSettings();
-    shopName = shop.shopName || shopName;
-    address = shop.address || '';
-    city = shop.city || '';
+    const bill = useLanguageStore.getState().bill;
+    const text = shopTextForBill(shop, bill);
+    shopName = text.shopName || shopName;
+    address = text.address || '';
+    city = bill === 'mr' && shop.addressMr?.trim() ? '' : shop.city || '';
     phone = shop.phone || '';
   } catch {
     // Fall back to app name if shop settings unavailable

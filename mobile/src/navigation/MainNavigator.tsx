@@ -9,6 +9,7 @@ import ProductListScreen from '../screens/products/ProductListScreen';
 import ImportMasterProductsScreen from '../screens/products/ImportMasterProductsScreen';
 import ProductDetailScreen from '../screens/products/ProductDetailScreen';
 import ProductFormScreen from '../screens/products/ProductFormScreen';
+import PriceManagementScreen from '../screens/products/PriceManagementScreen';
 import CategoryListScreen from '../screens/products/CategoryListScreen';
 import BrandListScreen from '../screens/products/BrandListScreen';
 import StockListScreen from '../screens/inventory/StockListScreen';
@@ -63,6 +64,7 @@ export type MainStackParamList = {
   ImportMasterProducts: undefined;
   ProductDetail: { productId: string };
   ProductForm: { productId?: string } | undefined;
+  PriceManagement: undefined;
   CategoryList: undefined;
   BrandList: undefined;
   StockList: undefined;
@@ -114,11 +116,12 @@ const screenTitles: Partial<Record<keyof MainStackParamList, string>> = {
   Reports: 'Reports',
   ReportDetail: 'Report',
   Expenses: 'Expenses',
-  DailyClosing: 'Daily Closing',
+  DailyClosing: 'Close Register',
   ProductList: 'Products',
-  ImportMasterProducts: 'Import Master Products',
+  ImportMasterProducts: 'Import products',
   ProductDetail: 'Product Details',
   ProductForm: 'Add Product',
+  PriceManagement: 'Price Management',
   CategoryList: 'Categories',
   BrandList: 'Brands',
   StockList: 'Stock',
@@ -203,6 +206,7 @@ export default function MainNavigator() {
           component={ProductFormScreen}
           options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
         />
+        <Stack.Screen name="PriceManagement" component={PriceManagementScreen} />
         <Stack.Screen name="CategoryList" component={CategoryListScreen} />
         <Stack.Screen name="BrandList" component={BrandListScreen} />
         <Stack.Screen name="StockList" component={StockListScreen} />

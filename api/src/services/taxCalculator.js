@@ -69,6 +69,7 @@ function calculateCustomLine(item) {
     sku: 'CUSTOM',
     quantity: qty,
     unitPrice,
+    mrp: item.mrp != null && item.mrp !== '' ? parseFloat(item.mrp) || null : null,
     costPrice: 0,
     discountAmount: lineDiscount,
     discountPercent: parseFloat(item.discountPercent || 0),
@@ -84,6 +85,10 @@ async function calculateLine(db, item, variant) {
   const qty = parseFloat(item.quantity);
   const unitPrice = parseFloat(item.unitPrice ?? variant.selling_price);
   const lineSubtotal = round4(qty * unitPrice);
+  const mrpRaw = item.mrp != null && item.mrp !== ''
+    ? parseFloat(item.mrp)
+    : (variant.mrp != null ? parseFloat(variant.mrp) : null);
+  const mrp = Number.isFinite(mrpRaw) && mrpRaw > 0 ? mrpRaw : null;
 
   let lineDiscount = 0;
   if (item.discountPercent) {
@@ -125,6 +130,7 @@ async function calculateLine(db, item, variant) {
     sku: variant.sku,
     quantity: qty,
     unitPrice,
+    mrp,
     costPrice: parseFloat(variant.cost_price || 0),
     discountAmount: lineDiscount,
     discountPercent: parseFloat(item.discountPercent || 0),

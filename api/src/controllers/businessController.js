@@ -125,7 +125,7 @@ async function printBill(req, res) {
   const bill = await billingService.getBill(req.db, req.params.id);
   const format = req.query.format || '80';
   const shopSettings = await loadShopSettings(req);
-  const data = generatePrint(bill, req.tenant, format, shopSettings, publicBaseUrl(req));
+  const data = generatePrint(bill, req.tenant, format, shopSettings, publicBaseUrl(req), req.query.language);
   res.json({ success: true, data });
 }
 
@@ -217,6 +217,11 @@ async function listOffers(req, res) {
   res.json({ success: true, data });
 }
 
+async function previewClosing(req, res) {
+  const data = await expenseService.previewDailyClosing(req.db, branchId(req), req.query);
+  res.json({ success: true, data });
+}
+
 async function createClosing(req, res) {
   const data = await expenseService.createDailyClosing(req.db, branchId(req), req.auth.sub, req.body);
   res.status(201).json({ success: true, data });
@@ -224,6 +229,11 @@ async function createClosing(req, res) {
 
 async function listClosings(req, res) {
   const data = await expenseService.listClosings(req.db, branchId(req));
+  res.json({ success: true, data });
+}
+
+async function getClosing(req, res) {
+  const data = await expenseService.getDailyClosing(req.db, branchId(req), req.params.id);
   res.json({ success: true, data });
 }
 
@@ -255,7 +265,8 @@ async function printBillNetwork(req, res) {
     req.params.id,
     req.body.printerId,
     await loadShopSettings(req),
-    publicBaseUrl(req)
+    publicBaseUrl(req),
+    req.body.language
   );
   res.json({ success: true, data });
 }
@@ -298,7 +309,8 @@ module.exports = {
   holdBill, listHeld, resumeHeld, deleteHeld,
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, addStoreCredit,
   createReturn, listReturns, getReturn,
-  listExpenseCategories, createExpense, listExpenses, listOffers, createClosing, listClosings,
+  listExpenseCategories, createExpense, listExpenses, listOffers,
+  previewClosing, createClosing, listClosings, getClosing,
   listPrinters, createPrinter, updatePrinter, deletePrinter, printBillNetwork,
   getShopSettings, updateShopSettings, uploadShopLogo, removeShopLogo,
 };

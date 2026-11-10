@@ -8,12 +8,13 @@ import AppNavigator from './src/navigation/AppNavigator';
 import { navigationRef } from './src/navigation/navigationRef';
 import { theme } from './src/theme';
 import { initApiClient } from './src/services/api';
+import { useLanguageStore } from './src/i18n';
 
 function App() {
   const [apiReady, setApiReady] = useState(false);
 
   useEffect(() => {
-    initApiClient().finally(() => setApiReady(true));
+    Promise.all([initApiClient(), useLanguageStore.getState().hydrate()]).finally(() => setApiReady(true));
   }, []);
 
   if (!apiReady) {

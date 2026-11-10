@@ -23,6 +23,8 @@ function defineBranch(sequelize) {
         unique: true,
       },
       address: DataTypes.TEXT,
+      name_mr: DataTypes.STRING(150),
+      address_mr: DataTypes.TEXT,
       city: DataTypes.STRING(100),
       country_code: {
         type: DataTypes.STRING(2),

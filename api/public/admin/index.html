@@ -2064,13 +2064,14 @@
                       <p class="hint" style="margin:0">Categories for this shop type. New clients can inherit these.</p>
                     </div>
                     <div class="right">
+                      <button id="importMasterCategoriesBtn" class="secondary" disabled title="Import categories from CSV">Import CSV</button>
                       <button id="createMasterCategoryBtn" disabled title="Add a category to this shop type">+ Add category</button>
                     </div>
                   </div>
                   <div class="table-wrap">
                     <table>
                       <thead>
-                        <tr><th>Category</th><th>Sort</th><th>Status</th><th style="width:140px">Actions</th></tr>
+                        <tr><th>Category</th><th>Marathi</th><th>Sort</th><th>Status</th><th style="width:140px">Actions</th></tr>
                       </thead>
                       <tbody id="masterCategoriesTable"></tbody>
                     </table>
@@ -2083,13 +2084,14 @@
                       <p class="hint" style="margin:0">Optional brands for products in this shop type.</p>
                     </div>
                     <div class="right">
+                      <button id="importMasterBrandsBtn" class="secondary" disabled title="Import brands from CSV">Import CSV</button>
                       <button id="createMasterBrandBtn" disabled title="Add a brand to this shop type">+ Add brand</button>
                     </div>
                   </div>
                   <div class="table-wrap">
                     <table>
                       <thead>
-                        <tr><th>Brand</th><th>Sort</th><th>Status</th><th style="width:140px">Actions</th></tr>
+                        <tr><th>Brand</th><th>Marathi</th><th>Sort</th><th>Status</th><th style="width:140px">Actions</th></tr>
                       </thead>
                       <tbody id="masterBrandsTable"></tbody>
                     </table>
@@ -2105,6 +2107,7 @@
                       </div>
                     </div>
                     <div class="right">
+                      <button id="importOpenFoodMasterBtn" class="secondary" title="Import products from Open Food Facts into this catalog">Import from API</button>
                       <button id="importCatalogProductsBtn" class="secondary" title="Import product templates from Excel">Import</button>
                       <button id="createMasterProductBtn" title="Add a product template">+ Add product</button>
                     </div>
@@ -2113,7 +2116,7 @@
                     <table>
                       <thead>
                         <tr>
-                          <th>Product</th><th>Category</th><th>Brand</th><th>SKU</th><th>UOM</th>
+                          <th>Product</th><th>Marathi</th><th>Category</th><th>Brand</th><th>SKU</th><th>UOM</th>
                           <th>Price</th><th>Status</th><th style="width:140px">Actions</th>
                         </tr>
                       </thead>
@@ -2245,7 +2248,7 @@
 
   <div id="modalRoot" class="hidden"></div>
 
-  <script src="admin.js?v=46"></script>
+  <script src="admin.js?v=53"></script>
   <script src="vendor/xlsx.full.min.js" defer></script>
 </body>
 </html>

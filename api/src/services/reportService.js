@@ -71,81 +71,262 @@ async function sumNetRevenue(db, branchId, since) {
   return parseFloat(rows[0]?.revenue || 0);
 }
 
+async function sumGrossProfit(db, branchId, since) {
+  const rows = await db.sequelize.query(`
+    SELECT COALESCE(SUM(${SQL_PROFIT}), 0) AS profit
+    FROM sales_order_items soi
+    JOIN sales_orders so ON soi.sales_order_id = so.id
+    WHERE so.branch_id = :branchId
+      AND so.status IN (${SOLD_STATUS_IN})
+      AND so.created_at >= :since
+  `, {
+    replacements: { branchId, since },
+    type: db.sequelize.QueryTypes.SELECT,
+  });
+  return parseFloat(rows[0]?.profit || 0);
+}
+
+function dayKey(date) {
+  return date.toISOString().slice(0, 10);
+}
+
 async function getDashboard(db, branchId) {
-  const { SalesOrder, ProductVariant, StockBalance, Expense } = db;
+  const { SalesOrder, ProductVariant, StockBalance, Expense, HeldBill, Customer } = db;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const weekStart = new Date(today);
+  weekStart.setDate(weekStart.getDate() - 6);
 
-  // Net of returns (fully/partially returned lines no longer count in revenue).
-  const todaySales = await sumNetRevenue(db, branchId, today);
-  const monthSales = await sumNetRevenue(db, branchId, monthStart);
+  const todayKey = dayKey(today);
 
-  const ordersCount = await SalesOrder.count({
-    where: {
-      branch_id: branchId,
-      status: { [Op.in]: ['completed', 'partially_returned'] },
-      created_at: { [Op.gte]: today },
-    },
-  });
-
-  const recent = await SalesOrder.findAll({
-    where: { branch_id: branchId, status: { [Op.in]: SOLD_BILL_STATUSES } },
-    order: [['created_at', 'DESC']],
-    limit: 10,
-    attributes: ['id', 'bill_number', 'total_amount', 'created_at', 'status'],
-    include: [{ model: db.Customer, as: 'customer', attributes: ['name'] }],
-  });
-
-  const balances = await StockBalance.findAll({
-    where: { branch_id: branchId },
-    include: [{
-      model: ProductVariant,
-      as: 'variant',
-      attributes: ['reorder_level', 'sku'],
-      include: [{ model: db.Product, as: 'product', attributes: ['name'] }],
-    }],
-  });
+  const [
+    todaySales,
+    yesterdaySalesOnly,
+    monthSales,
+    todayGrossProfit,
+    monthGrossProfit,
+    ordersCount,
+    yesterdayOrdersCount,
+    monthOrdersCount,
+    recent,
+    balances,
+    bestSellers,
+    todayExpenses,
+    monthExpenses,
+    heldCount,
+    customersCount,
+    paymentBreakdown,
+    hourlySales,
+    weekTrend,
+    returnsToday,
+  ] = await Promise.all([
+    sumNetRevenue(db, branchId, today),
+    db.sequelize.query(`
+      SELECT COALESCE(SUM(${SQL_NET_REVENUE}), 0) AS revenue
+      FROM sales_order_items soi
+      JOIN sales_orders so ON soi.sales_order_id = so.id
+      WHERE so.branch_id = :branchId
+        AND so.status IN (${SOLD_STATUS_IN})
+        AND so.created_at >= :yesterday
+        AND so.created_at < :today
+    `, {
+      replacements: { branchId, yesterday, today },
+      type: db.sequelize.QueryTypes.SELECT,
+    }).then((rows) => parseFloat(rows[0]?.revenue || 0)),
+    sumNetRevenue(db, branchId, monthStart),
+    sumGrossProfit(db, branchId, today),
+    sumGrossProfit(db, branchId, monthStart),
+    SalesOrder.count({
+      where: {
+        branch_id: branchId,
+        status: { [Op.in]: ['completed', 'partially_returned'] },
+        created_at: { [Op.gte]: today },
+      },
+    }),
+    SalesOrder.count({
+      where: {
+        branch_id: branchId,
+        status: { [Op.in]: ['completed', 'partially_returned'] },
+        created_at: { [Op.gte]: yesterday, [Op.lt]: today },
+      },
+    }),
+    SalesOrder.count({
+      where: {
+        branch_id: branchId,
+        status: { [Op.in]: ['completed', 'partially_returned'] },
+        created_at: { [Op.gte]: monthStart },
+      },
+    }),
+    SalesOrder.findAll({
+      where: { branch_id: branchId, status: { [Op.in]: SOLD_BILL_STATUSES } },
+      order: [['created_at', 'DESC']],
+      limit: 8,
+      attributes: ['id', 'bill_number', 'total_amount', 'created_at', 'status'],
+      include: [{ model: db.Customer, as: 'customer', attributes: ['name'] }],
+    }),
+    StockBalance.findAll({
+      where: { branch_id: branchId },
+      include: [{
+        model: ProductVariant,
+        as: 'variant',
+        attributes: ['reorder_level', 'sku'],
+        include: [{ model: db.Product, as: 'product', attributes: ['name'] }],
+      }],
+    }),
+    db.sequelize.query(`
+      SELECT soi.product_name,
+        SUM(${SQL_NET_QTY}) as totalQty,
+        SUM(${SQL_NET_REVENUE}) as revenue
+      FROM sales_order_items soi
+      JOIN sales_orders so ON soi.sales_order_id = so.id
+      WHERE so.branch_id = :branchId AND so.status IN (${SOLD_STATUS_IN}) AND so.created_at >= :monthStart
+      GROUP BY soi.product_name ORDER BY revenue DESC LIMIT 5
+    `, { replacements: { branchId, monthStart }, type: db.sequelize.QueryTypes.SELECT }),
+    Expense.sum('amount', {
+      where: { branch_id: branchId, expense_date: todayKey },
+    }).then((v) => parseFloat(v || 0)),
+    Expense.sum('amount', {
+      where: {
+        branch_id: branchId,
+        expense_date: { [Op.gte]: dayKey(monthStart), [Op.lte]: todayKey },
+      },
+    }).then((v) => parseFloat(v || 0)),
+    HeldBill
+      ? HeldBill.count({ where: { branch_id: branchId } }).catch(() => 0)
+      : Promise.resolve(0),
+    Customer
+      ? Customer.count().catch(() => 0)
+      : Promise.resolve(0),
+    db.sequelize.query(`
+      SELECT sp.payment_mode AS mode, COALESCE(SUM(sp.amount), 0) AS amount, COUNT(*) AS count
+      FROM sales_payments sp
+      JOIN sales_orders so ON sp.sales_order_id = so.id
+      WHERE so.branch_id = :branchId
+        AND so.status IN (${SOLD_STATUS_IN})
+        AND so.created_at >= :today
+      GROUP BY sp.payment_mode
+      ORDER BY amount DESC
+    `, { replacements: { branchId, today }, type: db.sequelize.QueryTypes.SELECT }),
+    db.sequelize.query(`
+      SELECT HOUR(so.created_at) AS hour,
+        COALESCE(SUM(${SQL_NET_REVENUE}), 0) AS revenue,
+        COUNT(DISTINCT so.id) AS orders
+      FROM sales_orders so
+      JOIN sales_order_items soi ON soi.sales_order_id = so.id
+      WHERE so.branch_id = :branchId
+        AND so.status IN (${SOLD_STATUS_IN})
+        AND so.created_at >= :today
+      GROUP BY HOUR(so.created_at)
+      ORDER BY hour ASC
+    `, { replacements: { branchId, today }, type: db.sequelize.QueryTypes.SELECT }),
+    db.sequelize.query(`
+      SELECT DATE(so.created_at) AS day,
+        COALESCE(SUM(${SQL_NET_REVENUE}), 0) AS revenue,
+        COUNT(DISTINCT so.id) AS orders
+      FROM sales_orders so
+      JOIN sales_order_items soi ON soi.sales_order_id = so.id
+      WHERE so.branch_id = :branchId
+        AND so.status IN (${SOLD_STATUS_IN})
+        AND so.created_at >= :weekStart
+      GROUP BY DATE(so.created_at)
+      ORDER BY day ASC
+    `, { replacements: { branchId, weekStart }, type: db.sequelize.QueryTypes.SELECT }),
+    SalesOrder.count({
+      where: {
+        branch_id: branchId,
+        status: { [Op.in]: ['partially_returned', 'fully_returned'] },
+        updated_at: { [Op.gte]: today },
+      },
+    }).catch(() => 0),
+  ]);
 
   const lowStock = balances.filter((b) => {
     const reorder = parseFloat(b.variant?.reorder_level || 0);
     return reorder > 0 && parseFloat(b.quantity) <= reorder;
   }).slice(0, 10);
 
-  const bestSellers = await db.sequelize.query(`
-    SELECT soi.product_name,
-      SUM(${SQL_NET_QTY}) as totalQty,
-      SUM(${SQL_NET_REVENUE}) as revenue
-    FROM sales_order_items soi
-    JOIN sales_orders so ON soi.sales_order_id = so.id
-    WHERE so.branch_id = :branchId AND so.status IN (${SOLD_STATUS_IN}) AND so.created_at >= :monthStart
-    GROUP BY soi.product_name ORDER BY revenue DESC LIMIT 5
-  `, { replacements: { branchId, monthStart }, type: db.sequelize.QueryTypes.SELECT });
+  const outOfStock = balances.filter((b) => parseFloat(b.quantity) <= 0).length;
 
-  const todayExpenses = await Expense.sum('amount', {
-    where: { branch_id: branchId, expense_date: today.toISOString().slice(0, 10) },
-  }) || 0;
+  const hourMap = new Map(hourlySales.map((row) => [Number(row.hour), {
+    hour: Number(row.hour),
+    revenue: parseFloat(row.revenue || 0),
+    orders: Number(row.orders || 0),
+  }]));
+  const hours = [];
+  for (let h = 8; h <= 22; h += 1) {
+    hours.push(hourMap.get(h) || { hour: h, revenue: 0, orders: 0 });
+  }
 
-  const profitRows = await db.sequelize.query(`
-    SELECT COALESCE(SUM(${SQL_PROFIT}), 0) AS profit
-    FROM sales_order_items soi
-    JOIN sales_orders so ON soi.sales_order_id = so.id
-    WHERE so.branch_id = :branchId
-      AND so.status IN (${SOLD_STATUS_IN})
-      AND so.created_at >= :today
-  `, {
-    replacements: { branchId, today },
-    type: db.sequelize.QueryTypes.SELECT,
-  });
+  const weekMap = new Map(weekTrend.map((row) => [String(row.day).slice(0, 10), {
+    day: String(row.day).slice(0, 10),
+    revenue: parseFloat(row.revenue || 0),
+    orders: Number(row.orders || 0),
+  }]));
+  const week = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    const key = dayKey(d);
+    week.push(weekMap.get(key) || { day: key, revenue: 0, orders: 0 });
+  }
+
+  const salesDeltaPct = yesterdaySalesOnly > 0
+    ? ((todaySales - yesterdaySalesOnly) / yesterdaySalesOnly) * 100
+    : (todaySales > 0 ? 100 : 0);
+
+  const avgTicket = ordersCount > 0 ? todaySales / ordersCount : 0;
 
   return {
     todaySales,
+    yesterdaySales: yesterdaySalesOnly,
+    salesDeltaPct: Math.round(salesDeltaPct * 10) / 10,
     monthSales,
     ordersCount,
-    todayProfit: parseFloat(profitRows[0]?.profit || 0) - parseFloat(todayExpenses),
-    lowStock,
-    bestSellers,
-    recentTransactions: recent,
+    yesterdayOrdersCount,
+    monthOrdersCount,
+    avgTicket,
+    todayProfit: todayGrossProfit - todayExpenses,
+    monthProfit: monthGrossProfit - monthExpenses,
+    todayExpenses,
+    monthExpenses,
+    heldCount: Number(heldCount || 0),
+    customersCount: Number(customersCount || 0),
+    returnsToday: Number(returnsToday || 0),
+    outOfStockCount: outOfStock,
+    lowStockCount: lowStock.length,
+    lowStock: lowStock.map((b) => ({
+      id: b.variant_id || b.variant?.id,
+      sku: b.variant?.sku || null,
+      name: b.variant?.product?.name || 'Item',
+      quantity: parseFloat(b.quantity || 0),
+      reorderLevel: parseFloat(b.variant?.reorder_level || 0),
+    })),
+    bestSellers: bestSellers.map((row) => ({
+      product_name: row.product_name,
+      totalQty: parseFloat(row.totalQty || 0),
+      revenue: parseFloat(row.revenue || 0),
+    })),
+    paymentBreakdown: paymentBreakdown.map((row) => ({
+      mode: row.mode,
+      amount: parseFloat(row.amount || 0),
+      count: Number(row.count || 0),
+    })),
+    hourlySales: hours,
+    weekTrend: week,
+    recentTransactions: recent.map((tx) => {
+      const r = tx.toJSON ? tx.toJSON() : tx;
+      return {
+        id: r.id,
+        bill_number: r.bill_number,
+        total_amount: Number(r.total_amount || 0),
+        created_at: r.created_at,
+        status: r.status,
+        customerName: r.customer?.name || null,
+      };
+    }),
   };
 }
 

@@ -7,6 +7,7 @@ import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import { fetchReturns, type ReturnListItem } from '../../services/businessService';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { formatBillListDate, getCreatedAt } from '../../utils/formatDate';
 import { colors } from '../../theme/colors';
@@ -15,6 +16,7 @@ import { common, spacing, typography } from '../../theme/layout';
 type Props = NativeStackScreenProps<MainStackParamList, 'ReturnsList'>;
 
 export default function ReturnsListScreen({ navigation }: Props) {
+  const t = useT();
   const [items, setItems] = useState<ReturnListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -26,9 +28,9 @@ export default function ReturnsListScreen({ navigation }: Props) {
       setItems(result?.items || []);
     } catch (err) {
       setItems([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load credit notes'));
+      Alert.alert(t('Load failed'), apiError(err, 'Could not load credit notes'));
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     setLoading(true);
@@ -55,7 +57,7 @@ export default function ReturnsListScreen({ navigation }: Props) {
     <View style={common.screen}>
       <View style={styles.hint}>
         <Text style={styles.hintText}>
-          Credit notes created from sales returns. Tap a row to open the original bill.
+          {t('Credit notes created from sales returns. Tap a row to open the original bill.')}
         </Text>
       </View>
 
@@ -68,8 +70,8 @@ export default function ReturnsListScreen({ navigation }: Props) {
           loading ? null : (
             <EmptyState
               icon="file-restore-outline"
-              title="No credit notes yet"
-              subtitle="Process a return from Sales or use New return"
+              title={t('No credit notes yet')}
+              subtitle={t('Process a return from Sales or use New return')}
             />
           )
         }
@@ -82,8 +84,8 @@ export default function ReturnsListScreen({ navigation }: Props) {
             <ListRow
               title={title}
               subtitle={[
-                billNo ? `Bill ${billNo}` : null,
-                mode,
+                billNo ? t('Bill {{number}}', { number: billNo }) : null,
+                t(mode),
                 formatBillListDate(getCreatedAt(item)),
               ].filter(Boolean).join(' · ')}
               icon="file-restore-outline"
@@ -103,7 +105,7 @@ export default function ReturnsListScreen({ navigation }: Props) {
 
       <FAB
         icon="plus"
-        label="New return"
+        label={t('New return')}
         style={common.fab}
         color={colors.textOnPrimary}
         onPress={() => navigation.navigate('Return', {})}
@@ -118,7 +120,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
+    borderBottomColor: colors.border,
   },
   hintText: { ...typography.caption, color: colors.textSecondary },
   emptyList: { flexGrow: 1 },

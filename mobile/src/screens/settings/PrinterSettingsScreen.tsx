@@ -9,15 +9,8 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import {
-  ActivityIndicator,
-  Button,
-  Dialog,
-  Portal,
-  SegmentedButtons,
-  Text,
-  TextInput,
-} from 'react-native-paper';
+import { ActivityIndicator, Button, Dialog, Portal, SegmentedButtons, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import SectionCard from '../../components/ui/SectionCard';
 import ScreenSearch from '../../components/ui/ScreenSearch';
@@ -30,12 +23,14 @@ import {
   type PrinterSettings,
   type PrinterType,
 } from '../../store/printerStore';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing, typography } from '../../theme/layout';
+import { common, radius, spacing, typography, dialogCard} from '../../theme/layout';
 
 type BtDevice = { name: string; address: string };
 
 export default function PrinterSettingsScreen() {
+  const t = useT();
   const [settings, setSettings] = useState<PrinterSettings>({
     type: 'bluetooth',
     paperSize: '80',
@@ -73,9 +68,9 @@ export default function PrinterSettingsScreen() {
     setSaving(true);
     try {
       await savePrinterSettings(settings);
-      Alert.alert('Saved', 'Printer settings saved.');
+      Alert.alert(t('Saved'), t('Printer settings saved.'));
     } catch (err: unknown) {
-      Alert.alert('Save failed', err instanceof Error ? err.message : 'Error');
+      Alert.alert(t('Save failed'), err instanceof Error ? t(err.message) : t('Error'));
     } finally {
       setSaving(false);
     }
@@ -90,7 +85,7 @@ export default function PrinterSettingsScreen() {
       const scanOk = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED;
       const connectOk = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
       if (!scanOk || !connectOk) {
-        Alert.alert('Permission', 'Bluetooth scan and connect permission required');
+        Alert.alert(t('Permission'), t('Bluetooth scan and connect permission required'));
         return;
       }
     }
@@ -99,10 +94,10 @@ export default function PrinterSettingsScreen() {
       const list = await scanBluetoothPrinters();
       if (!list.length) {
         Alert.alert(
-          'No devices',
+          t('No devices'),
           Platform.OS === 'ios'
-            ? 'Turn the printer on and keep it close, then scan again. iPhone can only use printers that support Bluetooth LE (BLE); do not pair it in iPhone Settings.'
-            : 'Pair printer in Bluetooth settings first, then scan again.',
+            ? t('Turn the printer on and keep it close, then scan again. iPhone can only use printers that support Bluetooth LE (BLE); do not pair it in iPhone Settings.')
+            : t('Pair printer in Bluetooth settings first, then scan again.'),
         );
         return;
       }
@@ -110,7 +105,7 @@ export default function PrinterSettingsScreen() {
       setSearch('');
       setPickerOpen(true);
     } catch (err: unknown) {
-      Alert.alert('Scan failed', err instanceof Error ? err.message : 'Bluetooth error');
+      Alert.alert(t('Scan failed'), err instanceof Error ? t(err.message) : t('Bluetooth error'));
     } finally {
       setScanning(false);
     }
@@ -141,9 +136,9 @@ export default function PrinterSettingsScreen() {
     try {
       await savePrinterSettings(settings);
       await testPrint();
-      Alert.alert('Success', 'Test print sent.');
+      Alert.alert(t('Success'), t('Test print sent.'));
     } catch (err: unknown) {
-      Alert.alert('Print failed', err instanceof Error ? err.message : 'Error');
+      Alert.alert(t('Print failed'), err instanceof Error ? t(err.message) : t('Error'));
     } finally {
       setTesting(false);
     }
@@ -163,7 +158,7 @@ export default function PrinterSettingsScreen() {
     return d.name.toLowerCase().includes(q) || d.address.toLowerCase().includes(q);
   });
 
-  const selectedLabel = settings.bluetoothName || 'Select Bluetooth printer';
+  const selectedLabel = settings.bluetoothName || t('Select Bluetooth printer');
   const selectedAddress = settings.bluetoothAddress || '';
 
   return (
@@ -174,42 +169,42 @@ export default function PrinterSettingsScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       >
-        <Text style={styles.title}>Billing Printer</Text>
+        <Text style={styles.title}>{t('Billing Printer')}</Text>
         <Text style={styles.subtitle}>
-          Receipt / bill printer only. Barcode labels use a separate printer on the Barcode label screen.
+          {t('Receipt / bill printer only. Barcode labels use a separate printer on the Barcode label screen.')}
         </Text>
 
-        <SectionCard title="Printer type" icon="printer">
+        <SectionCard title={t('Printer type')} icon="printer">
           <SegmentedButtons
             value={settings.type}
             onValueChange={(v) => setSettings({ ...settings, type: v as PrinterType })}
             buttons={[
-              { value: 'bluetooth', label: 'Bluetooth', icon: 'bluetooth' },
-              { value: 'network', label: 'Wi-Fi / LAN', icon: 'wifi' },
+              { value: 'bluetooth', label: t('Bluetooth'), icon: 'bluetooth' },
+              { value: 'network', label: t('Wi-Fi / LAN'), icon: 'wifi' },
             ]}
           />
         </SectionCard>
 
-        <SectionCard title="Paper size" icon="file-outline">
+        <SectionCard title={t('Paper size')} icon="file-outline">
           <Text style={styles.paperHint}>
-            Must match your printer roll (wrong size adds blank wrap lines)
+            {t('Must match your printer roll (wrong size adds blank wrap lines)')}
           </Text>
           <SegmentedButtons
             value={settings.paperSize}
             onValueChange={(v) => setSettings({ ...settings, paperSize: v as PaperSize })}
             buttons={[
-              { value: '58', label: '58mm' },
-              { value: '80', label: '80mm' },
+              { value: '58', label: t('58mm') },
+              { value: '80', label: t('80mm') },
             ]}
           />
         </SectionCard>
 
         {settings.type === 'bluetooth' && (
-          <SectionCard title="Bluetooth printer" icon="bluetooth">
+          <SectionCard title={t('Bluetooth printer')} icon="bluetooth">
             <Pressable onPress={handleOpenPicker}>
               <View pointerEvents="none">
-                <TextInput
-                  label="Selected printer"
+                <AppTextInput
+                  label={t('Selected printer')}
                   value={selectedLabel}
                   mode="outlined"
                   editable={false}
@@ -221,13 +216,13 @@ export default function PrinterSettingsScreen() {
 
             {selectedAddress ? (
               <View style={styles.addressBox}>
-                <Text style={styles.addressLabel}>Printer address</Text>
+                <Text style={styles.addressLabel}>{t('Printer address')}</Text>
                 <Text style={styles.addressValue} selectable>
                   {selectedAddress}
                 </Text>
               </View>
             ) : (
-              <Text style={styles.hint}>Scan and choose a printer. Address will appear here.</Text>
+              <Text style={styles.hint}>{t('Scan and choose a printer. Address will appear here.')}</Text>
             )}
 
             <Button
@@ -237,7 +232,7 @@ export default function PrinterSettingsScreen() {
               icon="bluetooth"
               style={styles.scanBtn}
             >
-              Scan printers
+              {t('Scan printers')}
             </Button>
             <Button
               mode="contained-tonal"
@@ -246,18 +241,18 @@ export default function PrinterSettingsScreen() {
               disabled={scanning}
               style={styles.scanBtn}
             >
-              Choose from list
+              {t('Choose from list')}
             </Button>
           </SectionCard>
         )}
 
         {settings.type === 'network' && (
-          <SectionCard title="Wi-Fi / LAN printer" icon="wifi">
+          <SectionCard title={t('Wi-Fi / LAN printer')} icon="wifi">
             <Text style={styles.hint}>
-              For Wi-Fi or Ethernet thermal receipt printers (ESC/POS). The phone and printer must be on the same network. Leave the port empty for most printers (9100).
+              {t('For Wi-Fi or Ethernet thermal receipt printers (ESC/POS). The phone and printer must be on the same network. Leave the port empty for most printers (9100).')}
             </Text>
-            <TextInput
-              label="Printer address (IP)"
+            <AppTextInput
+              label={t('Printer address (IP)')}
               value={settings.networkHost || ''}
               onChangeText={(v) => setSettings({ ...settings, networkHost: v })}
               mode="outlined"
@@ -268,8 +263,8 @@ export default function PrinterSettingsScreen() {
               autoCorrect={false}
               returnKeyType="done"
             />
-            <TextInput
-              label="Port (optional)"
+            <AppTextInput
+              label={t('Port (optional)')}
               value={settings.networkPort ? String(settings.networkPort) : ''}
               placeholder="9100"
               onChangeText={(v) => setSettings({ ...settings, networkPort: parseInt(v, 10) || undefined })}
@@ -289,7 +284,7 @@ export default function PrinterSettingsScreen() {
             loading={saving}
             disabled={saving || testing}
           >
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving ? t('Saving...') : t('Save Settings')}
           </Button>
           <Button
             mode="outlined"
@@ -299,7 +294,7 @@ export default function PrinterSettingsScreen() {
             disabled={saving || testing}
             style={styles.testBtn}
           >
-            {testing ? 'Printing...' : 'Test Print'}
+            {testing ? t('Printing...') : t('Test Print')}
           </Button>
         </View>
       </ScrollView>
@@ -310,12 +305,12 @@ export default function PrinterSettingsScreen() {
           onDismiss={() => setPickerOpen(false)}
           style={styles.dialog}
         >
-          <Dialog.Title>Select Bluetooth printer</Dialog.Title>
+          <Dialog.Title>{t('Select Bluetooth printer')}</Dialog.Title>
           <Dialog.Content style={styles.dialogContent}>
             <ScreenSearch
               value={search}
               onChangeText={setSearch}
-              placeholder="Search name or address..."
+              placeholder={t('Search name or address...')}
               embedded
             />
             <ScrollView style={styles.deviceScroll} keyboardShouldPersistTaps="handled">
@@ -329,7 +324,7 @@ export default function PrinterSettingsScreen() {
                   >
                     <View style={styles.deviceText}>
                       <Text style={[styles.deviceName, active && styles.deviceNameOn]} numberOfLines={1}>
-                        {d.name || 'Unknown printer'}
+                        {d.name || t('Unknown printer')}
                       </Text>
                       <Text style={styles.deviceAddress} numberOfLines={1}>
                         {d.address}
@@ -339,13 +334,13 @@ export default function PrinterSettingsScreen() {
                   </Pressable>
                 );
               })}
-              {!filteredDevices.length ? <Text style={styles.noMatch}>No matching printers</Text> : null}
+              {!filteredDevices.length ? <Text style={styles.noMatch}>{t('No matching printers')}</Text> : null}
             </ScrollView>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setPickerOpen(false)}>Cancel</Button>
+            <Button onPress={() => setPickerOpen(false)}>{t('Cancel')}</Button>
             <Button onPress={handleScan} loading={scanning}>
-              Rescan
+              {t('Rescan')}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -368,7 +363,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.primaryLight,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   addressLabel: {
     ...typography.caption,
@@ -383,7 +378,7 @@ const styles = StyleSheet.create({
   },
   actions: { marginTop: spacing.xl, gap: spacing.sm },
   testBtn: { marginTop: spacing.sm },
-  dialog: { borderRadius: radius.lg, backgroundColor: colors.surface },
+  dialog: { ...dialogCard },
   dialogContent: { maxHeight: 420, paddingHorizontal: spacing.lg },
   deviceScroll: { maxHeight: 320 },
   deviceRow: {
@@ -391,8 +386,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
     gap: spacing.sm,
   },
   deviceRowOn: { backgroundColor: colors.primaryLight, borderRadius: radius.sm },

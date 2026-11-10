@@ -1,8 +1,14 @@
+import { Platform } from 'react-native';
 import { MD3LightTheme, configureFonts } from 'react-native-paper';
 import { colors } from './colors';
 
 const fontConfig = configureFonts({
-  config: { fontFamily: 'System' },
+  config: {
+    fontFamily:
+      Platform.OS === 'web'
+        ? '"Nirmala UI", "Noto Sans Devanagari", "Kohinoor Devanagari", Mukta, sans-serif'
+        : 'System',
+  },
 });
 
 export const theme = {
@@ -45,4 +51,4 @@ export const theme = {
 };
 
 export { colors };
-export { spacing, radius, shadow, common, typography } from './layout';
+export { spacing, radius, shadow, common, typography, dialogCard } from './layout';

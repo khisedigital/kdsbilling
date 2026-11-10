@@ -326,6 +326,34 @@ async function importMasterProducts(req, res) {
   res.json({ success: true, data });
 }
 
+async function importMasterCategories(req, res) {
+  const rows = Array.isArray(req.body) ? req.body : req.body?.rows;
+  const data = await platformService.importMasterCategories({
+    businessTypeId: req.body?.businessTypeId,
+    rows,
+  });
+  res.json({ success: true, data });
+}
+
+async function importMasterBrands(req, res) {
+  const rows = Array.isArray(req.body) ? req.body : req.body?.rows;
+  const data = await platformService.importMasterBrands({
+    businessTypeId: req.body?.businessTypeId,
+    rows,
+  });
+  res.json({ success: true, data });
+}
+
+async function searchOpenFoodFacts(req, res) {
+  const data = await platformService.searchOpenFoodFacts(req.query);
+  res.json({ success: true, data });
+}
+
+async function importOpenFoodMaster(req, res) {
+  const data = await platformService.importOpenFoodToMaster(req.body?.businessTypeId, req.body);
+  res.json({ success: true, data });
+}
+
 module.exports = {
   login,
   verifyAuth,
@@ -375,4 +403,8 @@ module.exports = {
   updateMasterProduct,
   deleteMasterProduct,
   importMasterProducts,
+  importMasterCategories,
+  importMasterBrands,
+  searchOpenFoodFacts,
+  importOpenFoodMaster,
 };

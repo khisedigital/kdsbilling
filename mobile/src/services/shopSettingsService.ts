@@ -3,8 +3,10 @@ import { getCachedApiUrl } from '../config/api';
 
 export interface ShopSettings {
   shopName: string;
+  shopNameMr: string;
   shopCode: string;
   address: string;
+  addressMr: string;
   city: string;
   gstin: string;
   phone: string;
@@ -16,12 +18,28 @@ export interface ShopSettings {
 
 export type ShopSettingsUpdate = Partial<{
   shopName: string;
+  shopNameMr: string;
   address: string;
+  addressMr: string;
   city: string;
   gstin: string;
   phone: string;
   billFooter: string;
 }>;
+
+/** Marathi bills and labels use the Marathi name and address when those are filled. */
+export function shopTextForBill(
+  shop: Partial<ShopSettings> | null | undefined,
+  language: 'en' | 'mr',
+): { shopName: string; address: string } {
+  const shopName = (shop?.shopName || '').trim();
+  const address = (shop?.address || '').trim();
+  if (language !== 'mr') return { shopName, address };
+  return {
+    shopName: (shop?.shopNameMr || '').trim() || shopName,
+    address: (shop?.addressMr || '').trim() || address,
+  };
+}
 
 /** Resolve relative /uploads/... URLs against the API host (without /api/v1). */
 export function resolveUploadUrl(pathOrUrl: string | null | undefined): string | null {

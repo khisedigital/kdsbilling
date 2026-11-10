@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Searchbar } from 'react-native-paper';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
 
@@ -22,10 +23,11 @@ export default function ScreenSearch({
   loading,
   embedded,
 }: Props) {
+  const t = useT();
   return (
     <View style={[styles.wrap, embedded && styles.embedded]}>
       <Searchbar
-        placeholder={placeholder}
+        placeholder={t(placeholder)}
         value={value}
         onChangeText={onChangeText}
         onSubmitEditing={onSubmit}
@@ -47,7 +49,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   input: { fontSize: 15, minHeight: 0 },
 });

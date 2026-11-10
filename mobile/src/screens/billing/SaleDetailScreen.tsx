@@ -8,17 +8,20 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import { Button, Text, TextInput } from 'react-native-paper';
+import { Button, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CommonActions, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
 import BottomBar from '../../components/ui/BottomBar';
 import { fetchBill, voidBill } from '../../services/businessService';
 import type { BillDetail } from '../../services/businessService';
 import { printReceipt } from '../../print/receiptPrinter';
 import { useCartStore } from '../../store/cartStore';
 import { canProcessReturn, itemRemainingQty } from '../../utils/billStatus';
+import { totalSaving } from '../../utils/billSaving';
 import { formatDateTime, getCreatedAt, parseApiDate } from '../../utils/formatDate';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing } from '../../theme/layout';
@@ -52,6 +55,7 @@ function formatQty(q: string | number) {
 }
 
 export default function SaleDetailScreen({ route, navigation }: Props) {
+  const t = useT();
   const { billId, fromSale } = route.params;
   const [bill, setBill] = useState<BillDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -119,8 +123,8 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
       await printReceipt(billId);
     } catch (err: unknown) {
       const message =
-        err instanceof Error ? err.message : 'Could not print receipt. Check printer settings.';
-      Alert.alert('Print failed', message);
+        err instanceof Error ? err.message : t('Could not print receipt. Check printer settings.');
+      Alert.alert(t('Print failed'), message);
     } finally {
       setPrinting(false);
     }
@@ -141,13 +145,13 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
 
   const handleVoid = () => {
     if (!voidReason.trim()) {
-      Alert.alert('Reason required', 'Please enter a reason to void this bill.');
+      Alert.alert(t('Reason required'), t('Please enter a reason to void this bill.'));
       return;
     }
-    Alert.alert('Void this bill?', 'Stock will be restored. This cannot be undone.', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(t('Void this bill?'), t('Stock will be restored. This cannot be undone.'), [
+      { text: t('Cancel'), style: 'cancel' },
       {
-        text: 'Void bill',
+        text: t('Void bill'),
         style: 'destructive',
         onPress: async () => {
           setVoiding(true);
@@ -157,8 +161,8 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
           } catch (err: unknown) {
             const msg =
               (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data
-                ?.error?.message || 'Void failed';
-            Alert.alert('Error', msg);
+                ?.error?.message || t('Void failed');
+            Alert.alert(t('Error'), msg);
           } finally {
             setVoiding(false);
           }
@@ -171,7 +175,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Loading bill…</Text>
+        <Text style={styles.loadingText}>{t('Loading bill…')}</Text>
       </View>
     );
   }
@@ -180,9 +184,9 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
     return (
       <View style={styles.center}>
         <Icon name="file-alert-outline" size={48} color={colors.textMuted} />
-        <Text style={styles.errorText}>{error || 'Bill not found'}</Text>
+        <Text style={styles.errorText}>{error ? t('Could not load bill details') : t('Bill not found')}</Text>
         <Button mode="contained" onPress={() => load()} style={styles.retryBtn}>
-          Retry
+          {t('Retry')}
         </Button>
       </View>
     );
@@ -201,8 +205,12 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
   const changeAmt = parseFloat(String(bill.change_amount || 0));
   const discAmt = parseFloat(String(bill.discount_amount || 0));
   const roundAmt = parseFloat(String(bill.round_off_amount ?? 0));
+  const youSaved = totalSaving(items);
   const paymentSummary = payments
-    .map((p) => PAYMENT_LABELS[p.payment_mode] || p.payment_mode)
+    .map((p) => {
+      const label = PAYMENT_LABELS[p.payment_mode];
+      return label ? t(label) : p.payment_mode;
+    })
     .join(' · ');
 
   return (
@@ -216,13 +224,13 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
             <View style={styles.successIcon}>
               <Icon name="check" size={32} color={colors.textOnPrimary} />
             </View>
-            <Text style={styles.successTitle}>Sale complete</Text>
+            <Text style={styles.successTitle}>{t('Sale complete')}</Text>
             <Text style={styles.successAmount}>{money(bill.total_amount)}</Text>
             <Text style={styles.successBill}>{bill.bill_number}</Text>
             {changeAmt > 0 ? (
               <View style={styles.changePill}>
                 <Icon name="hand-coin-outline" size={16} color={colors.secondaryDark} />
-                <Text style={styles.changePillText}>Change {money(changeAmt)}</Text>
+                <Text style={styles.changePillText}>{t('Change {{amount}}', { amount: money(changeAmt) })}</Text>
               </View>
             ) : null}
           </View>
@@ -231,7 +239,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
             <View style={styles.heroTop}>
               <View style={[styles.statusBadge, { backgroundColor: status.bg }]}>
                 <Icon name={status.icon} size={14} color={status.color} />
-                <Text style={[styles.statusText, { color: status.color }]}>{status.label}</Text>
+                <Text style={[styles.statusText, { color: status.color }]}>{t(status.label)}</Text>
               </View>
               {date ? (
                 <Text style={styles.heroDate}>
@@ -252,19 +260,19 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
         <View style={styles.facts}>
           {fromSale && bill.customer?.name ? (
             <View style={styles.fact}>
-              <Text style={styles.factLbl}>Customer</Text>
+              <Text style={styles.factLbl}>{t('Customer')}</Text>
               <Text style={styles.factVal} numberOfLines={1}>{bill.customer.name}</Text>
             </View>
           ) : null}
           {paymentSummary ? (
             <View style={styles.fact}>
-              <Text style={styles.factLbl}>Paid by</Text>
+              <Text style={styles.factLbl}>{t('Paid by')}</Text>
               <Text style={styles.factVal}>{paymentSummary}</Text>
             </View>
           ) : null}
           {!fromSale && bill.customer?.phone ? (
             <View style={styles.fact}>
-              <Text style={styles.factLbl}>Phone</Text>
+              <Text style={styles.factLbl}>{t('Phone')}</Text>
               <Text style={styles.factVal}>{bill.customer.phone}</Text>
             </View>
           ) : null}
@@ -272,7 +280,9 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
 
         {/* Items */}
         <Text style={styles.sectionTitle}>
-          {items.length} item{items.length === 1 ? '' : 's'}
+          {items.length === 1
+            ? t('{{count}} item', { count: items.length })
+            : t('{{count}} items', { count: items.length })}
         </Text>
         <View style={styles.card}>
           {items.map((item, idx) => {
@@ -288,7 +298,10 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
                   </Text>
                   {returned > 0.0005 ? (
                     <Text style={styles.itemNote}>
-                      Returned {formatQty(returned)} · Left {formatQty(left)}
+                      {t('Returned {{returned}} · Left {{left}}', {
+                        returned: formatQty(returned),
+                        left: formatQty(left),
+                      })}
                     </Text>
                   ) : null}
                 </View>
@@ -299,22 +312,22 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
 
           <View style={styles.totals}>
             <View style={styles.sumRow}>
-              <Text style={styles.sumLbl}>Subtotal</Text>
+              <Text style={styles.sumLbl}>{t('Subtotal')}</Text>
               <Text style={styles.sumVal}>{money(bill.subtotal)}</Text>
             </View>
             {discAmt > 0 ? (
               <View style={styles.sumRow}>
-                <Text style={styles.sumLbl}>Discount</Text>
+                <Text style={styles.sumLbl}>{t('Discount')}</Text>
                 <Text style={styles.discVal}>−{money(discAmt)}</Text>
               </View>
             ) : null}
             <View style={styles.sumRow}>
-              <Text style={styles.sumLbl}>Tax</Text>
+              <Text style={styles.sumLbl}>{t('Tax')}</Text>
               <Text style={styles.sumVal}>{money(bill.tax_amount)}</Text>
             </View>
             {Math.abs(roundAmt) >= 0.005 ? (
               <View style={styles.sumRow}>
-                <Text style={styles.sumLbl}>Round off</Text>
+                <Text style={styles.sumLbl}>{t('Round off')}</Text>
                 <Text style={styles.sumVal}>
                   {roundAmt > 0 ? '+' : '−'}
                   {money(Math.abs(roundAmt))}
@@ -322,9 +335,15 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
               </View>
             ) : null}
             <View style={[styles.sumRow, styles.grandRow]}>
-              <Text style={styles.grandLbl}>Total</Text>
+              <Text style={styles.grandLbl}>{t('Total')}</Text>
               <Text style={styles.grandVal}>{money(bill.total_amount)}</Text>
             </View>
+            {youSaved > 0 ? (
+              <View style={styles.saveRow}>
+                <Text style={styles.saveLbl}>{t('Total saving')}</Text>
+                <Text style={styles.saveVal}>{money(youSaved)}</Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -335,7 +354,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
               onPress={() => setShowReturns((v) => !v)}
               style={styles.accordion}>
               <Text style={styles.accordionTitle}>
-                Credit notes · {returns.length}
+                {t('Credit notes · {{count}}', { count: returns.length })}
               </Text>
               <Icon
                 name={showReturns ? 'chevron-up' : 'chevron-down'}
@@ -364,7 +383,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
                         const name =
                           ri.salesOrderItem?.product_name
                           || ri.sales_order_item?.product_name
-                          || 'Item';
+                          || t('Item');
                         return (
                           <View key={ri.id} style={styles.returnLine}>
                             <Text style={styles.returnItem} numberOfLines={1}>
@@ -386,7 +405,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
           <View style={styles.voidBanner}>
             <Icon name="alert-circle-outline" size={20} color={colors.error} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.voidTitle}>Voided</Text>
+              <Text style={styles.voidTitle}>{t('Voided')}</Text>
               <Text style={styles.voidReason}>{bill.void_reason}</Text>
             </View>
           </View>
@@ -404,7 +423,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
               style={styles.actionBtn}
               contentStyle={styles.actionContent}
               labelStyle={styles.printLabel}>
-              Print bill
+              {t('Print bill')}
             </Button>
             {showProcessReturn ? (
               <Button
@@ -414,7 +433,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
                 style={styles.actionBtn}
                 contentStyle={styles.actionContent}
                 textColor={colors.primary}>
-                Process return
+                {t('Process return')}
               </Button>
             ) : null}
           </View>
@@ -425,14 +444,14 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
           <>
             <Pressable onPress={() => setShowVoid((v) => !v)} style={styles.voidToggle}>
               <Text style={styles.voidToggleText}>
-                {showVoid ? 'Hide void option' : 'Need to void this bill?'}
+                {showVoid ? t('Hide void option') : t('Need to void this bill?')}
               </Text>
             </Pressable>
             {showVoid ? (
               <View style={styles.voidPanel}>
-                <Text style={styles.voidHint}>Stock will be restored. This cannot be undone.</Text>
-                <TextInput
-                  label="Reason"
+                <Text style={styles.voidHint}>{t('Stock will be restored. This cannot be undone.')}</Text>
+                <AppTextInput
+                  label={t('Reason')}
                   value={voidReason}
                   onChangeText={setVoidReason}
                   mode="outlined"
@@ -447,7 +466,7 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
                   loading={voiding}
                   buttonColor={colors.error}
                   style={styles.actionBtn}>
-                  Void bill
+                  {t('Void bill')}
                 </Button>
               </View>
             ) : null}
@@ -458,14 +477,14 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
       {fromSale ? (
         <BottomBar
           primary={{
-            label: 'New bill',
+            label: t('New bill'),
             onPress: handleDone,
             icon: 'plus',
             color: colors.primary,
           }}
           secondary={[
             {
-              label: printing ? 'Printing…' : 'Print',
+              label: printing ? t('Printing…') : t('Print'),
               onPress: handlePrint,
               icon: 'printer',
               disabled: printing,
@@ -589,7 +608,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm + 2,
     minWidth: '46%',
@@ -609,7 +628,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     marginBottom: spacing.lg,
@@ -619,14 +638,14 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingVertical: spacing.md,
   },
-  rowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderLight },
+  rowBorder: { borderTopWidth: 1, borderTopColor: colors.border },
   itemName: { fontSize: 15, fontWeight: '600', color: colors.text, lineHeight: 20 },
   itemMeta: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
   itemNote: { fontSize: 11, color: colors.secondary, marginTop: 2, fontWeight: '600' },
   itemTotal: { fontSize: 15, fontWeight: '700', color: colors.text },
   totals: {
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
+    borderTopColor: colors.border,
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
     gap: 4,
@@ -638,11 +657,23 @@ const styles = StyleSheet.create({
   grandRow: {
     marginTop: spacing.sm,
     paddingTop: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderLight,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
   grandLbl: { fontSize: 16, fontWeight: '700', color: colors.text },
   grandVal: { fontSize: 18, fontWeight: '700', color: colors.secondary },
+  saveRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.successLight,
+  },
+  saveLbl: { fontSize: 13, fontWeight: '700', color: colors.secondaryDark },
+  saveVal: { fontSize: 16, fontWeight: '800', color: colors.secondaryDark },
   accordion: {
     flexDirection: 'row',
     alignItems: 'center',

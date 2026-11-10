@@ -8,8 +8,9 @@ import {
   type PeriodMode,
   toDateString,
 } from '../../reports/reportDates';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { dialogCard, radius, spacing } from '../../theme/layout';
 
 type Props = {
   mode: PeriodMode;
@@ -32,6 +33,7 @@ export default function ReportPeriodFilter({
   onAnchorChange,
   onShift,
 }: Props) {
+  const t = useT();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [draftYear, setDraftYear] = useState(anchor.getFullYear());
   const [draftMonth, setDraftMonth] = useState(anchor.getMonth());
@@ -76,7 +78,7 @@ export default function ReportPeriodFilter({
               key={item.id}
               onPress={() => onModeChange(item.id)}
               style={[styles.modeChip, on && styles.modeChipOn]}>
-              <Text style={[styles.modeText, on && styles.modeTextOn]}>{item.label}</Text>
+              <Text style={[styles.modeText, on && styles.modeTextOn]}>{t(item.label)}</Text>
             </Pressable>
           );
         })}
@@ -99,11 +101,11 @@ export default function ReportPeriodFilter({
       <Portal>
         <Dialog visible={pickerOpen} onDismiss={() => setPickerOpen(false)} style={styles.dialog}>
           <Dialog.Title>
-            {mode === 'day' ? 'Select date' : mode === 'month' ? 'Select month' : 'Select year'}
+            {mode === 'day' ? t('Select date') : mode === 'month' ? t('Select month') : t('Select year')}
           </Dialog.Title>
           <Dialog.ScrollArea style={styles.dialogScroll}>
             <ScrollView>
-              <Text style={styles.pickerLabel}>Year</Text>
+              <Text style={styles.pickerLabel}>{t('Year')}</Text>
               <View style={styles.optionGrid}>
                 {yearOptions.map((year) => {
                   const on = draftYear === year;
@@ -120,7 +122,7 @@ export default function ReportPeriodFilter({
 
               {mode !== 'year' ? (
                 <>
-                  <Text style={styles.pickerLabel}>Month</Text>
+                  <Text style={styles.pickerLabel}>{t('Month')}</Text>
                   <View style={styles.optionGrid}>
                     {MONTH_NAMES.map((name, index) => {
                       const on = draftMonth === index;
@@ -130,7 +132,7 @@ export default function ReportPeriodFilter({
                           onPress={() => setDraftMonth(index)}
                           style={[styles.optionChip, styles.monthChip, on && styles.optionChipOn]}>
                           <Text style={[styles.optionText, on && styles.optionTextOn]}>
-                            {name.slice(0, 3)}
+                            {t(name.slice(0, 3))}
                           </Text>
                         </Pressable>
                       );
@@ -141,7 +143,7 @@ export default function ReportPeriodFilter({
 
               {mode === 'day' ? (
                 <>
-                  <Text style={styles.pickerLabel}>Date</Text>
+                  <Text style={styles.pickerLabel}>{t('Date')}</Text>
                   <View style={styles.optionGrid}>
                     {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
                       const on = draftDay === day;
@@ -159,18 +161,17 @@ export default function ReportPeriodFilter({
               ) : null}
 
               <Text style={styles.preview}>
-                Selected:{' '}
                 {mode === 'year'
-                  ? String(draftYear)
+                  ? t('Selected: {{value}}', { value: String(draftYear) })
                   : mode === 'month'
-                    ? `${MONTH_NAMES[draftMonth]} ${draftYear}`
-                    : toDateString(new Date(draftYear, draftMonth, Math.min(draftDay, daysInMonth)))}
+                    ? t('Selected: {{value}}', { value: `${t(MONTH_NAMES[draftMonth])} ${draftYear}` })
+                    : t('Selected: {{value}}', { value: toDateString(new Date(draftYear, draftMonth, Math.min(draftDay, daysInMonth))) })}
               </Text>
             </ScrollView>
           </Dialog.ScrollArea>
           <Dialog.Actions>
-            <Button onPress={() => setPickerOpen(false)}>Cancel</Button>
-            <Button onPress={applyPicker}>Apply</Button>
+            <Button onPress={() => setPickerOpen(false)}>{t('Cancel')}</Button>
+            <Button onPress={applyPicker}>{t('Apply')}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -237,8 +238,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  dialog: { borderRadius: radius.lg, maxHeight: '80%' },
-  dialogScroll: { maxHeight: 420, paddingHorizontal: 0 },
+  dialog: { ...dialogCard, maxHeight: '80%' },
+  dialogScroll: { maxHeight: 320, paddingHorizontal: 0 },
   pickerLabel: {
     fontSize: 12,
     fontWeight: '700',

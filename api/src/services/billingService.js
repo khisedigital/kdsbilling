@@ -170,6 +170,7 @@ async function createBill(db, branchId, userId, payload) {
         sku: line.sku || (isCustom ? 'CUSTOM' : ''),
         quantity: line.quantity,
         unit_price: line.unitPrice,
+        mrp: line.mrp != null ? line.mrp : null,
         cost_price: line.costPrice,
         discount_amount: line.discountAmount,
         discount_percent: line.discountPercent,

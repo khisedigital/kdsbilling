@@ -5,8 +5,10 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from 'react-native-vision-camera';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
 import { matchBarcodeProduct, searchProducts } from '../../services/catalogService';
 import { useProductAddToCart } from '../../hooks/useProductAddToCart';
+import { screenProductName } from '../../utils/productName';
 import { formatQuantity } from '../../utils/quantity';
 import { colors } from '../../theme/colors';
 import { radius, spacing, typography } from '../../theme/layout';
@@ -14,6 +16,7 @@ import { radius, spacing, typography } from '../../theme/layout';
 type Props = NativeStackScreenProps<MainStackParamList, 'BarcodeScanner'>;
 
 export default function BarcodeScannerScreen({ navigation }: Props) {
+  const t = useT();
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
   const [active, setActive] = useState(true);
@@ -34,25 +37,25 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
     try {
       const results = await searchProducts(code);
       if (!results.length) {
-        Alert.alert('Not found', `No product for barcode: ${code}`, [
-          { text: 'Retry', onPress: () => { busyRef.current = false; setActive(true); } },
-          { text: 'Close', onPress: () => navigation.goBack() },
+        Alert.alert(t('Not found'), t('No product for barcode: {{code}}', { code }), [
+          { text: t('Retry'), onPress: () => { busyRef.current = false; setActive(true); } },
+          { text: t('Close'), onPress: () => navigation.goBack() },
         ]);
         return;
       }
       const p = matchBarcodeProduct(results, code) || results[0];
       requestScanAdd(p);
       const qty = p.scannedQuantity && p.scannedQuantity > 0 ? p.scannedQuantity : 1;
-      setNotice(`${p.productName} · +${formatQuantity(qty, p.uom)}`);
+      setNotice(`${screenProductName(p.productName, p.productNameMr)} · +${formatQuantity(qty, p.uom)}`);
       scannedRef.current = { code, at: Date.now() };
       busyRef.current = false;
       setActive(true);
     } catch {
-      Alert.alert('Error', 'Failed to lookup product', [
-        { text: 'OK', onPress: () => { busyRef.current = false; setActive(true); } },
+      Alert.alert(t('Error'), t('Failed to lookup product'), [
+        { text: t('OK'), onPress: () => { busyRef.current = false; setActive(true); } },
       ]);
     }
-  }, [navigation, requestScanAdd]);
+  }, [navigation, requestScanAdd, t]);
 
   const codeScanner = useCodeScanner({
     codeTypes: ['ean-13', 'ean-8', 'code-128', 'code-39', 'qr', 'upc-a', 'upc-e'],
@@ -76,10 +79,10 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
         <View style={styles.permIcon}>
           <Icon name="camera-off" size={40} color={colors.primary} />
         </View>
-        <Text style={styles.permTitle}>Camera access needed</Text>
-        <Text style={styles.permSub}>Allow camera to scan product barcodes</Text>
+        <Text style={styles.permTitle}>{t('Camera access needed')}</Text>
+        <Text style={styles.permSub}>{t('Allow camera to scan product barcodes')}</Text>
         <Button mode="contained" onPress={requestPermission} style={styles.btn} buttonColor={colors.primary}>
-          Grant Permission
+          {t('Grant Permission')}
         </Button>
       </View>
     );
@@ -89,8 +92,8 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
     return (
       <View style={styles.center}>
         <Icon name="camera-off" size={40} color={colors.textMuted} />
-        <Text style={styles.permTitle}>No camera found</Text>
-        <Button onPress={() => navigation.goBack()}>Go Back</Button>
+        <Text style={styles.permTitle}>{t('No camera found')}</Text>
+        <Button onPress={() => navigation.goBack()}>{t('Go Back')}</Button>
       </View>
     );
   }
@@ -114,11 +117,11 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
         <View style={styles.hintBox}>
           <Icon name="barcode-scan" size={20} color="#fff" />
           <Text style={styles.hint} numberOfLines={2}>
-            {notice || 'Scan adds the item to the bill'}
+            {notice || t('Scan adds the item to the bill')}
           </Text>
         </View>
         <Button mode="contained" onPress={() => navigation.goBack()} style={styles.btn} buttonColor={colors.primary}>
-          Done
+          {t('Done')}
         </Button>
       </View>
     </View>

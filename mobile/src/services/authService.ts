@@ -32,6 +32,9 @@ export interface LoginResponse {
     slug: string;
     currencyCode: string;
     countryCode: string;
+    businessTypeId?: string | null;
+    businessTypeCode?: string | null;
+    businessTypeName?: string | null;
   };
 }
 
@@ -67,7 +70,10 @@ export async function logout(refreshToken: string): Promise<void> {
   await api.post('/auth/logout', { refreshToken });
 }
 
-export async function fetchMe() {
+export async function fetchMe(): Promise<{
+  auth: unknown;
+  tenant: LoginResponse['tenant'];
+}> {
   const { data } = await api.get('/auth/me');
   return data.data;
 }

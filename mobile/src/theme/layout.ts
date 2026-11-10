@@ -50,6 +50,16 @@ export const shadow = {
   }),
 };
 
+/** Compact Paper Dialog size — keeps desktop windows from stretching full-width. */
+export const dialogCard = {
+  alignSelf: 'center' as const,
+  width: '92%' as const,
+  maxWidth: 400,
+  marginHorizontal: spacing.lg,
+  borderRadius: radius.lg,
+  backgroundColor: colors.surface,
+};
+
 export const common = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   screenPad: { padding: spacing.lg, paddingBottom: spacing.xxxl * 2 },
@@ -57,7 +67,7 @@ export const common = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     overflow: 'hidden',
     ...shadow.sm,
   },
@@ -66,4 +76,5 @@ export const common = StyleSheet.create({
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   listContent: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
   fab: { position: 'absolute' as const, right: spacing.lg, bottom: spacing.lg, backgroundColor: colors.primary },
+  dialog: { ...dialogCard },
 });

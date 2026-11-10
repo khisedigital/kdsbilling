@@ -62,21 +62,59 @@ function charsForFormat(format) {
   return 42;
 }
 
-function buildReceiptPayload(bill, tenant, shopSettings = {}, publicBaseUrl = null) {
-  const shopName = shopSettings.shopName || tenant.name;
+function billCopy(language) {
+  const mr = language === 'mr';
+  return {
+    taxInvoice: mr ? 'टॅक्स इनव्हॉइस' : 'TAX INVOICE',
+    bill: mr ? 'बिल' : 'Bill',
+    date: mr ? 'तारीख' : 'Date',
+    customer: mr ? 'ग्राहक' : 'Customer',
+    walkIn: mr ? 'काउंटर' : 'Walk-in',
+    item: mr ? 'वस्तू' : 'ITEM',
+    qty: mr ? 'नग' : 'QTY',
+    rate: mr ? 'दर' : 'RATE',
+    amt: mr ? 'रक्कम' : 'AMT',
+    itemWord: mr ? 'वस्तू' : 'Item',
+    qtyWord: mr ? 'नग' : 'Qty',
+    rateWord: mr ? 'दर' : 'Rate',
+    amount: mr ? 'रक्कम' : 'Amount',
+    subtotal: mr ? 'बेरीज' : 'Subtotal',
+    discount: mr ? 'सूट' : 'Discount',
+    tax: mr ? 'कर' : 'Tax',
+    round: mr ? 'राउंड ऑफ' : 'Round off',
+    total: mr ? 'एकूण' : 'TOTAL',
+    change: mr ? 'परत' : 'Change',
+    thanks: mr ? 'धन्यवाद! पुन्हा भेट द्या' : 'Thank you! Visit Again',
+    phone: mr ? 'फोन' : 'Ph',
+  };
+}
+
+const MR_PAY = { cash: 'रोख', upi: 'UPI', card: 'कार्ड', credit: 'उधार', store_credit: 'वॉलेट' };
+
+function payLabel(mode, language) {
+  const raw = String(mode || '').toLowerCase();
+  if (language !== 'mr') return String(mode || '').toUpperCase();
+  return MR_PAY[raw] || String(mode || '');
+}
+
+function buildReceiptPayload(bill, tenant, shopSettings = {}, publicBaseUrl = null, language = 'en') {
+  const mr = language === 'mr';
+  const shopName =
+    (mr && String(shopSettings.shopNameMr || '').trim()) || shopSettings.shopName || tenant.name;
+  const addressMr = mr ? String(shopSettings.addressMr || '').trim() : '';
   const footer = (shopSettings.billFooter || 'Thank you!').trim() || 'Thank you!';
   const phone = String(shopSettings.phone || tenant.owner_mobile || '').trim();
   return {
     shopName,
-    address: shopSettings.address || '',
-    city: shopSettings.city || '',
+    address: addressMr || shopSettings.address || '',
+    city: addressMr ? '' : shopSettings.city || '',
     gstin: shopSettings.gstin || '',
     phone,
     billFooter: footer,
     logoUrl: resolveAbsoluteUrl(shopSettings.logoUrl, publicBaseUrl),
     billNumber: bill.bill_number,
     date: resolveBillDate(bill),
-    customer: bill.customer?.name || 'Walk-in',
+    customer: bill.customer?.name || (language === 'mr' ? 'काउंटर' : 'Walk-in'),
     items: (bill.items || []).map((i) => ({
       name: i.product_name,
       sku: i.sku,
@@ -191,14 +229,15 @@ function ruleLine(charsPerLine, char = '-') {
  *
  * Tags (<CB>, <C>, <B>) are converted to ESC/POS on the mobile / network printer path.
  */
-function pushShopHeader(lines, payload, charsPerLine) {
+function pushShopHeader(lines, payload, charsPerLine, copy) {
   const star = ruleLine(charsPerLine, '=');
   lines.push(star);
 
   // Double-width shop name → wrap at half width so it does not overflow
   const nameWidth = Math.max(12, Math.floor(charsPerLine / 2));
   const shopName = sanitizeThermalText(payload.shopName || 'SHOP').trim() || 'SHOP';
-  pushTaggedWrapped(lines, shopName.toUpperCase(), nameWidth, '<CB>', '</CB>');
+  const shopTitle = /[\u0900-\u097F]/.test(shopName) ? shopName : shopName.toUpperCase();
+  pushTaggedWrapped(lines, shopTitle, nameWidth, '<CB>', '</CB>');
 
   lines.push(star);
 
@@ -207,14 +246,14 @@ function pushShopHeader(lines, payload, charsPerLine) {
     pushTaggedWrapped(lines, addressBlock, charsPerLine, '<C>', '</C>');
   }
   if (payload.phone) {
-    pushTaggedWrapped(lines, `Ph: ${payload.phone}`, charsPerLine, '<C>', '</C>');
+    pushTaggedWrapped(lines, `${copy.phone}: ${payload.phone}`, charsPerLine, '<C>', '</C>');
   }
   if (payload.gstin) {
     pushTaggedWrapped(lines, `GSTIN: ${payload.gstin}`, charsPerLine, '<C>', '</C>');
   }
 
   lines.push(ruleLine(charsPerLine, '-'));
-  lines.push('<C>TAX INVOICE</C>');
+  lines.push(`<C>${copy.taxInvoice}</C>`);
   lines.push(ruleLine(charsPerLine, '-'));
 }
 
@@ -236,13 +275,13 @@ function tableCols(charsPerLine) {
   return { item: 18, qty: 4, rate: 8, amt: 9 };
 }
 
-function tableHeaderLine(charsPerLine) {
+function tableHeaderLine(charsPerLine, copy) {
   const c = tableCols(charsPerLine);
   return (
-    padCell('ITEM', c.item) + ' ' +
-    padCell('QTY', c.qty, 'right') + ' ' +
-    padCell('RATE', c.rate, 'right') + ' ' +
-    padCell('AMT', c.amt, 'right')
+    padCell(copy.item, c.item) + ' ' +
+    padCell(copy.qty, c.qty, 'right') + ' ' +
+    padCell(copy.rate, c.rate, 'right') + ' ' +
+    padCell(copy.amt, c.amt, 'right')
   ).slice(0, charsPerLine);
 }
 
@@ -267,7 +306,7 @@ function tableItemLines(charsPerLine, name, qty, rate, amt) {
   });
 }
 
-function renderThermal(payload, charsPerLine = 32) {
+function renderThermal(payload, charsPerLine = 32, language = 'en') {
   const divider = (ch = '-') => ruleLine(charsPerLine, ch);
   const row = (left, right) => {
     const l = sanitizeThermalText(left);
@@ -276,13 +315,14 @@ function renderThermal(payload, charsPerLine = 32) {
     return l + ' '.repeat(Math.max(1, space)) + r;
   };
 
+  const copy = billCopy(language);
   const lines = [];
-  pushShopHeader(lines, payload, charsPerLine);
-  lines.push(row('Bill', String(payload.billNumber || '')));
-  lines.push(row('Date', formatReceiptDate(payload.date)));
-  lines.push(row('Customer', sanitizeThermalText(payload.customer).slice(0, Math.max(8, charsPerLine - 10))));
+  pushShopHeader(lines, payload, charsPerLine, copy);
+  lines.push(row(copy.bill, String(payload.billNumber || '')));
+  lines.push(row(copy.date, formatReceiptDate(payload.date)));
+  lines.push(row(copy.customer, sanitizeThermalText(payload.customer).slice(0, Math.max(8, charsPerLine - 10))));
   lines.push(divider('='));
-  lines.push(`<B>${tableHeaderLine(charsPerLine)}</B>`);
+  lines.push(`<B>${tableHeaderLine(charsPerLine, copy)}</B>`);
   lines.push(divider('-'));
 
   for (const item of payload.items) {
@@ -290,22 +330,22 @@ function renderThermal(payload, charsPerLine = 32) {
   }
 
   lines.push(divider('='));
-  lines.push(row('Subtotal', formatMoneyThermal(payload.subtotal)));
+  lines.push(row(copy.subtotal, formatMoneyThermal(payload.subtotal)));
   if (payload.discount > 0) {
-    lines.push(row('Discount', `-${formatMoneyThermal(payload.discount)}`));
+    lines.push(row(copy.discount, `-${formatMoneyThermal(payload.discount)}`));
   }
-  lines.push(row('Tax', formatMoneyThermal(payload.tax)));
+  lines.push(row(copy.tax, formatMoneyThermal(payload.tax)));
   if (Math.abs(payload.roundOff || 0) >= 0.005) {
     const ro = payload.roundOff;
-    lines.push(row('Round off', `${ro > 0 ? '+' : '-'}${formatMoneyThermal(Math.abs(ro))}`));
+    lines.push(row(copy.round, `${ro > 0 ? '+' : '-'}${formatMoneyThermal(Math.abs(ro))}`));
   }
-  lines.push(`<B>${row('TOTAL', formatMoneyThermal(payload.total))}</B>`);
+  lines.push(`<B>${row(copy.total, formatMoneyThermal(payload.total))}</B>`);
   lines.push(divider('-'));
   for (const p of payload.payments) {
-    lines.push(row(String(p.mode || '').toUpperCase(), formatMoneyThermal(p.amount)));
+    lines.push(row(payLabel(p.mode, language), formatMoneyThermal(p.amount)));
   }
   if (payload.change > 0) {
-    lines.push(row('Change', formatMoneyThermal(payload.change)));
+    lines.push(row(copy.change, formatMoneyThermal(payload.change)));
   }
   lines.push(divider('='));
 
@@ -314,7 +354,7 @@ function renderThermal(payload, charsPerLine = 32) {
   if (customFooter && !isThankYouFooter) {
     pushTaggedWrapped(lines, customFooter, charsPerLine, '<C>', '</C>');
   }
-  lines.push('<C>Thank you! Visit Again</C>');
+  lines.push(`<C>${copy.thanks}</C>`);
   lines.push(divider('='));
 
   return {
@@ -325,7 +365,8 @@ function renderThermal(payload, charsPerLine = 32) {
   };
 }
 
-function renderA4(payload) {
+function renderA4(payload, language = 'en') {
+  const copy = billCopy(language);
   const itemsHtml = payload.items.map((i) => `
     <tr>
       <td>${escapeHtml(i.name)}${i.sku ? `<br><small style="color:#6b7280">${escapeHtml(i.sku)}</small>` : ''}</td>
@@ -341,12 +382,12 @@ function renderA4(payload) {
   const addressBlock = formatAddressBlock(payload.address, payload.city);
   const metaBits = [
     addressBlock,
-    payload.phone ? `Ph: ${payload.phone}` : '',
+    payload.phone ? `${copy.phone}: ${payload.phone}` : '',
     payload.gstin ? `GSTIN: ${payload.gstin}` : '',
   ].filter(Boolean).map(escapeHtml);
 
   const paymentsHtml = (payload.payments || []).map((p) =>
-    `<div class="pay-row"><span>${escapeHtml(String(p.mode || '').toUpperCase())}</span><span>${formatMoneyHtml(p.amount, payload.currency)}</span></div>`
+    `<div class="pay-row"><span>${escapeHtml(payLabel(p.mode, language))}</span><span>${formatMoneyHtml(p.amount, payload.currency)}</span></div>`
   ).join('');
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -375,29 +416,29 @@ function renderA4(payload) {
       ${logoHtml}
       <h1 class="shop">${escapeHtml(payload.shopName || 'Shop')}</h1>
       ${metaBits.map((m) => `<p class="meta">${m}</p>`).join('')}
-      <p class="doc-title">TAX INVOICE</p>
+      <p class="doc-title">${escapeHtml(copy.taxInvoice)}</p>
     </div>
     <div class="bill-meta">
-      <div><strong>Bill</strong> ${escapeHtml(payload.billNumber)}<br/><strong>Customer</strong> ${escapeHtml(payload.customer)}</div>
-      <div style="text-align:right"><strong>Date</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
+      <div><strong>${escapeHtml(copy.bill)}</strong> ${escapeHtml(payload.billNumber)}<br/><strong>${escapeHtml(copy.customer)}</strong> ${escapeHtml(payload.customer)}</div>
+      <div style="text-align:right"><strong>${escapeHtml(copy.date)}</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
     </div>
-    <table><thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+    <table><thead><tr><th>${escapeHtml(copy.itemWord)}</th><th style="text-align:center">${escapeHtml(copy.qtyWord)}</th><th style="text-align:right">${escapeHtml(copy.rateWord)}</th><th style="text-align:right">${escapeHtml(copy.amount)}</th></tr></thead>
     <tbody>${itemsHtml}</tbody></table>
     <div class="totals">
-      <div class="row"><span>Subtotal</span><span>${formatMoneyHtml(payload.subtotal, payload.currency)}</span></div>
-      ${payload.discount > 0 ? `<div class="row"><span>Discount</span><span>-${formatMoneyHtml(payload.discount, payload.currency)}</span></div>` : ''}
-      <div class="row"><span>Tax</span><span>${formatMoneyHtml(payload.tax, payload.currency)}</span></div>
+      <div class="row"><span>${escapeHtml(copy.subtotal)}</span><span>${formatMoneyHtml(payload.subtotal, payload.currency)}</span></div>
+      ${payload.discount > 0 ? `<div class="row"><span>${escapeHtml(copy.discount)}</span><span>-${formatMoneyHtml(payload.discount, payload.currency)}</span></div>` : ''}
+      <div class="row"><span>${escapeHtml(copy.tax)}</span><span>${formatMoneyHtml(payload.tax, payload.currency)}</span></div>
       ${Math.abs(payload.roundOff || 0) >= 0.005
-        ? `<div class="row"><span>Round off</span><span>${payload.roundOff > 0 ? '+' : '-'}${formatMoneyHtml(Math.abs(payload.roundOff), payload.currency)}</span></div>`
+        ? `<div class="row"><span>${escapeHtml(copy.round)}</span><span>${payload.roundOff > 0 ? '+' : '-'}${formatMoneyHtml(Math.abs(payload.roundOff), payload.currency)}</span></div>`
         : ''}
-      <div class="row grand"><span>TOTAL</span><span>${formatMoneyHtml(payload.total, payload.currency)}</span></div>
+      <div class="row grand"><span>${escapeHtml(copy.total)}</span><span>${formatMoneyHtml(payload.total, payload.currency)}</span></div>
     </div>
     ${paymentsHtml ? `<div class="pay">${paymentsHtml}</div>` : ''}
     <div class="footer">
       ${payload.billFooter && !/^thank you!?$/i.test(String(payload.billFooter).trim())
         ? `<p>${escapeHtml(payload.billFooter)}</p>`
         : ''}
-      <p><strong>Thank you! Visit Again</strong></p>
+      <p><strong>${escapeHtml(copy.thanks)}</strong></p>
     </div>
     </body></html>`;
 
@@ -500,10 +541,11 @@ function thermalMarkupToEscPos(rawText) {
   return Buffer.concat(chunks);
 }
 
-function generatePrint(bill, tenant, format = '80', shopSettings = {}, publicBaseUrl = null) {
-  const payload = buildReceiptPayload(bill, tenant, shopSettings, publicBaseUrl);
-  if (format === 'a4') return renderA4(payload);
-  return renderThermal(payload, charsForFormat(format));
+function generatePrint(bill, tenant, format = '80', shopSettings = {}, publicBaseUrl = null, language = 'en') {
+  const lang = language === 'mr' ? 'mr' : 'en';
+  const payload = buildReceiptPayload(bill, tenant, shopSettings, publicBaseUrl, lang);
+  if (format === 'a4') return renderA4(payload, lang);
+  return renderThermal(payload, charsForFormat(format), lang);
 }
 
 module.exports = {

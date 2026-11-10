@@ -8,11 +8,13 @@ import ListRow from '../../components/ui/ListRow';
 import * as shopifyService from '../../services/shopifyService';
 import { colors } from '../../theme/colors';
 import { common, spacing, typography } from '../../theme/layout';
+import { useT } from '../../i18n';
 import { SHOPIFY_GREEN, SHOPIFY_GREEN_LIGHT, connectionBadge } from '../../utils/shopifyStatus';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Integrations'>;
 
 export default function IntegrationsScreen({ navigation }: Props) {
+  const t = useT();
   const [shopify, setShopify] = useState<shopifyService.ShopifyStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -37,25 +39,26 @@ export default function IntegrationsScreen({ navigation }: Props) {
   };
 
   const subtitle = shopify?.connected
-    ? shopify.shopName || shopify.shopDomain || 'Connected'
-    : 'Sync products, stock and online orders';
+    ? shopify.shopName || shopify.shopDomain || t('Connected')
+    : t('Sync products, stock and online orders');
+  const shopifyBadge = shopify ? connectionBadge(shopify.status) : undefined;
 
   return (
     <ScrollView
       style={common.screen}
       contentContainerStyle={common.screenPad}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}>
-      <Text style={styles.title}>Integrations</Text>
-      <Text style={styles.subtitle}>Connect your POS with online sales channels</Text>
+      <Text style={styles.title}>{t('Integrations')}</Text>
+      <Text style={styles.subtitle}>{t('Connect your POS with online sales channels')}</Text>
 
-      <Text style={styles.section}>Sales channels</Text>
+      <Text style={styles.section}>{t('Sales channels')}</Text>
       <ListRow
-        title="Shopify"
+        title={t('Shopify')}
         subtitle={subtitle}
         icon="shopping"
         iconColor={SHOPIFY_GREEN}
         iconBg={SHOPIFY_GREEN_LIGHT}
-        badge={shopify ? connectionBadge(shopify.status) : undefined}
+        badge={shopifyBadge ? { ...shopifyBadge, label: t(shopifyBadge.label) } : undefined}
         onPress={() => navigation.navigate('ShopifyIntegration')}
       />
     </ScrollView>

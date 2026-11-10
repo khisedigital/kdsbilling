@@ -24,6 +24,7 @@ router.get('/stock/transfers/:id', requirePermission(PERMISSIONS.STOCK_VIEW), as
 
 // Suppliers
 router.get('/suppliers', requirePermission(PERMISSIONS.SUPPLIER_VIEW), asyncHandler(inventory.listSuppliers));
+router.post('/suppliers/bulk-import', requirePermission(PERMISSIONS.SUPPLIER_MANAGE), asyncHandler(inventory.bulkImportSuppliers));
 router.post('/suppliers', requirePermission(PERMISSIONS.SUPPLIER_MANAGE), asyncHandler(inventory.createSupplier));
 router.put('/suppliers/:id', requirePermission(PERMISSIONS.SUPPLIER_MANAGE), asyncHandler(inventory.updateSupplier));
 router.delete('/suppliers/:id', requirePermission(PERMISSIONS.SUPPLIER_MANAGE), asyncHandler(inventory.deleteSupplier));

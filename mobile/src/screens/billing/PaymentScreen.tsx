@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,16 +11,21 @@ import {
   View,
 } from 'react-native';
 import { Button, HelperText, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CommonActions } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
 import BottomBar from '../../components/ui/BottomBar';
 import { printDraftReceipt } from '../../print/receiptPrinter';
 import { createBill, deleteHeldBill, previewBill, type BillDetail } from '../../services/businessService';
 import { useCartStore } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing } from '../../theme/layout';
+import { totalSaving } from '../../utils/billSaving';
+import { screenProductName } from '../../utils/productName';
 import { formatQuantity } from '../../utils/quantity';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Payment'>;
@@ -59,6 +64,8 @@ function nearestRupee(amount: number) {
 }
 
 export default function PaymentScreen({ navigation }: Props) {
+  const t = useT();
+  useLanguageStore((s) => s.ui);
   const items = useCartStore((s) => s.items);
   const updatePrice = useCartStore((s) => s.updatePrice);
   const customerId = useCartStore((s) => s.customerId);
@@ -104,6 +111,7 @@ export default function PaymentScreen({ navigation }: Props) {
   const canRound = exactTotal > 0 && Math.abs(suggestedOff) >= 0.01;
   const isRounded = Math.abs(roundOffAmount) >= 0.01;
   const isSplit = splitExtra.length > 0;
+  const youSaved = useMemo(() => totalSaving(items), [items]);
 
   const payments = [
     { mode: payMode, amount: payAmount },
@@ -167,6 +175,7 @@ export default function PaymentScreen({ navigation }: Props) {
           variantId: i.variantId,
           quantity: i.quantity,
           unitPrice: i.unitPrice,
+          mrp: i.mrp ?? null,
           discountAmount: i.discountAmount,
           discountPercent: i.discountPercent,
           isCustom: i.isCustom === true,
@@ -226,12 +235,12 @@ export default function PaymentScreen({ navigation }: Props) {
     }
     const value = parseFloat(raw);
     if (Number.isNaN(value) || value < 0) {
-      setDiscountError('Enter a valid number');
+      setDiscountError(t('Enter a valid number'));
       return;
     }
     if (discountMode === 'percent') {
       if (value > 100) {
-        setDiscountError('Percent cannot exceed 100');
+        setDiscountError(t('Percent cannot exceed 100'));
         return;
       }
       setBillDiscount(0, Math.round(value * 100) / 100);
@@ -286,18 +295,18 @@ export default function PaymentScreen({ navigation }: Props) {
   const validateBeforePay = (): boolean => {
     setError('');
     if (!preview) {
-      setError('Bill not ready');
+      setError(t('Bill not ready'));
       return false;
     }
     const needsCustomer = payments.some(
       (p) => parseFloat(p.amount) > 0 && (p.mode === 'credit' || p.mode === 'store_credit'),
     );
     if (needsCustomer && !customerId) {
-      setError('Select a customer for credit or wallet');
+      setError(t('Select a customer for credit or wallet'));
       return false;
     }
     if (totalPaid < totalDue - 0.01) {
-      setError(`Need ₹${balance.toFixed(2)} more`);
+      setError(t('Need ₹{{amount}} more', { amount: balance.toFixed(2) }));
       return false;
     }
     return true;
@@ -326,20 +335,24 @@ export default function PaymentScreen({ navigation }: Props) {
       change_amount: Math.max(0, paid - totalDue),
       created_at: new Date().toISOString(),
       customer: customerId
-        ? { id: customerId, name: customerName || 'Customer' }
+        ? { id: customerId, name: customerName || t('Customer') }
         : customerName
           ? { id: '', name: customerName }
           : null,
-      items: preview.items.map((line, idx) => ({
-        id: `item-${idx}`,
-        product_name: line.productName,
-        sku: '',
-        variant_id: line.variantId,
-        quantity: line.quantity,
-        unit_price: line.unitPrice,
-        discount_amount: line.discountAmount || 0,
-        line_total: line.lineTotal,
-      })),
+      items: preview.items.map((line, idx) => {
+        const cart = items.find((i) => i.variantId === line.variantId);
+        return {
+          id: `item-${idx}`,
+          product_name: line.productName,
+          sku: '',
+          variant_id: line.variantId,
+          quantity: line.quantity,
+          unit_price: line.unitPrice,
+          mrp: cart?.mrp ?? null,
+          discount_amount: line.discountAmount || 0,
+          line_total: line.lineTotal,
+        };
+      }),
       payments: paidRows,
     };
   };
@@ -348,14 +361,14 @@ export default function PaymentScreen({ navigation }: Props) {
     setError('');
     const draft = buildDraftBill();
     if (!draft) {
-      setError('Bill not ready');
+      setError(t('Bill not ready'));
       return;
     }
     setPrinting(true);
     try {
       await printDraftReceipt(draft);
     } catch (printErr: unknown) {
-      Alert.alert('Print failed', (printErr as Error)?.message || 'Could not print receipt.');
+      Alert.alert(t('Print failed'), (printErr as Error)?.message || t('Could not print receipt.'));
     } finally {
       setPrinting(false);
     }
@@ -371,6 +384,7 @@ export default function PaymentScreen({ navigation }: Props) {
           variantId: i.variantId,
           quantity: i.quantity,
           unitPrice: i.unitPrice,
+          mrp: i.mrp ?? null,
           discountAmount: i.discountAmount,
           discountPercent: i.discountPercent,
           isCustom: i.isCustom === true,
@@ -397,7 +411,7 @@ export default function PaymentScreen({ navigation }: Props) {
     } catch (err: unknown) {
       setError(
         (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message
-        || 'Payment failed',
+        || t('Payment failed'),
       );
     } finally {
       setLoading(false);
@@ -408,7 +422,7 @@ export default function PaymentScreen({ navigation }: Props) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Getting bill ready…</Text>
+        <Text style={styles.loadingText}>{t('Getting bill ready…')}</Text>
       </View>
     );
   }
@@ -425,10 +439,12 @@ export default function PaymentScreen({ navigation }: Props) {
         <View style={styles.dueBar}>
           <View style={styles.dueMain}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.dueLabel}>Amount due</Text>
+              <Text style={styles.dueLabel}>{t('Amount due')}</Text>
               <Text style={styles.dueMeta} numberOfLines={1}>
                 {customerName ? `${customerName} · ` : ''}
-                {itemCount} item{itemCount === 1 ? '' : 's'}
+                {itemCount === 1
+                  ? t('{{count}} item', { count: itemCount })
+                  : t('{{count}} items', { count: itemCount })}
                 {discountApplied > 0 ? ` · −₹${discountApplied.toFixed(2)}` : ''}
               </Text>
             </View>
@@ -461,17 +477,17 @@ export default function PaymentScreen({ navigation }: Props) {
                   !canRound && !isRounded && styles.chipTextMuted,
                 ]}>
                 {isRounded
-                  ? 'Undo round'
+                  ? t('Undo round')
                   : canRound
-                    ? `Round ₹${nearestTarget}`
-                    : 'Already exact'}
+                    ? t('Round ₹{{amount}}', { amount: nearestTarget })
+                    : t('Already exact')}
               </Text>
             </Pressable>
           </View>
         </View>
 
         {/* Pay with */}
-        <Text style={styles.sectionTitle}>Pay with</Text>
+        <Text style={styles.sectionTitle}>{t('Pay with')}</Text>
         <View style={styles.modeRow}>
           {PAYMENT_MODES.map((m) => {
             const on = payMode === m.id;
@@ -488,17 +504,19 @@ export default function PaymentScreen({ navigation }: Props) {
                 }}
                 style={[styles.modeBtn, on && styles.modeBtnOn]}>
                 <Icon name={m.icon} size={22} color={on ? colors.primary : colors.textMuted} />
-                <Text style={[styles.modeLbl, on && styles.modeLblOn]}>{m.label}</Text>
+                <Text style={[styles.modeLbl, on && styles.modeLblOn]}>{t(m.label)}</Text>
               </Pressable>
             );
           })}
         </View>
 
-        <TextInput
+        <AppTextInput
           label={
             isSplit
-              ? `${PAYMENT_MODES.find((m) => m.id === payMode)?.label || 'Main'} (auto)`
-              : 'Received'
+              ? t('{{mode}} (auto)', {
+                  mode: t(PAYMENT_MODES.find((m) => m.id === payMode)?.label || 'Main'),
+                })
+              : t('Received')
           }
           value={payAmount}
           onChangeText={setPayAmount}
@@ -513,14 +531,14 @@ export default function PaymentScreen({ navigation }: Props) {
         {!isSplit ? (
           <Pressable onPress={openSplit} style={styles.linkRow}>
             <Icon name="call-split" size={18} color={colors.primary} />
-            <Text style={styles.linkText}>Split across modes</Text>
+            <Text style={styles.linkText}>{t('Split across modes')}</Text>
           </Pressable>
         ) : (
           <View style={styles.splitBox}>
             <View style={styles.splitHeader}>
-              <Text style={styles.splitTitle}>Also paying with</Text>
+              <Text style={styles.splitTitle}>{t('Also paying with')}</Text>
               <Pressable onPress={clearSplit}>
-                <Text style={styles.linkText}>Remove split</Text>
+                <Text style={styles.linkText}>{t('Remove split')}</Text>
               </Pressable>
             </View>
             {splitExtra.map((p, idx) => (
@@ -533,13 +551,13 @@ export default function PaymentScreen({ navigation }: Props) {
                         key={m.id}
                         onPress={() => updateSplitMode(idx, m.id)}
                         style={[styles.splitModeChip, on && styles.modeBtnOn]}>
-                        <Text style={[styles.splitModeText, on && styles.modeLblOn]}>{m.label}</Text>
+                        <Text style={[styles.splitModeText, on && styles.modeLblOn]}>{t(m.label)}</Text>
                       </Pressable>
                     );
                   })}
                 </View>
-                <TextInput
-                  label="Split amount"
+                <AppTextInput
+                  label={t('Split amount')}
                   value={p.amount}
                   onChangeText={(v) => updateSplitAmount(idx, v)}
                   keyboardType="decimal-pad"
@@ -552,12 +570,16 @@ export default function PaymentScreen({ navigation }: Props) {
                 />
                 {parseFloat(p.amount) > 0 ? (
                   <Text style={styles.splitHint}>
-                    Main mode left with ₹{payAmount || '0.00'}
-                    {splitTotal > 0 ? ` · Split ₹${round2(splitTotal).toFixed(2)}` : ''}
+                    {splitTotal > 0
+                      ? t('Main mode left with ₹{{left}} · Split ₹{{split}}', {
+                          left: payAmount || '0.00',
+                          split: round2(splitTotal).toFixed(2),
+                        })
+                      : t('Main mode left with ₹{{left}}', { left: payAmount || '0.00' })}
                   </Text>
                 ) : (
                   <Text style={styles.splitHint}>
-                    Enter amount — main mode reduces automatically
+                    {t('Enter amount — main mode reduces automatically')}
                   </Text>
                 )}
               </View>
@@ -573,8 +595,8 @@ export default function PaymentScreen({ navigation }: Props) {
             <Icon name="tag-outline" size={20} color={colors.primary} />
             <Text style={styles.accordionTitle}>
               {hasDiscount
-                ? `Discount −₹${discountApplied.toFixed(2)}`
-                : 'Add discount'}
+                ? t('Discount −₹{{amount}}', { amount: discountApplied.toFixed(2) })
+                : t('Add discount')}
             </Text>
           </View>
           <Icon
@@ -590,19 +612,19 @@ export default function PaymentScreen({ navigation }: Props) {
                 onPress={() => setDiscountMode('amount')}
                 style={[styles.discMode, discountMode === 'amount' && styles.discModeOn]}>
                 <Text style={[styles.discModeText, discountMode === 'amount' && styles.discModeTextOn]}>
-                  ₹ Rupees
+                  {t('₹ Rupees')}
                 </Text>
               </Pressable>
               <Pressable
                 onPress={() => setDiscountMode('percent')}
                 style={[styles.discMode, discountMode === 'percent' && styles.discModeOn]}>
                 <Text style={[styles.discModeText, discountMode === 'percent' && styles.discModeTextOn]}>
-                  % Percent
+                  {t('% Percent')}
                 </Text>
               </Pressable>
             </View>
-            <TextInput
-              label={discountMode === 'percent' ? 'Percent' : 'Amount'}
+            <AppTextInput
+              label={discountMode === 'percent' ? t('Percent') : t('Amount')}
               value={discountInput}
               onChangeText={(v) => {
                 setDiscountInput(v);
@@ -618,11 +640,11 @@ export default function PaymentScreen({ navigation }: Props) {
             <View style={styles.discActions}>
               {hasDiscount || discountInput ? (
                 <Button mode="text" textColor={colors.error} onPress={removeDiscount}>
-                  Clear
+                  {t('Clear')}
                 </Button>
               ) : null}
               <Button mode="contained" onPress={applyDiscount} style={{ flex: 1 }}>
-                Apply
+                {t('Apply')}
               </Button>
             </View>
           </View>
@@ -635,8 +657,11 @@ export default function PaymentScreen({ navigation }: Props) {
           <View style={styles.accordionLeft}>
             <Icon name="cart-outline" size={20} color={colors.primary} />
             <Text style={styles.accordionTitle}>
-              Bill details
-              {itemCount ? ` · ${itemCount} item${itemCount === 1 ? '' : 's'}` : ''}
+              {itemCount
+                ? itemCount === 1
+                  ? t('Bill details · {{count}} item', { count: itemCount })
+                  : t('Bill details · {{count}} items', { count: itemCount })
+                : t('Bill details')}
             </Text>
           </View>
           <Icon
@@ -649,13 +674,14 @@ export default function PaymentScreen({ navigation }: Props) {
           <View style={styles.panel}>
             {preview?.items.map((line, idx) => {
               const cartItem = getCartMeta(line.variantId);
+              const lineName = screenProductName(line.productName, cartItem?.productNameMr);
               const qty = cartItem?.uom
                 ? formatQuantity(line.quantity, cartItem.uom)
                 : String(line.quantity);
               return (
                 <View key={line.variantId} style={[styles.line, idx > 0 && styles.lineBorder]}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.lineName} numberOfLines={2}>{line.productName}</Text>
+                    <Text style={styles.lineName} numberOfLines={2}>{lineName}</Text>
                     {priceEditId === line.variantId ? (
                       <View style={styles.priceEditRow}>
                         <Text style={styles.pricePrefix}>₹</Text>
@@ -668,7 +694,7 @@ export default function PaymentScreen({ navigation }: Props) {
                           selectTextOnFocus
                           keyboardType="decimal-pad"
                           style={styles.priceInput}
-                          accessibilityLabel={`Price for ${line.productName}`}
+                          accessibilityLabel={t('Price for {{name}}', { name: lineName })}
                         />
                       </View>
                     ) : (
@@ -676,7 +702,7 @@ export default function PaymentScreen({ navigation }: Props) {
                         onPress={() => beginPriceEdit(line.variantId, cartItem?.unitPrice ?? line.unitPrice)}
                         hitSlop={6}
                         style={styles.priceTap}
-                        accessibilityLabel={`Edit price for ${line.productName}`}>
+                        accessibilityLabel={t('Edit price for {{name}}', { name: lineName })}>
                         <Text style={styles.lineMeta}>
                           {qty} × ₹{round2(line.unitPrice).toFixed(2)}
                         </Text>
@@ -690,37 +716,47 @@ export default function PaymentScreen({ navigation }: Props) {
             })}
             <View style={styles.miniSum}>
               <View style={styles.sumRow}>
-                <Text style={styles.sumLbl}>Subtotal</Text>
+                <Text style={styles.sumLbl}>{t('Subtotal')}</Text>
                 <Text style={styles.sumVal}>₹{round2(preview?.subtotal ?? 0).toFixed(2)}</Text>
               </View>
               <View style={styles.sumRow}>
-                <Text style={styles.sumLbl}>Tax</Text>
+                <Text style={styles.sumLbl}>{t('Tax')}</Text>
                 <Text style={styles.sumVal}>₹{round2(preview?.taxAmount ?? 0).toFixed(2)}</Text>
               </View>
               {discountApplied > 0 ? (
                 <View style={styles.sumRow}>
-                  <Text style={styles.sumLbl}>Discount</Text>
+                  <Text style={styles.sumLbl}>{t('Discount')}</Text>
                   <Text style={styles.discVal}>−₹{discountApplied.toFixed(2)}</Text>
                 </View>
               ) : null}
               {isRounded ? (
                 <View style={styles.sumRow}>
-                  <Text style={styles.sumLbl}>Round off</Text>
+                  <Text style={styles.sumLbl}>{t('Round off')}</Text>
                   <Text style={styles.sumVal}>
                     {roundOffAmount > 0 ? '+' : '−'}₹{Math.abs(roundOffAmount).toFixed(2)}
                   </Text>
+                </View>
+              ) : null}
+              {youSaved > 0 ? (
+                <View style={styles.saveRow}>
+                  <Text style={styles.saveLbl}>{t('Total saving')}</Text>
+                  <Text style={styles.saveVal}>₹{youSaved.toFixed(2)}</Text>
                 </View>
               ) : null}
             </View>
           </View>
         ) : null}
 
-        {error ? <HelperText type="error" visible style={styles.error}>{error}</HelperText> : null}
+        {error ? (
+          <HelperText type="error" visible style={styles.error}>
+            {error === 'Could not load bill' ? t('Could not load bill') : error}
+          </HelperText>
+        ) : null}
       </ScrollView>
 
       <BottomBar
         primary={{
-          label: loading ? 'Saving…' : 'Save Sale',
+          label: loading ? t('Saving…') : t('Save Sale'),
           onPress: handlePay,
           icon: 'check-bold',
           disabled: !preview || loading || printing,
@@ -729,7 +765,7 @@ export default function PaymentScreen({ navigation }: Props) {
         }}
         secondary={[
           {
-            label: printing ? 'Printing…' : 'Print',
+            label: printing ? t('Printing…') : t('Print'),
             onPress: handlePrint,
             icon: 'printer',
             disabled: !preview || loading || printing,
@@ -739,17 +775,17 @@ export default function PaymentScreen({ navigation }: Props) {
         {change > 0.01 ? (
           <View style={[styles.feedback, styles.feedbackOk]}>
             <Icon name="hand-coin-outline" size={18} color={colors.secondaryDark} />
-            <Text style={styles.feedbackOkText}>Return change ₹{change.toFixed(2)}</Text>
+            <Text style={styles.feedbackOkText}>{t('Return change ₹{{amount}}', { amount: change.toFixed(2) })}</Text>
           </View>
         ) : balance > 0.01 ? (
           <View style={[styles.feedback, styles.feedbackWarn]}>
             <Icon name="alert-circle-outline" size={18} color={colors.error} />
-            <Text style={styles.feedbackWarnText}>Still due ₹{balance.toFixed(2)}</Text>
+            <Text style={styles.feedbackWarnText}>{t('Still due ₹{{amount}}', { amount: balance.toFixed(2) })}</Text>
           </View>
         ) : (
           <View style={[styles.feedback, styles.feedbackOk]}>
             <Icon name="check-circle-outline" size={18} color={colors.secondaryDark} />
-            <Text style={styles.feedbackOkText}>Ready to complete · ₹{totalDue.toFixed(2)}</Text>
+            <Text style={styles.feedbackOkText}>{t('Ready to complete · ₹{{amount}}', { amount: totalDue.toFixed(2) })}</Text>
           </View>
         )}
       </BottomBar>
@@ -774,7 +810,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
@@ -817,7 +853,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs + 2,
     borderRadius: radius.full,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   chipOn: {
     backgroundColor: colors.primaryLight,
@@ -850,7 +886,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surface,
     borderWidth: 1.5,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   modeBtnOn: {
     backgroundColor: colors.primaryLight,
@@ -879,7 +915,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.md,
   },
@@ -914,7 +950,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md + 2,
     marginBottom: spacing.sm,
@@ -925,7 +961,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     padding: spacing.lg,
     marginBottom: spacing.md,
     marginTop: -spacing.xs,
@@ -948,7 +984,7 @@ const styles = StyleSheet.create({
   discModeTextOn: { color: colors.primary },
   discActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.xs },
   line: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.sm },
-  lineBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderLight },
+  lineBorder: { borderTopWidth: 1, borderTopColor: colors.border },
   lineName: { fontSize: 14, fontWeight: '600', color: colors.text },
   lineMeta: { fontSize: 12, color: colors.textMuted },
   priceTap: {
@@ -984,13 +1020,25 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     paddingTop: spacing.md,
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
+    borderTopColor: colors.border,
     gap: 4,
   },
   sumRow: { flexDirection: 'row', justifyContent: 'space-between' },
   sumLbl: { fontSize: 13, color: colors.textMuted },
   sumVal: { fontSize: 13, fontWeight: '600', color: colors.text },
   discVal: { fontSize: 13, fontWeight: '700', color: colors.secondary },
+  saveRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: radius.sm,
+    backgroundColor: colors.successLight,
+  },
+  saveLbl: { fontSize: 13, fontWeight: '700', color: colors.secondaryDark },
+  saveVal: { fontSize: 15, fontWeight: '800', color: colors.secondaryDark },
   error: { marginBottom: spacing.sm },
   feedback: {
     flexDirection: 'row',

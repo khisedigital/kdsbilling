@@ -2,6 +2,11 @@ import * as XLSX from 'xlsx';
 import type { ReportType } from './reportConfig';
 import { getReportConfig } from './reportConfig';
 import { isShareCancelled, saveExportFile } from './saveExportFile';
+import { t } from '../i18n';
+
+function col(text: string) {
+  return text === 'SKU' ? text : t(text);
+}
 
 export type ExportSheet = {
   name: string;
@@ -20,7 +25,7 @@ export function buildReportExportSheets(
   periodLabel?: string,
 ): ExportSheet[] {
   const config = getReportConfig(reportType);
-  const title = config?.title || 'Report';
+  const title = t(config?.title || 'Report');
 
   switch (reportType) {
     case 'daily_sales': {
@@ -33,15 +38,15 @@ export function buildReportExportSheets(
       const sheets: ExportSheet[] = [{
         name: title,
         summary: [
-          { label: 'Report', value: title },
-          { label: 'Period', value: periodLabel || '' },
-          { label: 'Bills', value: report.summary.count },
-          { label: 'Revenue', value: num(report.summary.total) },
-          { label: 'Tax', value: num(report.summary.tax) },
-          { label: 'Discount', value: num(report.summary.discount) },
-          { label: 'Most sold', value: report.mostSold?.product_name || '—' },
+          { label: col('Report'), value: title },
+          { label: col('Period'), value: periodLabel || '' },
+          { label: col('Bills'), value: report.summary.count },
+          { label: col('Revenue'), value: num(report.summary.total) },
+          { label: col('Tax'), value: num(report.summary.tax) },
+          { label: col('Discount'), value: num(report.summary.discount) },
+          { label: col('Most sold'), value: report.mostSold?.product_name || '—' },
         ],
-        headers: ['Bill No', 'Customer', 'Date', 'Time', 'Amount'],
+        headers: ['Bill No', 'Customer', 'Date', 'Time', 'Amount'].map(col),
         rows: report.bills.map((bill) => [
           bill.bill_number,
           bill.customer?.name || '',
@@ -52,8 +57,8 @@ export function buildReportExportSheets(
       }];
       if (report.topProducts?.length) {
         sheets.push({
-          name: 'Top Products',
-          headers: ['Rank', 'Product', 'SKU', 'Qty', 'Revenue'],
+          name: t('Top Products'),
+          headers: ['Rank', 'Product', 'SKU', 'Qty', 'Revenue'].map(col),
           rows: report.topProducts.map((item, index) => [
             index + 1,
             item.product_name,
@@ -77,13 +82,13 @@ export function buildReportExportSheets(
       return [{
         name: title,
         summary: [
-          { label: 'Period', value: periodLabel || '' },
-          { label: 'Most sold', value: report.mostSold?.product_name || items[0]?.product_name || '—' },
-          { label: 'Products', value: report.summary?.products ?? items.length },
-          { label: 'Qty sold', value: report.summary?.totalQty ?? items.reduce((s, i) => s + num(i.total_qty), 0) },
-          { label: 'Revenue', value: report.summary?.revenue ?? items.reduce((s, i) => s + num(i.revenue), 0) },
+          { label: col('Period'), value: periodLabel || '' },
+          { label: col('Most sold'), value: report.mostSold?.product_name || items[0]?.product_name || '—' },
+          { label: col('Products'), value: report.summary?.products ?? items.length },
+          { label: col('Qty sold'), value: report.summary?.totalQty ?? items.reduce((s, i) => s + num(i.total_qty), 0) },
+          { label: col('Revenue'), value: report.summary?.revenue ?? items.reduce((s, i) => s + num(i.revenue), 0) },
         ],
-        headers: ['Rank', 'Product', 'SKU', 'Quantity', 'Revenue', 'Profit'],
+        headers: ['Rank', 'Product', 'SKU', 'Quantity', 'Revenue', 'Profit'].map(col),
         rows: items.map((item, index) => [
           index + 1,
           item.product_name,
@@ -98,8 +103,8 @@ export function buildReportExportSheets(
       const items = data as Array<{ category_name: string; total_qty: number; revenue: number; profit?: number }>;
       return [{
         name: title,
-        summary: [{ label: 'Period', value: periodLabel || '' }],
-        headers: ['Category', 'Quantity', 'Revenue', 'Profit'],
+        summary: [{ label: col('Period'), value: periodLabel || '' }],
+        headers: ['Category', 'Quantity', 'Revenue', 'Profit'].map(col),
         rows: items.map((item) => [
           item.category_name,
           num(item.total_qty),
@@ -112,8 +117,8 @@ export function buildReportExportSheets(
       const items = data as Array<{ brand_name: string; total_qty: number; revenue: number; profit?: number }>;
       return [{
         name: title,
-        summary: [{ label: 'Period', value: periodLabel || '' }],
-        headers: ['Brand', 'Quantity', 'Revenue', 'Profit'],
+        summary: [{ label: col('Period'), value: periodLabel || '' }],
+        headers: ['Brand', 'Quantity', 'Revenue', 'Profit'].map(col),
         rows: items.map((item) => [
           item.brand_name,
           num(item.total_qty),
@@ -130,14 +135,14 @@ export function buildReportExportSheets(
       return [{
         name: title,
         summary: [
-          { label: 'Period', value: periodLabel || '' },
-          { label: 'Revenue', value: num(report.summary.revenue) },
-          { label: 'Cost', value: num(report.summary.cost) },
-          { label: 'Gross Profit', value: num(report.summary.grossProfit) },
-          { label: 'Expenses', value: num(report.summary.expenses) },
-          { label: 'Net Profit', value: num(report.summary.netProfit) },
+          { label: col('Period'), value: periodLabel || '' },
+          { label: col('Revenue'), value: num(report.summary.revenue) },
+          { label: col('Cost'), value: num(report.summary.cost) },
+          { label: col('Gross Profit'), value: num(report.summary.grossProfit) },
+          { label: col('Expenses'), value: num(report.summary.expenses) },
+          { label: col('Net Profit'), value: num(report.summary.netProfit) },
         ],
-        headers: ['Product', 'SKU', 'Revenue', 'Cost', 'Profit'],
+        headers: ['Product', 'SKU', 'Revenue', 'Cost', 'Profit'].map(col),
         rows: report.items.map((item) => [
           item.product_name,
           item.sku || '',
@@ -155,11 +160,11 @@ export function buildReportExportSheets(
       return [{
         name: title,
         summary: [
-          { label: 'Period', value: periodLabel || '' },
-          { label: 'Bills', value: report.summary.count },
-          { label: 'Total', value: num(report.summary.total) },
+          { label: col('Period'), value: periodLabel || '' },
+          { label: col('Bills'), value: report.summary.count },
+          { label: col('Total'), value: num(report.summary.total) },
         ],
-        headers: ['Bill No', 'Supplier', 'Date', 'Amount'],
+        headers: ['Bill No', 'Supplier', 'Date', 'Amount'].map(col),
         rows: report.bills.map((bill) => [
           bill.bill_number,
           bill.supplier?.name || '',
@@ -172,9 +177,9 @@ export function buildReportExportSheets(
       const items = data as Array<{ quantity: number; variant?: { sku?: string; product?: { name?: string }; uom?: { code?: string } } }>;
       return [{
         name: title,
-        headers: ['Product', 'SKU', 'Quantity', 'Unit'],
+        headers: ['Product', 'SKU', 'Quantity', 'Unit'].map(col),
         rows: items.map((item) => [
-          item.variant?.product?.name || 'Unknown',
+          item.variant?.product?.name || t('Unknown'),
           item.variant?.sku || '',
           num(item.quantity),
           item.variant?.uom?.code || '',
@@ -188,10 +193,10 @@ export function buildReportExportSheets(
       };
       return [{
         name: title,
-        summary: [{ label: 'Low stock items', value: report.summary.count }],
-        headers: ['Product', 'SKU', 'Current Qty', 'Reorder Level'],
+        summary: [{ label: col('Low stock items'), value: report.summary.count }],
+        headers: ['Product', 'SKU', 'Current Qty', 'Reorder Level'].map(col),
         rows: report.items.map((item) => [
-          item.variant?.product?.name || 'Unknown',
+          item.variant?.product?.name || t('Unknown'),
           item.variant?.sku || '',
           num(item.quantity),
           num(item.reorder_level),
@@ -202,8 +207,8 @@ export function buildReportExportSheets(
       const items = data as Array<{ name: string; phone?: string; order_count: number; total_spent: number; last_purchase?: string }>;
       return [{
         name: title,
-        summary: [{ label: 'Period', value: periodLabel || '' }],
-        headers: ['Customer', 'Phone', 'Orders', 'Total Spent', 'Last Purchase'],
+        summary: [{ label: col('Period'), value: periodLabel || '' }],
+        headers: ['Customer', 'Phone', 'Orders', 'Total Spent', 'Last Purchase'].map(col),
         rows: items.map((item) => [
           item.name,
           item.phone || '',
@@ -217,8 +222,8 @@ export function buildReportExportSheets(
       const items = data as Array<{ name: string; phone?: string; bill_count: number; total_purchased: number; last_purchase?: string }>;
       return [{
         name: title,
-        summary: [{ label: 'Period', value: periodLabel || '' }],
-        headers: ['Supplier', 'Phone', 'Bills', 'Total Purchased', 'Last Purchase'],
+        summary: [{ label: col('Period'), value: periodLabel || '' }],
+        headers: ['Supplier', 'Phone', 'Bills', 'Total Purchased', 'Last Purchase'].map(col),
         rows: items.map((item) => [
           item.name,
           item.phone || '',
@@ -232,8 +237,8 @@ export function buildReportExportSheets(
       const items = data as Array<{ tax_name: string; tax_type_code?: string; totalTax: number }>;
       return [{
         name: title,
-        summary: [{ label: 'Period', value: periodLabel || '' }],
-        headers: ['Tax Name', 'Tax Code', 'Amount'],
+        summary: [{ label: col('Period'), value: periodLabel || '' }],
+        headers: ['Tax Name', 'Tax Code', 'Amount'].map(col),
         rows: items.map((item) => [
           item.tax_name,
           item.tax_type_code || '',
@@ -249,10 +254,10 @@ export function buildReportExportSheets(
       return [{
         name: title,
         summary: [
-          { label: 'Period', value: periodLabel || '' },
-          { label: 'Total Expenses', value: num(report.total) },
+          { label: col('Period'), value: periodLabel || '' },
+          { label: col('Total Expenses'), value: num(report.total) },
         ],
-        headers: ['Date', 'Category', 'Amount', 'Notes'],
+        headers: ['Date', 'Category', 'Amount', 'Notes'].map(col),
         rows: report.expenses.map((item) => [
           item.expense_date,
           item.category?.name || '',
@@ -268,20 +273,20 @@ export function buildReportExportSheets(
       };
       return [
         {
-          name: 'Summary',
-          headers: ['Metric', 'Amount'],
+          name: t('Summary'),
+          headers: ['Metric', 'Amount'].map(col),
           rows: [
-            ['Cash In', num(report.summary.cashIn)],
-            ['Cash Out', num(report.summary.cashOut)],
-            ['Expenses', num(report.summary.expenses)],
-            ['Purchases', num(report.summary.purchases)],
-            ['Net Flow', num(report.summary.netFlow)],
+            [t('Cash In'), num(report.summary.cashIn)],
+            [t('Cash Out'), num(report.summary.cashOut)],
+            [t('Expenses'), num(report.summary.expenses)],
+            [t('Purchases'), num(report.summary.purchases)],
+            [t('Net Flow'), num(report.summary.netFlow)],
           ],
         },
         {
-          name: 'Payment Modes',
-          summary: [{ label: 'Period', value: periodLabel || '' }],
-          headers: ['Payment Mode', 'Amount'],
+          name: t('Payment Modes'),
+          summary: [{ label: col('Period'), value: periodLabel || '' }],
+          headers: ['Payment Mode', 'Amount'].map(col),
           rows: report.inflows.map((item) => [item.payment_mode.toUpperCase(), num(item.total)]),
         },
       ];
@@ -324,14 +329,14 @@ export async function exportReportToExcel(
   const config = getReportConfig(reportType);
   const sheets = buildReportExportSheets(reportType, data, periodLabel);
   if (!sheets.length) {
-    throw new Error('Nothing to export');
+    throw new Error(t('Nothing to export'));
   }
 
   const workbook = XLSX.utils.book_new();
   sheets.forEach((sheet, index) => {
     const rows: Array<Array<string | number>> = [];
     if (sheet.summary?.length) {
-      rows.push(['Summary']);
+      rows.push([t('Summary')]);
       sheet.summary.forEach((item) => rows.push([item.label, item.value]));
       rows.push([]);
     }
@@ -345,7 +350,7 @@ export async function exportReportToExcel(
 
   const stamp = new Date().toISOString().slice(0, 10);
   const baseName = sanitizeFilename(`${config?.title || reportType}_${stamp}`);
-  const title = `${config?.title || 'Report'} export`;
+  const title = t('{{name}} export', { name: t(config?.title || 'Report') });
   const xlsxName = `${baseName}.xlsx`;
   const base64 = XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
 
@@ -365,7 +370,7 @@ export async function exportReportToExcel(
       await saveExportFile({ filename: `${baseName}.csv`, mime: 'text/csv', title, text: sheetsToCsv(sheets) });
     } catch (csvErr) {
       if (isShareCancelled(csvErr)) return;
-      const message = csvErr instanceof Error ? csvErr.message : 'Could not export report';
+      const message = csvErr instanceof Error ? t(csvErr.message) : t('Could not export report');
       throw new Error(message);
     }
   }

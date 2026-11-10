@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, HelperText, Text, TextInput } from 'react-native-paper';
+import { Button, HelperText, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -10,6 +11,7 @@ import SurfaceCard from '../../components/ui/SurfaceCard';
 import { fetchBranches, transferStock } from '../../services/inventoryService';
 import type { Branch } from '../../services/inventoryService';
 import type { SearchProductResult } from '../../services/catalogService';
+import { useT } from '../../i18n';
 import { useAuthStore } from '../../store/authStore';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
@@ -17,6 +19,7 @@ import { common, radius, spacing, typography } from '../../theme/layout';
 type Props = NativeStackScreenProps<MainStackParamList, 'StockTransfer'>;
 
 export default function StockTransferScreen({ navigation }: Props) {
+  const t = useT();
   const user = useAuthStore((s) => s.user);
   const currentBranchId = user?.branch?.id;
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -45,7 +48,7 @@ export default function StockTransferScreen({ navigation }: Props) {
   const handleSubmit = async () => {
     setError('');
     if (!toBranchId || !variantId || !quantity.trim()) {
-      setError('Fill all required fields');
+      setError(t('Fill all required fields'));
       return;
     }
 
@@ -60,8 +63,8 @@ export default function StockTransferScreen({ navigation }: Props) {
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { error?: { message?: string } } } })
-          ?.response?.data?.error?.message || 'Transfer failed';
-      setError(message);
+          ?.response?.data?.error?.message;
+      setError(message ? t(message) : t('Transfer failed'));
     } finally {
       setLoading(false);
     }
@@ -72,25 +75,25 @@ export default function StockTransferScreen({ navigation }: Props) {
   return (
     <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
-        <Text style={styles.subtitle}>Move stock between branches</Text>
+        <Text style={styles.subtitle}>{t('Move stock between branches')}</Text>
 
         <SurfaceCard padding style={styles.route}>
           <View style={styles.routeRow}>
             <View style={styles.routeBox}>
               <Icon name="store" size={20} color={colors.primary} />
-              <Text style={styles.routeLbl}>From</Text>
-              <Text style={styles.routeName}>{user?.branch?.name || 'Current'}</Text>
+              <Text style={styles.routeLbl}>{t('From')}</Text>
+              <Text style={styles.routeName}>{user?.branch?.name || t('Current')}</Text>
             </View>
             <Icon name="arrow-right" size={24} color={colors.textMuted} />
             <View style={styles.routeBox}>
               <Icon name="store-outline" size={20} color={colors.secondary} />
-              <Text style={styles.routeLbl}>To</Text>
-              <Text style={styles.routeName}>{destBranch?.name || 'Select'}</Text>
+              <Text style={styles.routeLbl}>{t('To')}</Text>
+              <Text style={styles.routeName}>{destBranch?.name || t('Select')}</Text>
             </View>
           </View>
         </SurfaceCard>
 
-        <SectionCard title="Destination branch" icon="map-marker-outline">
+        <SectionCard title={t('Destination branch')} icon="map-marker-outline">
           {branches.length ? (
             <View style={styles.branchGrid}>
               {branches.map((b) => (
@@ -106,20 +109,20 @@ export default function StockTransferScreen({ navigation }: Props) {
             </View>
           ) : (
             <Text style={typography.bodySm}>
-              Need another branch to transfer stock. This shop currently has only one branch.
+              {t('Need another branch to transfer stock. This shop currently has only one branch.')}
             </Text>
           )}
         </SectionCard>
 
-        <SectionCard title="Product & quantity" icon="package-variant">
+        <SectionCard title={t('Product & quantity')} icon="package-variant">
           <ProductSearchField onSelect={handleSelectProduct} selectedLabel={selectedLabel} />
-          <TextInput label="Quantity" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" mode="outlined" style={styles.input} />
-          <TextInput label="Notes" value={notes} onChangeText={setNotes} mode="outlined" style={styles.input} />
+          <AppTextInput label={t('Quantity')} value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" mode="outlined" style={styles.input} />
+          <AppTextInput label={t('Notes')} value={notes} onChangeText={setNotes} mode="outlined" style={styles.input} />
         </SectionCard>
 
         {error ? <HelperText type="error">{error}</HelperText> : null}
         <Button mode="contained" onPress={handleSubmit} loading={loading} icon="truck-delivery" style={styles.submit}>
-          Transfer Stock
+          {t('Transfer Stock')}
         </Button>
       </ScrollView>
     </KeyboardAvoidingView>

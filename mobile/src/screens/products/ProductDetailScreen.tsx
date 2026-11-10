@@ -1,23 +1,28 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Dialog, HelperText, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, Dialog, HelperText, Portal, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import SectionCard from '../../components/ui/SectionCard';
 import SurfaceCard from '../../components/ui/SurfaceCard';
-import { fetchProduct, mainBarcodeOf, quantityBarcodesOf } from '../../services/catalogService';
+import { useT } from '../../i18n';
+import { fetchProduct, mainBarcodeOf, plainBarcodesOf, quantityBarcodesOf } from '../../services/catalogService';
 import { postStockMovement } from '../../services/inventoryService';
 import type { Product, ProductVariant } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
 import { formatQuantity } from '../../utils/quantity';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing, typography } from '../../theme/layout';
+import { common, radius, spacing, typography, dialogCard} from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ProductDetail'>;
 
 export default function ProductDetailScreen({ route, navigation }: Props) {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [stockVisible, setStockVisible] = useState(false);
@@ -35,7 +40,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       .then(setProduct)
       .catch((err) => {
         setProduct(null);
-        setLoadError(apiError(err, 'Could not load product'));
+        setLoadError(apiError(err, tRef.current('Could not load product')));
       })
       .finally(() => setLoading(false));
   }, [route.params.productId]);
@@ -49,7 +54,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   const openAddStock = (variant?: ProductVariant) => {
     const target = variant || product?.variants?.[0] || null;
     if (!target) {
-      Alert.alert('No variant', 'This product has no variant to stock.');
+      Alert.alert(t('No variant'), t('This product has no variant to stock.'));
       return;
     }
     setSelectedVariant(target);
@@ -63,7 +68,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     if (!selectedVariant) return;
     const qty = parseFloat(quantity);
     if (!quantity.trim() || Number.isNaN(qty) || qty <= 0) {
-      setFormError('Enter a valid quantity greater than 0');
+      setFormError(t('Enter a valid quantity greater than 0'));
       return;
     }
     setSaving(true);
@@ -75,9 +80,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       });
       setStockVisible(false);
       load();
-      Alert.alert('Stock added', `Added ${qty} to ${product?.name || 'product'}.`);
+      Alert.alert(
+        t('Stock added'),
+        t('Added {{qty}} to {{name}}.', { qty, name: product?.name || t('product') }),
+      );
     } catch (err) {
-      setFormError(apiError(err, 'Could not add stock'));
+      setFormError(apiError(err, t('Could not add stock')));
     } finally {
       setSaving(false);
     }
@@ -94,8 +102,8 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   if (!product) {
     return (
       <View style={[common.screen, styles.center]}>
-        <Text style={typography.bodySm}>{loadError || 'Product not found'}</Text>
-        <Button mode="contained" onPress={load} style={{ marginTop: 12 }}>Retry</Button>
+        <Text style={typography.bodySm}>{loadError || t('Product not found')}</Text>
+        <Button mode="contained" onPress={load} style={{ marginTop: 12 }}>{t('Retry')}</Button>
       </View>
     );
   }
@@ -113,8 +121,9 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
           <Icon name="package-variant" size={36} color={colors.primary} />
         </View>
         <Text style={styles.heroTitle}>{product.name}</Text>
+        {product.name_mr ? <Text style={styles.heroSub}>{product.name_mr}</Text> : null}
         <Text style={styles.heroSub}>
-          {product.category?.name || 'No category'} · {product.brand?.name || 'No brand'}
+          {product.category?.name || t('No category')} · {product.brand?.name || t('No brand')}
         </Text>
         <Text style={styles.price}>₹{sellPrice.toFixed(2)}</Text>
       </View>
@@ -126,7 +135,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
           </View>
           <View style={styles.stockBody}>
             <Text style={styles.stockLbl}>
-              {(product.variants?.length || 0) > 1 ? 'Total stock (all sizes)' : 'Available stock'}
+              {(product.variants?.length || 0) > 1 ? t('Total stock (all variants)') : t('Available stock')}
             </Text>
             <Text style={[styles.stockVal, lowStock && { color: colors.warning }]}>{stockLabel}</Text>
           </View>
@@ -139,7 +148,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             buttonColor={colors.secondary}
             style={styles.stockActionBtn}
             contentStyle={styles.addStockContent}>
-            Add stock
+            {t('Add stock')}
           </Button>
           <Button
             mode="outlined"
@@ -153,43 +162,45 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             textColor={colors.primary}
             style={styles.stockActionBtn}
             contentStyle={styles.addStockContent}>
-            History
+            {t('History')}
           </Button>
         </View>
       </SurfaceCard>
 
       <SurfaceCard padding style={styles.metaCard}>
         <View style={styles.metaRow}>
-          <Text style={typography.bodySm}>Unit</Text>
+          <Text style={typography.bodySm}>{t('Unit')}</Text>
           <Text style={typography.h3}>{product.uom?.name || '—'}</Text>
         </View>
         <View style={styles.metaRow}>
-          <Text style={typography.bodySm}>Tax group</Text>
+          <Text style={typography.bodySm}>{t('Tax group')}</Text>
           <Text style={typography.h3}>
             {product.taxGroup
               ? `${product.taxGroup.name} (${parseFloat(String(product.taxGroup.total_rate))}%)`
-              : 'No tax (0%)'}
+              : t('No tax (0%)')}
           </Text>
         </View>
         {product.is_weight_based ? (
           <View style={styles.weightTag}>
             <Icon name="scale" size={14} color={colors.secondary} />
-            <Text style={styles.weightText}>Weight based</Text>
+            <Text style={styles.weightText}>{t('Weight based')}</Text>
           </View>
         ) : null}
       </SurfaceCard>
 
       {product.description ? (
-        <SectionCard title="Description" icon="text-box-outline" noPadding>
+        <SectionCard title={t('Description')} icon="text-box-outline" noPadding>
           <Text style={styles.desc}>{product.description}</Text>
         </SectionCard>
       ) : null}
 
-      <SectionCard title={`Variants (${product.variants?.length || 0})`} icon="shape-outline">
+      <SectionCard title={t('Variants ({{count}})', { count: product.variants?.length || 0 })} icon="shape-outline">
         {product.variants?.map((v) => {
           const vStock = v.stockQty ?? 0;
           const uomInfo = product.uom ? { code: product.uom.code, type: product.uom.type } : { code: 'pcs', type: 'count' as const };
-          const mainCode = mainBarcodeOf(v);
+          const plainCodes = plainBarcodesOf(v);
+          const mainCode = plainCodes[0] || mainBarcodeOf(v);
+          const extraCodes = plainCodes.slice(1);
           const qtyCodes = quantityBarcodesOf(v);
           return (
             <View key={v.id} style={styles.variant}>
@@ -198,16 +209,25 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                 <Text style={typography.moneySm}>₹{parseFloat(String(v.selling_price)).toFixed(2)}</Text>
               </View>
               <Text style={typography.bodySm}>
-                {[v.size, v.color].filter(Boolean).join(' · ') || 'Default variant'}
+                {[v.size, v.color].filter(Boolean).join(' · ') || t('Default variant')}
               </Text>
               <Text style={typography.caption}>
-                Stock {formatQuantity(vStock, uomInfo)}
-                {' · '}Cost ₹{parseFloat(String(v.cost_price)).toFixed(2)}
+                {t('Stock {{qty}}', { qty: formatQuantity(vStock, uomInfo) })}
+                {' · '}
+                {t('Cost ₹{{amount}}', { amount: parseFloat(String(v.cost_price)).toFixed(2) })}
                 {mainCode ? ` · ${mainCode}` : ''}
               </Text>
+              {extraCodes.map((code) => (
+                <Text key={code} style={typography.caption}>
+                  {code}
+                </Text>
+              ))}
               {qtyCodes.map((b) => (
                 <Text key={b.barcode} style={typography.caption}>
-                  {b.barcode} · scans as {formatQuantity(b.quantity, uomInfo)}
+                  {t('{{barcode}} · scans as {{qty}}', {
+                    barcode: b.barcode,
+                    qty: formatQuantity(b.quantity, uomInfo),
+                  })}
                 </Text>
               ))}
               {(product.variants?.length || 0) > 1 ? (
@@ -217,7 +237,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                   icon="plus"
                   onPress={() => openAddStock(v)}
                   style={styles.variantStockBtn}>
-                  Add stock
+                  {t('Add stock')}
                 </Button>
               ) : null}
             </View>
@@ -230,17 +250,17 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
         icon="pencil-outline"
         onPress={() => navigation.navigate('ProductForm', { productId: product.id })}
         style={styles.editBtn}>
-        Edit Product
+        {t('Edit Product')}
       </Button>
 
       <Portal>
         <Dialog visible={stockVisible} onDismiss={() => !saving && setStockVisible(false)} style={styles.dialog}>
-          <Dialog.Title>Add stock</Dialog.Title>
+          <Dialog.Title>{t('Add stock')}</Dialog.Title>
           <Dialog.Content>
             <Text style={styles.dialogProduct}>{product.name}</Text>
             <Text style={styles.dialogSku}>{selectedVariant?.sku}</Text>
-            <TextInput
-              label="Quantity *"
+            <AppTextInput
+              label={t('Quantity *')}
               value={quantity}
               onChangeText={(v) => { setQuantity(v); setFormError(''); }}
               keyboardType="decimal-pad"
@@ -248,8 +268,8 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
               style={styles.input}
               autoFocus
             />
-            <TextInput
-              label="Notes (optional)"
+            <AppTextInput
+              label={t('Notes (optional)')}
               value={notes}
               onChangeText={setNotes}
               mode="outlined"
@@ -258,9 +278,9 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             {formError ? <HelperText type="error" visible>{formError}</HelperText> : null}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setStockVisible(false)} disabled={saving}>Cancel</Button>
+            <Button onPress={() => setStockVisible(false)} disabled={saving}>{t('Cancel')}</Button>
             <Button onPress={saveStock} loading={saving} disabled={saving}>
-              Add
+              {t('Add')}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -324,7 +344,7 @@ const styles = StyleSheet.create({
   desc: { ...typography.body, lineHeight: 22 },
   variant: {
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
   variantHead: {
@@ -335,7 +355,7 @@ const styles = StyleSheet.create({
   },
   variantStockBtn: { marginTop: spacing.sm, alignSelf: 'flex-start' },
   editBtn: { marginTop: spacing.md },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
   dialogProduct: { ...typography.h3, marginBottom: 2 },
   dialogSku: { ...typography.caption, marginBottom: spacing.md },
   input: { marginBottom: spacing.sm, backgroundColor: colors.surface },

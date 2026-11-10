@@ -1,4 +1,5 @@
 import api from './api';
+import { useLanguageStore } from '../i18n/languageStore';
 
 export interface BillDetail {
   id: string;
@@ -29,6 +30,7 @@ export interface BillDetail {
     quantity: string | number;
     returned_quantity?: string | number;
     unit_price: string | number;
+    mrp?: string | number | null;
     discount_amount?: string | number;
     tax_amount?: string | number;
     line_total: string | number;
@@ -106,7 +108,9 @@ export async function fetchBill(id: string): Promise<BillDetail> {
 }
 
 export async function printBill(id: string, format: '58' | '80' | 'a4' = '80') {
-  const { data } = await api.get(`/bills/${id}/print`, { params: { format } });
+  const { data } = await api.get(`/bills/${id}/print`, {
+    params: { format, language: useLanguageStore.getState().bill },
+  });
   return data.data;
 }
 
@@ -272,13 +276,79 @@ export async function createExpense(payload: Record<string, unknown>) {
   return data.data;
 }
 
-export async function createDailyClosing(payload: Record<string, unknown>) {
+export type ClosingPaymentBreakdown = {
+  cash: number;
+  upi: number;
+  card: number;
+  other: number;
+};
+
+export type ClosingPreview = {
+  closingDate: string;
+  alreadyClosed: boolean;
+  existingClosing?: DailyClosingRecord | null;
+  suggestedOpeningCash: number;
+  previousClosingDate?: string | null;
+  totalSales: number;
+  payments: ClosingPaymentBreakdown;
+  cashSales: number;
+  cashRefunds: number;
+  cashExpenses: number;
+  formula?: string;
+};
+
+export type DailyClosingRecord = {
+  id: string;
+  branch_id?: string;
+  closing_date: string;
+  opening_cash: string | number;
+  expected_cash: string | number;
+  actual_cash: string | number;
+  variance: string | number;
+  total_sales: string | number;
+  total_expenses: string | number;
+  notes?: string | null;
+  details?: {
+    payments?: ClosingPaymentBreakdown;
+    cashSales?: number;
+    cashRefunds?: number;
+    cashExpenses?: number;
+    cashAdded?: number;
+    denominations?: Record<string, number>;
+    varianceReason?: string | null;
+    remarks?: string | null;
+  } | null;
+  creator?: { id: string; name: string } | null;
+  created_at?: string;
+};
+
+export async function previewDailyClosing(closingDate?: string): Promise<ClosingPreview> {
+  const { data } = await api.get('/daily-closings/preview', {
+    params: closingDate ? { closingDate } : undefined,
+  });
+  return data.data;
+}
+
+export async function createDailyClosing(payload: {
+  openingCash: number;
+  actualCash: number;
+  cashAdded?: number;
+  notes?: string;
+  varianceReason?: string;
+  denominations?: Record<string, number>;
+  closingDate?: string;
+}): Promise<DailyClosingRecord> {
   const { data } = await api.post('/daily-closings', payload);
   return data.data;
 }
 
-export async function fetchDailyClosings() {
+export async function fetchDailyClosings(): Promise<DailyClosingRecord[]> {
   const { data } = await api.get('/daily-closings');
+  return data.data;
+}
+
+export async function fetchDailyClosing(id: string): Promise<DailyClosingRecord> {
+  const { data } = await api.get(`/daily-closings/${id}`);
   return data.data;
 }
 
@@ -293,6 +363,9 @@ export async function createPrinter(payload: Record<string, unknown>) {
 }
 
 export async function printBillNetwork(billId: string, printerId: string) {
-  const { data } = await api.post(`/bills/${billId}/print-network`, { printerId });
+  const { data } = await api.post(`/bills/${billId}/print-network`, {
+    printerId,
+    language: useLanguageStore.getState().bill,
+  });
   return data.data;
 }

@@ -5,6 +5,9 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { SearchProductResult } from '../../services/catalogService';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
+import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
+import { screenProductName } from '../../utils/productName';
 import { formatQuantity, needsQuantityPrompt } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
 
@@ -33,6 +36,9 @@ function ProductGridTile({
   onEditQty,
   onEditProduct,
 }: Props) {
+  const t = useT();
+  useLanguageStore((s) => s.ui);
+  const name = screenProductName(product.productName, product.productNameMr);
   const size = variantLabel(product.size, product.color);
   const outOfStock = (product.stockQty ?? 0) <= 0;
   const inCart = qtyInCart > 0;
@@ -62,16 +68,20 @@ function ProductGridTile({
           onPress={() => onEditProduct?.(product)}
           style={styles.editBtn}
           hitSlop={6}
-          accessibilityLabel={`Edit ${product.productName}`}>
+          accessibilityLabel={t('Edit {{name}}', { name })}>
           <Icon name="pencil" size={14} color={colors.primary} />
         </Pressable>
       ) : null}
       <Pressable
         onPress={pressBody}
         style={styles.body}
-        accessibilityLabel={`${inCart ? 'Add more' : 'Add'} ${product.productName}`}>
+        accessibilityLabel={
+          inCart
+            ? t('Add more {{name}}', { name })
+            : t('Add {{name}}', { name })
+        }>
         <Text style={[styles.name, canEditProduct && styles.nameWithEdit]} numberOfLines={2}>
-          {product.productName}
+          {name}
         </Text>
         {size ? (
           <Text style={styles.variant} numberOfLines={1}>
@@ -79,7 +89,7 @@ function ProductGridTile({
           </Text>
         ) : (
           <Text style={styles.variant} numberOfLines={1}>
-            {outOfStock ? 'Out of stock' : product.uom?.code || ' '}
+            {outOfStock ? t('Out of stock') : product.uom?.code || ' '}
           </Text>
         )}
         <Text style={styles.price} numberOfLines={1}>
@@ -91,7 +101,7 @@ function ProductGridTile({
         weighed ? (
           <Pressable onPress={() => onEditQty(product)} style={styles.weightBar}>
             <Text style={styles.weightQty} numberOfLines={1}>{qtyLabel}</Text>
-            <Text style={styles.weightHint}>Edit</Text>
+            <Text style={styles.weightHint}>{t('Edit')}</Text>
           </Pressable>
         ) : (
           <View style={styles.stepper}>
@@ -99,7 +109,7 @@ function ProductGridTile({
               onPress={() => onDecrease(product.variantId)}
               style={styles.stepBtn}
               hitSlop={4}
-              accessibilityLabel="Decrease">
+              accessibilityLabel={t('Decrease')}>
               <Icon name="minus" size={16} color={colors.textOnPrimary} />
             </Pressable>
             <Text style={styles.stepQty} numberOfLines={1}>{qtyLabel}</Text>
@@ -107,7 +117,7 @@ function ProductGridTile({
               onPress={() => (fromBarcode ? onAdd(product) : onIncrease(product.variantId))}
               style={styles.stepBtn}
               hitSlop={4}
-              accessibilityLabel={fromBarcode ? 'Add scanned quantity' : 'Increase'}>
+              accessibilityLabel={fromBarcode ? t('Add scanned quantity') : t('Increase')}>
               <Icon name="plus" size={16} color={colors.textOnPrimary} />
             </Pressable>
           </View>
@@ -116,9 +126,9 @@ function ProductGridTile({
         <Pressable
           onPress={() => onAdd(product)}
           style={styles.addBtn}
-          accessibilityLabel={`Add ${product.productName}`}>
+          accessibilityLabel={t('Add {{name}}', { name })}>
           <Icon name="plus" size={16} color={colors.textOnPrimary} />
-          <Text style={styles.addText}>Add</Text>
+          <Text style={styles.addText}>{t('Add')}</Text>
         </Pressable>
       )}
     </View>

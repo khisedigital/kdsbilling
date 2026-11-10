@@ -15,6 +15,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useNavigationState } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { APP_DISPLAY_NAME } from '../constants/branding';
+import { useT } from '../i18n';
 import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/colors';
 import { radius, spacing } from '../theme/layout';
@@ -95,6 +96,7 @@ function SidebarItem({
 }
 
 export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
+  const t = useT();
   const insets = useSafeAreaInsets();
   const isOpen = useDrawerStore((s) => s.isOpen);
   const close = useDrawerStore((s) => s.close);
@@ -199,7 +201,7 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
               <Image source={require('../assets/logo.png')} style={styles.brandLogo} resizeMode="contain" />
               <View style={styles.brandText}>
                 <Text style={styles.brandName} numberOfLines={1}>{APP_DISPLAY_NAME}</Text>
-                <Text style={styles.brandTag} numberOfLines={1}>Billing made simple</Text>
+                <Text style={styles.brandTag} numberOfLines={1}>{t('Billing made simple')}</Text>
               </View>
               {pinned ? null : (
                 <TouchableOpacity onPress={close} hitSlop={12} style={styles.closeBtn}>
@@ -213,14 +215,14 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
                 <Text style={styles.avatarLabel}>{initials}</Text>
               </View>
               <View style={styles.shopMeta}>
-                <Text style={styles.shopName} numberOfLines={1}>{tenant?.name || 'My Shop'}</Text>
+                <Text style={styles.shopName} numberOfLines={1}>{tenant?.name || t('My Shop')}</Text>
                 <Text style={styles.userMeta} numberOfLines={1}>
                   {[user?.name, user?.branch?.name].filter(Boolean).join(' · ')}
                 </Text>
               </View>
               {user?.role ? (
                 <View style={styles.rolePill}>
-                  <Text style={styles.roleText}>{user.role}</Text>
+                  <Text style={styles.roleText}>{t(String(user.role))}</Text>
                 </View>
               ) : null}
             </View>
@@ -235,7 +237,7 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
             onScroll={(event) => {
               menuScrollY = event.nativeEvent.contentOffset.y;
             }}>
-            {menuSections.map((section) => {
+            {menuSections.map((section, sectionIndex) => {
               const items = section.items.filter((item) => {
                 if (
                   item.screen === 'ShopSettings' ||
@@ -249,11 +251,12 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
               if (!items.length) return null;
               return (
                 <View key={section.title} style={styles.section}>
-                  <Text style={styles.sectionTitle}>{section.title}</Text>
+                  {sectionIndex > 0 ? <View style={styles.sectionDivider} /> : null}
+                  <Text style={styles.sectionTitle}>{t(section.title)}</Text>
                   {items.map((item) => (
                     <SidebarItem
                       key={`${section.title}-${item.label}`}
-                      label={item.label}
+                      label={t(item.label)}
                       icon={item.icon}
                       highlight={isMenuItemActive(item, currentName, currentParams)}
                       onPress={() => navigateTo(item.screen, item.params)}
@@ -266,7 +269,7 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
 
           <View style={styles.footer}>
             <SidebarItem
-              label="Logout"
+              label={t('Logout')}
               icon="logout"
               danger
               onPress={() => {
@@ -334,7 +337,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     flexShrink: 0,
     backgroundColor: colors.surface,
-    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: 1,
     borderRightColor: colors.border,
     overflow: 'hidden',
   },
@@ -342,7 +345,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
     paddingBottom: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
   brandRow: {
@@ -430,6 +433,13 @@ const styles = StyleSheet.create({
   section: {
     marginBottom: spacing.sm,
   },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+  },
   sectionTitle: {
     color: colors.textMuted,
     marginLeft: spacing.md,
@@ -488,7 +498,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   footer: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,

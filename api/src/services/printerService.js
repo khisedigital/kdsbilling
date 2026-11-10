@@ -70,7 +70,7 @@ function sendEscPosToNetwork(host, port, rawText, timeoutMs = 5000) {
   });
 }
 
-async function printBillNetwork(db, tenant, billId, printerId, shopSettings = {}, publicBaseUrl = null) {
+async function printBillNetwork(db, tenant, billId, printerId, shopSettings = {}, publicBaseUrl = null, language = 'en') {
   const printer = await db.Printer.findByPk(printerId);
   if (!printer || printer.status !== 'active') {
     throw new AppError('Printer not found', 404, 'NOT_FOUND');
@@ -85,7 +85,7 @@ async function printBillNetwork(db, tenant, billId, printerId, shopSettings = {}
 
   const bill = await billingService.getBill(db, billId);
   const format = printer.paper_size === '58mm' ? '58' : printer.paper_size === 'a4' ? 'a4' : '80';
-  const printData = generatePrint(bill, tenant, format, shopSettings, publicBaseUrl);
+  const printData = generatePrint(bill, tenant, format, shopSettings, publicBaseUrl, language);
 
   if (format === 'a4') {
     throw new AppError('A4 network print not supported. Use mobile share.', 400, 'UNSUPPORTED');

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useLanguageStore } from '../i18n/languageStore';
 import type { SearchProductResult } from '../services/catalogService';
 import type { UomInfo } from '../utils/quantity';
 
@@ -6,11 +7,15 @@ export interface CartItem {
   /** Catalog variant id, or `custom-<id>` for open-price lines */
   variantId: string;
   productName: string;
+  /** Marathi catalog name, used on screen when the UI language is Marathi. */
+  productNameMr?: string | null;
   sku: string;
   size?: string | null;
   color?: string | null;
   quantity: number;
   unitPrice: number;
+  /** Catalog MRP at add time — used for “You saved” vs selling price */
+  mrp?: number | null;
   /** Cashier changed this line’s rate. Catalog refresh must not put the list price back. */
   priceEdited?: boolean;
   discountAmount?: number;
@@ -78,6 +83,9 @@ export const useCartStore = create<CartState>((set, get) => ({
                 ...i,
                 quantity: Math.round((i.quantity + item.quantity) * 10000) / 10000,
                 stockQty: item.stockQty ?? i.stockQty,
+                mrp: item.mrp !== undefined ? item.mrp : i.mrp,
+                productName: item.productName || i.productName,
+                productNameMr: item.productNameMr ?? i.productNameMr,
               }
             : i
         ),
@@ -118,14 +126,20 @@ export const useCartStore = create<CartState>((set, get) => ({
       if (!product) return item;
       const catalogPrice = Number(product.sellingPrice) || 0;
       const nextPrice = item.priceEdited ? item.unitPrice : catalogPrice;
+      const nextMrp = product.mrp != null ? Number(product.mrp) || null : null;
       const nextAllow = !!(product.allowDecimalQty || product.isWeightBased);
       const nextStock = product.stockQty ?? item.stockQty;
+      const mrName = product.productNameMr?.trim() || null;
+      const nextName =
+        useLanguageStore.getState().bill === 'mr' && mrName ? mrName : product.productName;
       if (
-        item.productName === product.productName &&
+        item.productName === nextName &&
+        (item.productNameMr || null) === mrName &&
         item.sku === product.sku &&
         item.size === product.size &&
         item.color === product.color &&
         item.unitPrice === nextPrice &&
+        item.mrp === nextMrp &&
         item.allowDecimalQty === nextAllow &&
         item.stockQty === nextStock &&
         (item.uom?.code || '') === (product.uom?.code || '')
@@ -135,11 +149,13 @@ export const useCartStore = create<CartState>((set, get) => ({
       changed = true;
       return {
         ...item,
-        productName: product.productName,
+        productName: nextName,
+        productNameMr: mrName,
         sku: product.sku,
         size: product.size,
         color: product.color,
         unitPrice: nextPrice,
+        mrp: nextMrp,
         uom: product.uom || item.uom,
         allowDecimalQty: nextAllow,
         stockQty: nextStock,

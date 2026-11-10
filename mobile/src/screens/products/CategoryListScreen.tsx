@@ -1,22 +1,32 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, HelperText, Portal, TextInput } from 'react-native-paper';
+import { Button, Dialog, FAB, HelperText, Portal } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
-import { createCategory, deleteCategory, fetchCategories, updateCategory } from '../../services/catalogService';
+import { useT } from '../../i18n';
+import {
+  createCategory,
+  deleteCategory,
+  fetchCategories,
+  updateCategory,
+} from '../../services/catalogService';
 import type { Category } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing } from '../../theme/layout';
+import { common, dialogCard } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'CategoryList'>;
 
 type DialogMode = 'add' | 'edit';
 
 export default function CategoryListScreen({}: Props) {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [categories, setCategories] = useState<Category[]>([]);
   const [search, setSearch] = useState('');
   const [visible, setVisible] = useState(false);
@@ -31,11 +41,13 @@ export default function CategoryListScreen({}: Props) {
     try {
       setCategories(await fetchCategories());
     } catch (err) {
-      Alert.alert('Load failed', apiError(err, 'Could not load categories'));
+      Alert.alert(tRef.current('Load failed'), apiError(err, tRef.current('Could not load categories')));
     }
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   const filtered = categories.filter((c) => {
     const q = search.trim().toLowerCase();
@@ -61,7 +73,7 @@ export default function CategoryListScreen({}: Props) {
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setError('Name is required');
+      setError(t('Name is required'));
       return;
     }
     setLoading(true);
@@ -75,7 +87,9 @@ export default function CategoryListScreen({}: Props) {
       setVisible(false);
       await load();
     } catch (err) {
-      setError(apiError(err, mode === 'add' ? 'Could not add category' : 'Could not update category'));
+      setError(
+        apiError(err, mode === 'add' ? t('Could not add category') : t('Could not update category')),
+      );
     } finally {
       setLoading(false);
     }
@@ -83,19 +97,20 @@ export default function CategoryListScreen({}: Props) {
 
   const confirmDelete = (category: Category) => {
     Alert.alert(
-      'Delete category?',
-      `Remove "${category.name}"? Products must be reassigned first.`,
+      t('Delete category?'),
+      t('Remove "{{name}}"? Products must be reassigned first.', { name: category.name }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('Cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('Delete'),
           style: 'destructive',
           onPress: async () => {
             try {
               await deleteCategory(category.id);
+              setVisible(false);
               await load();
             } catch (err) {
-              Alert.alert('Delete failed', apiError(err, 'Could not delete category'));
+              Alert.alert(t('Delete failed'), apiError(err, t('Could not delete category')));
             }
           },
         },
@@ -105,23 +120,37 @@ export default function CategoryListScreen({}: Props) {
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search categories..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search categories...')} />
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
         contentContainerStyle={filtered.length ? common.listContent : styles.emptyList}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} colors={[colors.primary]} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await load();
+              setRefreshing(false);
+            }}
+            colors={[colors.primary]}
+          />
+        }
         ListEmptyComponent={
           <EmptyState
             icon="folder-outline"
-            title={search.trim() ? 'No matching categories' : 'No categories yet'}
-            subtitle={search.trim() ? 'Try a different search' : 'Organize products into categories'}
+            title={search.trim() ? t('No matching categories') : t('No categories yet')}
+            subtitle={
+              search.trim()
+                ? t('Try a different search')
+                : t('Add categories for your products')
+            }
           />
         }
         renderItem={({ item }) => (
           <ListRow
             title={item.name}
-            subtitle={item.parent?.name ? `Parent: ${item.parent.name}` : undefined}
+            subtitle={item.parent?.name ? t('Parent: {{name}}', { name: item.parent.name }) : undefined}
             icon="folder"
             iconColor={colors.accent}
             iconBg={colors.accentLight}
@@ -130,23 +159,37 @@ export default function CategoryListScreen({}: Props) {
           />
         )}
       />
-      <FAB icon="plus" style={common.fab} color={colors.textOnPrimary} onPress={openAdd} />
+
+      <FAB icon="plus" style={styles.fabMain} color={colors.textOnPrimary} onPress={openAdd} />
+
       <Portal>
         <Dialog visible={visible} onDismiss={() => !loading && setVisible(false)} style={styles.dialog}>
-          <Dialog.Title>{mode === 'add' ? 'Add Category' : 'Edit Category'}</Dialog.Title>
+          <Dialog.Title>{mode === 'add' ? t('Add Category') : t('Edit Category')}</Dialog.Title>
           <Dialog.Content>
-            <TextInput label="Name" value={name} onChangeText={setName} mode="outlined" />
-            {error ? <HelperText type="error" visible>{error}</HelperText> : null}
+            <AppTextInput label={t('Name')} value={name} onChangeText={setName} mode="outlined" />
+            {error ? (
+              <HelperText type="error" visible>
+                {error}
+              </HelperText>
+            ) : null}
           </Dialog.Content>
           <Dialog.Actions>
             {mode === 'edit' && editingId ? (
-              <Button textColor={colors.error} onPress={() => {
-                const category = categories.find((c) => c.id === editingId);
-                if (category) confirmDelete(category);
-              }}>Delete</Button>
+              <Button
+                textColor={colors.error}
+                onPress={() => {
+                  const category = categories.find((c) => c.id === editingId);
+                  if (category) confirmDelete(category);
+                }}>
+                {t('Delete')}
+              </Button>
             ) : null}
-            <Button onPress={() => setVisible(false)} disabled={loading}>Cancel</Button>
-            <Button loading={loading} onPress={handleSave} disabled={!name.trim()}>Save</Button>
+            <Button onPress={() => setVisible(false)} disabled={loading}>
+              {t('Cancel')}
+            </Button>
+            <Button loading={loading} onPress={handleSave} disabled={!name.trim()}>
+              {t('Save')}
+            </Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -156,5 +199,6 @@ export default function CategoryListScreen({}: Props) {
 
 const styles = StyleSheet.create({
   emptyList: { flexGrow: 1 },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
+  fabMain: { ...common.fab, backgroundColor: colors.primary },
 });

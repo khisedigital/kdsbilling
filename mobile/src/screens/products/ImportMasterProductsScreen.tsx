@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -7,10 +7,13 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import { Button, Checkbox, Text, TextInput } from 'react-native-paper';
+import { Button, Checkbox, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
+import SearchableSelect from '../../components/ui/SearchableSelect';
+import { useT } from '../../i18n';
 import {
   fetchMasterCatalogBusinessTypes,
   fetchMasterCatalogCategories,
@@ -32,10 +35,14 @@ type BusinessTypeOption = {
 };
 
 export default function ImportMasterProductsScreen({ navigation }: Props) {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [businessTypes, setBusinessTypes] = useState<BusinessTypeOption[]>([]);
   const [businessTypeId, setBusinessTypeId] = useState('');
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
   const [categoryId, setCategoryId] = useState('');
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<MasterCatalogProduct[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -47,15 +54,22 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
     () => Object.keys(selected).filter((id) => selected[id]),
     [selected],
   );
+  const categoryOptions = useMemo(
+    () =>
+      [...categories]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((category) => ({ id: category.id, label: category.name })),
+    [categories],
+  );
 
   useEffect(() => {
     fetchMasterCatalogBusinessTypes()
       .then((types) => {
         setBusinessTypes(types);
-        const preferred = types.find((t: BusinessTypeOption) => t.isTenantDefault) || types[0];
+        const preferred = types.find((type: BusinessTypeOption) => type.isTenantDefault) || types[0];
         if (preferred) setBusinessTypeId(preferred.id);
       })
-      .catch((err) => Alert.alert('Error', apiError(err, 'Could not load catalogs')))
+      .catch((err) => Alert.alert(tRef.current('Error'), apiError(err, tRef.current('Could not load catalogs'))))
       .finally(() => setLoading(false));
   }, []);
 
@@ -68,7 +82,7 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
       .then(setCategories)
       .catch((err) => {
         setCategories([]);
-        Alert.alert('Error', apiError(err, 'Could not load categories'));
+        Alert.alert(tRef.current('Error'), apiError(err, tRef.current('Could not load categories')));
       });
     setCategoryId('');
   }, [businessTypeId]);
@@ -84,20 +98,20 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
         businessTypeId,
         categoryId: categoryId || undefined,
         search: search.trim() || undefined,
-        limit: 500,
+        limit: 1000,
       });
       setProducts(rows);
     } catch (err) {
       setProducts([]);
-      Alert.alert('Error', apiError(err, 'Could not load master products'));
+      Alert.alert(tRef.current('Error'), apiError(err, tRef.current('Could not load master products')));
     } finally {
       setLoadingProducts(false);
     }
   }, [businessTypeId, categoryId, search]);
 
   useEffect(() => {
-    const t = setTimeout(loadProducts, search ? 250 : 0);
-    return () => clearTimeout(t);
+    const timer = setTimeout(loadProducts, search ? 250 : 0);
+    return () => clearTimeout(timer);
   }, [loadProducts, search]);
 
   const toggle = (id: string) => {
@@ -118,7 +132,7 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
 
   const onImport = async () => {
     if (!selectedIds.length) {
-      Alert.alert('Select products', 'Choose at least one master product to import');
+      Alert.alert(t('Select products'), t('Choose at least one master product to import'));
       return;
     }
     setImporting(true);
@@ -126,16 +140,21 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
       const result = await importFromMasterCatalog(selectedIds);
       const errLines = (result.errors || [])
         .slice(0, 3)
-        .map((e: { name?: string; message?: string }) => e.message || e.name)
+        .map((e: { name?: string; message?: string }) => (e.message ? t(e.message) : e.name))
         .filter(Boolean);
       const detail = errLines.length ? `\n${errLines.join('\n')}` : '';
       Alert.alert(
-        'Import complete',
-        `Imported ${result.imported}\nSkipped ${result.skipped}\nFailed ${result.failed}${detail}`,
-        [{ text: 'OK', onPress: () => navigation.goBack() }],
+        t('Import complete'),
+        t('Imported {{imported}}\nSkipped {{skipped}}\nFailed {{failed}}{{detail}}', {
+          imported: result.imported,
+          skipped: result.skipped,
+          failed: result.failed,
+          detail,
+        }),
+        [{ text: t('OK'), onPress: () => navigation.goBack() }],
       );
     } catch (err) {
-      Alert.alert('Import failed', apiError(err, 'Could not import products'));
+      Alert.alert(t('Import failed'), apiError(err, t('Could not import products')));
     } finally {
       setImporting(false);
     }
@@ -143,21 +162,23 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
 
   if (loading) {
     return (
-      <View style={[common.screen, styles.center]}>
-        <ActivityIndicator color={colors.primary} />
+      <View style={common.screen}>
+        <View style={[styles.center, { flex: 1 }]}>
+          <ActivityIndicator color={colors.primary} />
+        </View>
       </View>
     );
   }
 
-  const activeBusinessType = businessTypes.find((t) => t.id === businessTypeId) || businessTypes[0];
+  const activeBusinessType = businessTypes.find((type) => type.id === businessTypeId) || businessTypes[0];
 
   if (!businessTypes.length || !businessTypeId) {
     return (
       <View style={common.screen}>
         <EmptyState
           icon="storefront-outline"
-          title="No catalog for this shop"
-          subtitle="Master products follow the business type set when the account was created."
+          title={t('No catalog for this shop')}
+          subtitle={t('Master products follow the business type set when the account was created.')}
         />
       </View>
     );
@@ -168,67 +189,60 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
       <View style={styles.filters}>
         {activeBusinessType ? (
           <View style={styles.typeBanner}>
-            <Text style={styles.typeBannerLabel}>Your business type</Text>
+            <Text style={styles.typeBannerLabel}>{t('Your business type')}</Text>
             <Text style={styles.typeBannerName}>{activeBusinessType.name}</Text>
           </View>
         ) : null}
 
-        {categories.length ? (
-          <>
-            <Text style={styles.label}>Category</Text>
-            <View style={styles.chipRow}>
-              <Pressable
-                onPress={() => setCategoryId('')}
-                style={[styles.chip, !categoryId && styles.chipOn]}>
-                <Text style={[styles.chipText, !categoryId && styles.chipTextOn]}>All</Text>
-              </Pressable>
-              {categories.map((c) => (
-                <Pressable
-                  key={c.id}
-                  onPress={() => setCategoryId(c.id)}
-                  style={[styles.chip, categoryId === c.id && styles.chipOn]}>
-                  <Text style={[styles.chipText, categoryId === c.id && styles.chipTextOn]}>
-                    {c.name}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </>
-        ) : null}
-
-        <TextInput
+        <AppTextInput
           mode="outlined"
           dense
           value={search}
           onChangeText={setSearch}
-          placeholder="Search master products"
+          placeholder={t('Search master products')}
           style={styles.search}
         />
+        {categoryOptions.length ? (
+          <SearchableSelect
+            options={categoryOptions}
+            value={categoryId || null}
+            onChange={(id) => setCategoryId(id || '')}
+            open={categoryOpen}
+            onOpenChange={setCategoryOpen}
+            placeholder="Category"
+            allLabel="All categories"
+            searchPlaceholder="Search categories…"
+          />
+        ) : null}
         <Text style={styles.hint}>
-          Showing products for your business type only. Price starts at ₹0 — set selling price after import.
+          {loadingProducts
+            ? t('Loading products…')
+            : t('{{count}} products', { count: products.length })}
         </Text>
         <View style={styles.actions}>
-          <Button compact onPress={selectAll}>Select all</Button>
-          <Button compact onPress={clearAll}>Clear</Button>
-          <Text style={styles.count}>{selectedIds.length} selected</Text>
+          <Button compact onPress={selectAll}>{t('Select all')}</Button>
+          <Button compact onPress={clearAll}>{t('Clear')}</Button>
+          <Text style={styles.count}>{t('{{count}} selected', { count: selectedIds.length })}</Text>
         </View>
       </View>
 
       <FlatList
         data={products}
+        style={styles.list}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={products.length ? styles.list : styles.emptyList}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={products.length ? styles.listContent : styles.emptyList}
         ListEmptyComponent={
           loadingProducts ? (
             <View style={styles.center}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={styles.loadingText}>Loading products…</Text>
+              <Text style={styles.loadingText}>{t('Loading products…')}</Text>
             </View>
           ) : (
             <EmptyState
               icon="package-variant-closed"
-              title="No master products"
-              subtitle="Try another category, or ask admin to add products for your business type"
+              title={t('No master products')}
+              subtitle={t('Try another category, or ask admin to add products for your business type')}
             />
           )
         }
@@ -240,7 +254,16 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
             />
             <View style={{ flex: 1 }}>
               <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.meta}>{item.categoryName || 'Uncategorized'} · ₹0</Text>
+              <Text style={styles.meta}>
+                {[
+                  item.brandName,
+                  item.categoryName || t('Uncategorized'),
+                  (item.variants || []).map((variant) => variant.size).filter(Boolean).join(', '),
+                  item.mrp != null ? `MRP ₹${item.mrp}` : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
             </View>
           </Pressable>
         )}
@@ -253,7 +276,9 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
           disabled={importing || !selectedIds.length}
           onPress={onImport}
           buttonColor={colors.secondary}>
-          Import {selectedIds.length ? `(${selectedIds.length})` : ''}
+          {selectedIds.length
+            ? t('Import ({{count}})', { count: selectedIds.length })
+            : t('Import')}
         </Button>
       </View>
     </View>
@@ -264,6 +289,7 @@ const styles = StyleSheet.create({
   center: { justifyContent: 'center', alignItems: 'center', paddingVertical: spacing.xl },
   loadingText: { marginTop: spacing.sm, fontSize: 13, color: colors.textMuted },
   filters: {
+    flexShrink: 0,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     backgroundColor: colors.surface,
@@ -291,37 +317,19 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.primary,
   },
-  label: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.textMuted,
-    marginBottom: 6,
-    marginTop: 4,
-  },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: colors.surfaceVariant,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  chipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
-  chipText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
-  chipTextOn: { color: colors.textOnPrimary },
-  search: { marginBottom: 6, backgroundColor: colors.surface },
-  hint: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
+  search: { marginBottom: 2, backgroundColor: colors.surface },
+  hint: { fontSize: 12, color: colors.textMuted, marginTop: 6, marginBottom: 4 },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 8 },
   count: { marginLeft: 'auto', fontSize: 12, color: colors.textMuted },
-  list: { paddingBottom: 100 },
+  list: { flex: 1 },
+  listContent: { paddingBottom: 100 },
   emptyList: { flexGrow: 1 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
     backgroundColor: colors.surface,
   },

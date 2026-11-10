@@ -1082,9 +1082,12 @@ function updateCatalogContext() {
     if (body) body.classList.add('hidden');
     if (empty) empty.classList.remove('hidden');
     if ($('createMasterCategoryBtn')) $('createMasterCategoryBtn').disabled = true;
+    if ($('importMasterCategoriesBtn')) $('importMasterCategoriesBtn').disabled = true;
     if ($('createMasterBrandBtn')) $('createMasterBrandBtn').disabled = true;
+    if ($('importMasterBrandsBtn')) $('importMasterBrandsBtn').disabled = true;
     if ($('createMasterProductBtn')) $('createMasterProductBtn').disabled = true;
     if ($('importCatalogProductsBtn')) $('importCatalogProductsBtn').disabled = true;
+    if ($('importOpenFoodMasterBtn')) $('importOpenFoodMasterBtn').disabled = true;
     return;
   }
 
@@ -1107,9 +1110,12 @@ function updateCatalogContext() {
   if (body) body.classList.remove('hidden');
   if (empty) empty.classList.add('hidden');
   if ($('createMasterCategoryBtn')) $('createMasterCategoryBtn').disabled = false;
+  if ($('importMasterCategoriesBtn')) $('importMasterCategoriesBtn').disabled = false;
   if ($('createMasterBrandBtn')) $('createMasterBrandBtn').disabled = false;
+  if ($('importMasterBrandsBtn')) $('importMasterBrandsBtn').disabled = false;
   if ($('createMasterProductBtn')) $('createMasterProductBtn').disabled = false;
   if ($('importCatalogProductsBtn')) $('importCatalogProductsBtn').disabled = false;
+  if ($('importOpenFoodMasterBtn')) $('importOpenFoodMasterBtn').disabled = false;
 }
 
 function updateCatalogChips() {
@@ -1259,9 +1265,9 @@ async function loadCatalogProducts() {
     renderPagedTable('catalogProducts', {
       tbodyId: 'catalogProductsTable',
       rows: [],
-      colspan: 8,
+      colspan: 9,
       resetPage: true,
-      emptyHtml: '<tr><td colspan="8" class="empty">Select a shop type on the left to browse product templates.</td></tr>',
+      emptyHtml: '<tr><td colspan="9" class="empty">Select a shop type on the left to browse product templates.</td></tr>',
       renderRow: () => '',
     });
     return;
@@ -1270,8 +1276,8 @@ async function loadCatalogProducts() {
   renderPagedTable('catalogProducts', {
     tbodyId: 'catalogProductsTable',
     rows: [],
-    colspan: 8,
-    emptyHtml: `<tr><td colspan="8" class="empty">${inlineLoadingHtml('Loading products…', true)}</td></tr>`,
+    colspan: 9,
+    emptyHtml: `<tr><td colspan="9" class="empty">${inlineLoadingHtml('Loading products…', true)}</td></tr>`,
     renderRow: () => '',
   });
 
@@ -1289,8 +1295,8 @@ async function loadCatalogProducts() {
     renderPagedTable('catalogProducts', {
       tbodyId: 'catalogProductsTable',
       rows: [],
-      colspan: 8,
-      emptyHtml: `<tr><td colspan="8" class="empty">${esc(e.message || 'Could not load products')}</td></tr>`,
+      colspan: 9,
+      emptyHtml: `<tr><td colspan="9" class="empty">${esc(e.message || 'Could not load products')}</td></tr>`,
       renderRow: () => '',
     });
     return;
@@ -1309,15 +1315,17 @@ async function loadCatalogProducts() {
   renderPagedTable('catalogProducts', {
     tbodyId: 'catalogProductsTable',
     rows: masterProducts,
-    colspan: 8,
+    colspan: 9,
     resetPage: true,
-    emptyHtml: `<tr><td colspan="8" class="empty">No product templates${filterName || catLabel ? ` for ${esc([filterName, catLabel].filter(Boolean).join(' · '))}` : ''} yet. Add one or import from Excel.</td></tr>`,
+    emptyHtml: `<tr><td colspan="9" class="empty">No product templates${filterName || catLabel ? ` for ${esc([filterName, catLabel].filter(Boolean).join(' · '))}` : ''} yet. Add one or import from Excel.</td></tr>`,
     renderRow: (p) => `
     <tr>
       <td>
         <strong>${esc(p.name)}</strong>
+        ${(p.variants || []).some((v) => v.size) ? `<br><small style="color:var(--muted)">${esc((p.variants || []).map((v) => v.size).filter(Boolean).join(', '))}</small>` : ''}
         ${p.description ? `<br><small style="color:var(--muted)">${esc(p.description)}</small>` : ''}
       </td>
+      <td>${p.nameMr ? esc(p.nameMr) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${esc(p.category?.name || '—')}</td>
       <td>${esc(p.brand?.name || '—')}</td>
       <td><span class="type-code">${esc(p.sku || '—')}</span></td>
@@ -1347,14 +1355,15 @@ async function loadMasterCategories() {
   if (btn) btn.disabled = !businessTypeId;
   if (!tbody) return;
   updateCatalogChips();
+  if ($('importMasterCategoriesBtn')) $('importMasterCategoriesBtn').disabled = !businessTypeId;
   if (!businessTypeId) {
     masterCategories = [];
     renderPagedTable('masterCategories', {
       tbodyId: 'masterCategoriesTable',
       rows: [],
-      colspan: 4,
+      colspan: 5,
       resetPage: true,
-      emptyHtml: '<tr><td colspan="4" class="empty">Select a shop type on the left to manage its categories.</td></tr>',
+      emptyHtml: '<tr><td colspan="5" class="empty">Select a shop type on the left to manage its categories.</td></tr>',
       renderRow: () => '',
     });
     return;
@@ -1366,15 +1375,16 @@ async function loadMasterCategories() {
   renderPagedTable('masterCategories', {
     tbodyId: 'masterCategoriesTable',
     rows: masterCategories,
-    colspan: 4,
+    colspan: 5,
     resetPage: true,
-    emptyHtml: '<tr><td colspan="4" class="empty">No categories for this type. Add your first category.</td></tr>',
+    emptyHtml: '<tr><td colspan="5" class="empty">No categories for this type. Add your first category.</td></tr>',
     renderRow: (c) => `
     <tr>
       <td>
         <strong>${esc(c.name)}</strong>
         ${c.description ? `<br><small style="color:var(--muted)">${esc(c.description)}</small>` : ''}
       </td>
+      <td>${c.nameMr ? esc(c.nameMr) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${c.sortOrder}</td>
       <td>${badge(c.status)}</td>
       <td>
@@ -1478,7 +1488,10 @@ function createMasterCategoryModal() {
     return;
   }
   openModal('Add Category', `
-    <div class="field"><label>Category name *</label><input id="mc_name" /></div>
+    <div class="grid-2">
+      <div class="field"><label>Category name *</label><input id="mc_name" /></div>
+      <div class="field"><label>Marathi name</label><input id="mc_nameMr" placeholder="मराठी नाव" /></div>
+    </div>
     <div class="field"><label>Description</label><textarea id="mc_description" rows="2"></textarea></div>
     <div class="grid-2">
       <div class="field"><label>Sort order</label><input id="mc_sortOrder" type="number" value="0" /></div>
@@ -1490,6 +1503,7 @@ function createMasterCategoryModal() {
       body: JSON.stringify({
         businessTypeId,
         name: $('mc_name').value.trim(),
+        nameMr: $('mc_nameMr').value.trim() || undefined,
         description: $('mc_description').value.trim() || undefined,
         sortOrder: Number($('mc_sortOrder').value) || 0,
         status: $('mc_status').value,
@@ -1506,7 +1520,10 @@ function editMasterCategory(id) {
   const c = masterCategories.find((x) => x.id === id);
   if (!c) return;
   openModal('Edit Category', `
-    <div class="field"><label>Category name *</label><input id="mc_name" value="${esc(c.name)}" /></div>
+    <div class="grid-2">
+      <div class="field"><label>Category name *</label><input id="mc_name" value="${esc(c.name)}" /></div>
+      <div class="field"><label>Marathi name</label><input id="mc_nameMr" value="${esc(c.nameMr || '')}" placeholder="मराठी नाव" /></div>
+    </div>
     <div class="field"><label>Description</label><textarea id="mc_description" rows="2">${esc(c.description || '')}</textarea></div>
     <div class="grid-2">
       <div class="field"><label>Sort order</label><input id="mc_sortOrder" type="number" value="${c.sortOrder}" /></div>
@@ -1517,6 +1534,7 @@ function editMasterCategory(id) {
       method: 'PATCH',
       body: JSON.stringify({
         name: $('mc_name').value.trim(),
+        nameMr: $('mc_nameMr').value.trim() || null,
         description: $('mc_description').value.trim() || null,
         sortOrder: Number($('mc_sortOrder').value),
         status: $('mc_status').value,
@@ -1544,6 +1562,7 @@ async function loadMasterBrands() {
   const btn = $('createMasterBrandBtn');
   const businessTypeId = $('catalogBrandTypeSelect')?.value || getCatalogBusinessTypeId();
   if (btn) btn.disabled = !businessTypeId;
+  if ($('importMasterBrandsBtn')) $('importMasterBrandsBtn').disabled = !businessTypeId;
   if (!tbody) return;
   updateCatalogChips();
   if (!businessTypeId) {
@@ -1551,9 +1570,9 @@ async function loadMasterBrands() {
     renderPagedTable('masterBrands', {
       tbodyId: 'masterBrandsTable',
       rows: [],
-      colspan: 4,
+      colspan: 5,
       resetPage: true,
-      emptyHtml: '<tr><td colspan="4" class="empty">Select a shop type on the left to manage its brands.</td></tr>',
+      emptyHtml: '<tr><td colspan="5" class="empty">Select a shop type on the left to manage its brands.</td></tr>',
       renderRow: () => '',
     });
     return;
@@ -1566,15 +1585,16 @@ async function loadMasterBrands() {
   renderPagedTable('masterBrands', {
     tbodyId: 'masterBrandsTable',
     rows: masterBrands,
-    colspan: 4,
+    colspan: 5,
     resetPage: true,
-    emptyHtml: '<tr><td colspan="4" class="empty">No brands for this type. Add your first brand.</td></tr>',
+    emptyHtml: '<tr><td colspan="5" class="empty">No brands for this type. Add your first brand.</td></tr>',
     renderRow: (b) => `
     <tr>
       <td>
         <strong>${esc(b.name)}</strong>
         ${b.description ? `<br><small style="color:var(--muted)">${esc(b.description)}</small>` : ''}
       </td>
+      <td>${b.nameMr ? esc(b.nameMr) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${b.sortOrder}</td>
       <td>${badge(b.status)}</td>
       <td>
@@ -1596,7 +1616,10 @@ function createMasterBrandModal() {
     return;
   }
   openModal('Add Brand', `
-    <div class="field"><label>Brand name *</label><input id="mb_name" /></div>
+    <div class="grid-2">
+      <div class="field"><label>Brand name *</label><input id="mb_name" /></div>
+      <div class="field"><label>Marathi name</label><input id="mb_nameMr" placeholder="मराठी नाव" /></div>
+    </div>
     <div class="field"><label>Description</label><textarea id="mb_description" rows="2"></textarea></div>
     <div class="grid-2">
       <div class="field"><label>Sort order</label><input id="mb_sortOrder" type="number" value="0" /></div>
@@ -1608,6 +1631,7 @@ function createMasterBrandModal() {
       body: JSON.stringify({
         businessTypeId,
         name: $('mb_name').value.trim(),
+        nameMr: $('mb_nameMr').value.trim() || undefined,
         description: $('mb_description').value.trim() || undefined,
         sortOrder: Number($('mb_sortOrder').value) || 0,
         status: $('mb_status').value,
@@ -1624,7 +1648,10 @@ function editMasterBrand(id) {
   const b = masterBrands.find((x) => x.id === id);
   if (!b) return;
   openModal('Edit Brand', `
-    <div class="field"><label>Brand name *</label><input id="mb_name" value="${esc(b.name)}" /></div>
+    <div class="grid-2">
+      <div class="field"><label>Brand name *</label><input id="mb_name" value="${esc(b.name)}" /></div>
+      <div class="field"><label>Marathi name</label><input id="mb_nameMr" value="${esc(b.nameMr || '')}" placeholder="मराठी नाव" /></div>
+    </div>
     <div class="field"><label>Description</label><textarea id="mb_description" rows="2">${esc(b.description || '')}</textarea></div>
     <div class="grid-2">
       <div class="field"><label>Sort order</label><input id="mb_sortOrder" type="number" value="${b.sortOrder}" /></div>
@@ -1635,6 +1662,7 @@ function editMasterBrand(id) {
       method: 'PATCH',
       body: JSON.stringify({
         name: $('mb_name').value.trim(),
+        nameMr: $('mb_nameMr').value.trim() || null,
         description: $('mb_description').value.trim() || null,
         sortOrder: Number($('mb_sortOrder').value),
         status: $('mb_status').value,
@@ -1673,7 +1701,8 @@ function masterProductFormHtml(initial = {}) {
       <div class="field"><label>Category</label>
         <select id="mp_categoryId">${optionList(cats, initial.categoryId, '— None —')}</select>
       </div>
-      <div class="field" style="grid-column:1/-1"><label>Product name *</label><input id="mp_name" value="${esc(initial.name)}" /></div>
+      <div class="field"><label>Product name *</label><input id="mp_name" value="${esc(initial.name || '')}" /></div>
+      <div class="field"><label>Marathi name</label><input id="mp_nameMr" value="${esc(initial.nameMr || '')}" placeholder="मराठी नाव" /></div>
       <div class="field"><label>Selling price</label><input id="mp_sellingPrice" type="number" step="0.01" value="${initial.sellingPrice ?? 0}" /></div>
       <div class="field"><label>Status</label>
         <select id="mp_status">
@@ -1696,6 +1725,7 @@ function collectMasterProductForm() {
     categoryId: $('mp_categoryId').value || null,
     brandId: null,
     name: $('mp_name').value.trim(),
+    nameMr: $('mp_nameMr').value.trim() || null,
     description: undefined,
     uomCode: 'pcs',
     sellingPrice: num('mp_sellingPrice'),
@@ -1790,6 +1820,490 @@ async function createMasterProductModal() {
     if (selectedCatalogTab === 'brands') await loadMasterBrands();
   });
   bindMasterProductBusinessTypeChange();
+}
+
+let openFoodRows = [];
+
+const OFF_FIELDS = 'code,product_name,product_name_en,product_name_mr,generic_name,generic_name_en,brands,quantity,categories_tags,countries_tags';
+const OFF_FOOD_HOSTS = ['https://world.openfoodfacts.org', 'https://in.openfoodfacts.org'];
+const OFF_CATEGORY_HOSTS = [
+  OFF_FOOD_HOSTS,
+  ['https://world.openbeautyfacts.org', 'https://in.openbeautyfacts.org'],
+  ['https://world.openproductsfacts.org'],
+];
+let offResolved = null;
+let offWorkingHost = null;
+
+function offCategoryTag() {
+  return ($('offCategory')?.value || '').trim().toLowerCase().replace(/\s+/g, '-');
+}
+
+async function offHostsFor(params) {
+  const category = params.get('categories_tags') || '';
+  if (!category) {
+    offResolved = null;
+    return OFF_FOOD_HOSTS;
+  }
+  if (offResolved?.category === category) return offResolved.hosts;
+  const probe = new URLSearchParams(params);
+  probe.delete('countries_tags');
+  probe.set('page', '1');
+  probe.set('page_size', '1');
+  let bestHosts = OFF_FOOD_HOSTS;
+  let bestCount = -1;
+  for (const hosts of OFF_CATEGORY_HOSTS) {
+    try {
+      const body = await fetchOpenFoodJson(hosts.map((host) => `${host}/api/v2/search?${probe}`));
+      const count = Number(body.count) || 0;
+      if (count > bestCount) {
+        bestCount = count;
+        bestHosts = hosts;
+      }
+    } catch (err) {
+      /* try the next catalog */
+    }
+  }
+  offResolved = { category, hosts: bestHosts };
+  return bestHosts;
+}
+
+async function fetchOpenFoodJson(urls) {
+  let lastError = null;
+  const ordered = offWorkingHost
+    ? [
+      ...urls.filter((url) => url.startsWith(offWorkingHost)),
+      ...urls.filter((url) => !url.startsWith(offWorkingHost)),
+    ]
+    : urls;
+  for (const url of ordered) {
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!response.ok) {
+        lastError = new Error(`Open Food Facts returned ${response.status}`);
+        continue;
+      }
+      offWorkingHost = new URL(url).origin;
+      return await response.json();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error(lastError?.message || 'Open Food Facts is not reachable right now');
+}
+
+function offClean(value, max) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, max) : '';
+}
+
+function offDigits(value) {
+  return String(value || '').replace(/[०-९]/g, (digit) => {
+    const index = '०१२३४५६७८९'.indexOf(digit);
+    return index >= 0 ? String(index) : digit;
+  });
+}
+
+function offBarcode(code) {
+  const digits = String(code || '').replace(/\D/g, '');
+  return /^\d{4,18}$/.test(digits) ? digits : '';
+}
+
+function offSize(raw) {
+  if (!raw) return '';
+  const text = offDigits(raw).replace(',', '.').replace(/\s+/g, ' ').trim();
+  const match = text.match(/(\d+(?:\.\d+)?)\s*(kgs?|gr|gms?|g|mls?|ltr|litres?|liters?|l|cl|pcs|pc|pieces)?/i);
+  if (!match) return '';
+  let value = parseFloat(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  let unit = String(match[2] || '').toLowerCase();
+  if (unit === 'gr' || unit === 'gm' || unit === 'gms') unit = 'g';
+  if (unit === 'kgs' || unit === 'kg') unit = 'kg';
+  if (unit === 'mls' || unit === 'ml') unit = 'ml';
+  if (['ltr', 'litre', 'liter', 'litres', 'liters', 'l'].includes(unit)) unit = 'L';
+  if (unit === 'cl') {
+    value *= 10;
+    unit = 'ml';
+  }
+  if (unit === 'pc' || unit === 'pcs' || unit === 'pieces') unit = 'pc';
+  if (!unit) return '';
+  const shown = Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
+  return `${shown} ${unit}`.slice(0, 30);
+}
+
+function offKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9\u0900-\u097f\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function offMapHit(hit) {
+  const raw = offClean(hit.product_name, 200);
+  const english = offClean(hit.product_name_en, 200);
+  const generic = offClean(hit.generic_name_en, 200);
+  if (/wird geladen|loading\.\.\.|unknown product/i.test(raw)) return null;
+  const devanagari = /[\u0900-\u097F]/;
+  let name = '';
+  if (raw && !devanagari.test(raw)) name = raw;
+  else if (english && !devanagari.test(english)) name = english;
+  else if (generic && !devanagari.test(generic)) name = generic;
+  else name = raw || english || generic;
+  if (!name || name.length < 2) return null;
+  const barcode = offBarcode(hit.code);
+  if (!barcode) return null;
+  const brands = String(hit.brands || '').split(',').map((item) => offClean(item, 150)).filter(Boolean);
+  const nameKey = offKey(name);
+  const brand = brands.find((item) => offKey(item) !== nameKey) || brands[0] || '';
+  const tags = Array.isArray(hit.categories_tags) ? hit.categories_tags : [];
+  const specific = [...tags].reverse().find((tag) => String(tag).startsWith('en:'));
+  const category = specific
+    ? offClean(String(specific).slice(3).replace(/-/g, ' ').replace(/\b[a-z]/g, (letter) => letter.toUpperCase()), 150)
+    : '';
+  return {
+    name,
+    nameMr: offClean(hit.product_name_mr, 200) || (devanagari.test(raw) ? raw : ''),
+    brand,
+    brandKey: [...new Set(brands.map(offKey).filter((item) => item && item !== nameKey))].sort().join(' '),
+    category,
+    description: offClean(hit.generic_name_en || hit.generic_name, 800),
+    barcode,
+    size: offSize(hit.quantity),
+  };
+}
+
+function offGroup(hits) {
+  const order = [];
+  const groups = new Map();
+  for (const hit of hits || []) {
+    const row = offMapHit(hit);
+    if (!row) continue;
+    const base = offKey(row.name).replace(/\d+(?:\.\d+)?\s*(kg|g|ml|l|pc)\b/g, ' ').replace(/\b(biscuits?|cookies?|wafers?)\b/g, ' ').replace(/\s+/g, ' ').trim();
+    const key = `${base || offKey(row.name)}|${row.brandKey}`;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    const bucket = groups.get(key);
+    if (bucket.some((item) => item.barcode === row.barcode)) continue;
+    if (bucket.length && !bucket[0].nameMr && row.nameMr) bucket[0].nameMr = row.nameMr;
+    if (bucket.length && !bucket[0].category && row.category) bucket[0].category = row.category;
+    if (bucket.length && !bucket[0].description && row.description) bucket[0].description = row.description;
+    bucket.push(row);
+  }
+  return order.map((key) => {
+    const items = groups.get(key);
+    const first = items[0];
+    const bySize = new Map();
+    items.forEach((item) => {
+      const sizeKey = item.size || '';
+      if (!bySize.has(sizeKey)) bySize.set(sizeKey, []);
+      const codes = bySize.get(sizeKey);
+      if (!codes.includes(item.barcode)) codes.push(item.barcode);
+    });
+    const sized = [...bySize.keys()].filter(Boolean);
+    if (sized.length >= 2) {
+      const bases = items
+        .map((item) => item.name.replace(/\b\d+(?:[.,]\d+)?\s*(kgs?|gms?|gr|g|mls?|ltr|l)\b/gi, ' ').replace(/\s+/g, ' ').trim())
+        .filter((name) => name.length >= 2)
+        .sort((a, b) => a.length - b.length);
+      return {
+        id: key,
+        name: bases[0] || first.name,
+        nameMr: first.nameMr,
+        brand: first.brand,
+        category: first.category,
+        description: first.description || '',
+        variants: sized.map((size) => ({ size, barcodes: bySize.get(size) })),
+      };
+    }
+    const size = sized[0] || '';
+    const name = size && !first.name.toLowerCase().includes(size.toLowerCase()) ? `${first.name} ${size}`.slice(0, 200) : first.name;
+    const barcodes = (size ? bySize.get(size) : bySize.get('')) || [];
+    return {
+      id: key,
+      name,
+      nameMr: first.nameMr,
+      brand: first.brand,
+      category: first.category,
+      description: first.description || '',
+      barcodes: barcodes.slice(0, 3),
+    };
+  });
+}
+
+async function fetchOpenFoodCatalog(page, extra) {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: '100',
+    fields: OFF_FIELDS,
+    sort_by: 'created_t',
+  });
+  const category = offCategoryTag();
+  if (category) params.set('categories_tags', category);
+  else params.set('countries_tags', 'india');
+  Object.entries(extra || {}).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  const hosts = await offHostsFor(params);
+  const body = await fetchOpenFoodJson(hosts.map((host) => `${host}/api/v2/search?${params}`));
+  const hits = Array.isArray(body.products) ? body.products : [];
+  const count = Number(body.count) || hits.length;
+  return {
+    hits,
+    products: offGroup(hits),
+    count,
+    pageSize: 100,
+    pageCount: Math.max(1, Math.ceil(count / 100)),
+  };
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchOpenFoodCatalogRetry(page, extra) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await fetchOpenFoodCatalog(page, extra);
+    } catch (err) {
+      lastError = err;
+      if (attempt < 4) await waitMs(1000 * (2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
+function offDateChildren(tag) {
+  if (/^\d{4}$/.test(tag)) {
+    return Array.from({ length: 12 }, (_, index) => `${tag}-${String(index + 1).padStart(2, '0')}`);
+  }
+  if (/^\d{4}-\d{2}$/.test(tag)) {
+    const [year, month] = tag.split('-').map(Number);
+    const days = new Date(year, month, 0).getDate();
+    return Array.from({ length: days }, (_, index) => `${tag}-${String(index + 1).padStart(2, '0')}`);
+  }
+  return [];
+}
+
+async function searchOpenFoodCatalog(term) {
+  const category = offCategoryTag();
+  if (/^\d{4,18}$/.test(term)) {
+    const params = new URLSearchParams({ code: term, page_size: '20', fields: OFF_FIELDS });
+    if (category) params.set('categories_tags', category);
+    const hosts = await offHostsFor(params);
+    const body = await fetchOpenFoodJson(hosts.map((host) => `${host}/api/v2/search?${params}`));
+    const hits = Array.isArray(body.products) ? body.products : [];
+    return { products: offGroup(hits), count: hits.length, pageCount: 1 };
+  }
+  const params = new URLSearchParams({
+    search_terms: term,
+    search_simple: '1',
+    action: 'process',
+    json: '1',
+    page: '1',
+    page_size: '24',
+    fields: OFF_FIELDS,
+  });
+  if (category) params.set('categories_tags', category);
+  const hosts = await offHostsFor(params);
+  const body = await fetchOpenFoodJson(hosts.map((host) => `${host}/cgi/search.pl?${params}`));
+  const hits = Array.isArray(body.products) ? body.products : [];
+  return { products: offGroup(hits), count: Number(body.count) || hits.length, pageCount: 1 };
+}
+
+function openFoodRowHtml(row, index) {
+  const packs = (row.variants || []).map((variant) => variant.size).filter(Boolean).join(', ');
+  const codes = packs || (row.barcodes || []).slice(0, 2).join(', ');
+  const meta = [row.brand, row.category, codes].filter(Boolean).join(' · ');
+  return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">
+    <input type="checkbox" class="off-pick" data-index="${index}" />
+    <span><strong>${esc(row.name)}</strong>${meta ? `<br><small style="color:var(--muted)">${esc(meta)}</small>` : ''}</span>
+  </label>`;
+}
+
+function renderOpenFoodRows(products) {
+  openFoodRows = products || [];
+  const list = $('offList');
+  if (list) list.innerHTML = openFoodRows.map(openFoodRowHtml).join('') || '<p class="hint">No products</p>';
+}
+
+async function loadOpenFoodList() {
+  const status = $('offStatus');
+  const term = ($('offSearch')?.value || '').trim();
+  if (status) status.textContent = 'Loading…';
+  const data = term.length >= 2
+    ? await searchOpenFoodCatalog(term)
+    : await fetchOpenFoodCatalog(1);
+  renderOpenFoodRows(data.products || []);
+  if (status) status.textContent = `Showing ${openFoodRows.length} of ${data.count || openFoodRows.length}. Select all imports every available product.`;
+  return data;
+}
+
+async function postOpenFoodImport(businessTypeId, products) {
+  return api('/master-products/import-from-open-food', {
+    method: 'POST',
+    body: JSON.stringify({ businessTypeId, products }),
+  });
+}
+
+async function importOpenFoodBatches(businessTypeId, products, status, progress) {
+  const totals = { imported: 0, created: 0, updated: 0, failed: 0 };
+  for (let index = 0; index < products.length; index += 50) {
+    const batch = products.slice(index, index + 50);
+    progress.done += batch.length;
+    if (status) status.textContent = `Importing ${progress.done} of ${progress.total} products`;
+    const data = await postOpenFoodImport(businessTypeId, batch);
+    totals.imported += data.imported || 0;
+    totals.created += data.created || 0;
+    totals.updated += data.updated || 0;
+    totals.failed += data.failed || 0;
+  }
+  return totals;
+}
+
+async function importOpenFoodPages(businessTypeId, status, progress, totals, extra, first) {
+  const count = first.count || (first.hits || []).length;
+  const pages = Math.min(10, Math.max(1, Math.ceil(count / 100)));
+  const add = (part) => {
+    totals.imported += part.imported;
+    totals.created += part.created;
+    totals.updated += part.updated;
+    totals.failed += part.failed;
+  };
+  add(await importOpenFoodBatches(businessTypeId, offGroup(first.hits || []), status, progress));
+  for (let page = 2; page <= pages; page += 1) {
+    try {
+      const data = await fetchOpenFoodCatalogRetry(page, extra);
+      const hits = data.hits || [];
+      if (!hits.length) break;
+      add(await importOpenFoodBatches(businessTypeId, offGroup(hits), status, progress));
+    } catch (err) {
+      totals.missedPages += 1;
+      if (status) status.textContent = `Imported ${progress.done} of ${progress.total} products. One page was skipped.`;
+      break;
+    }
+    await waitMs(150);
+  }
+}
+
+async function importOpenFoodDateSlice(tag, businessTypeId, status, progress, totals) {
+  const extra = { entry_dates_tags: tag };
+  let first;
+  try {
+    first = await fetchOpenFoodCatalogRetry(1, extra);
+  } catch (err) {
+    totals.missedPages += 1;
+    if (status) status.textContent = `Imported ${progress.done} of ${progress.total} products. ${tag} was skipped.`;
+    return;
+  }
+  const count = first.count || (first.hits || []).length;
+  if (!count) return;
+  if (count > 1000) {
+    const children = offDateChildren(tag);
+    if (children.length) {
+      for (const child of children) {
+        await importOpenFoodDateSlice(child, businessTypeId, status, progress, totals);
+      }
+      return;
+    }
+  }
+  if (status) status.textContent = `Importing ${tag}, ${progress.done} of ${progress.total} products`;
+  await importOpenFoodPages(businessTypeId, status, progress, totals, extra, first);
+}
+
+async function importAllAvailableOpenFood(businessTypeId, status) {
+  const first = await fetchOpenFoodCatalogRetry(1);
+  const total = first.count || (first.hits || []).length;
+  const progress = { done: 0, total };
+  const totals = { imported: 0, created: 0, updated: 0, failed: 0, missedPages: 0 };
+  if (total <= 1000) {
+    await importOpenFoodPages(businessTypeId, status, progress, totals, {}, first);
+    return totals;
+  }
+  const newestYear = new Date().getFullYear();
+  for (let year = 2012; year <= newestYear; year += 1) {
+    await importOpenFoodDateSlice(String(year), businessTypeId, status, progress, totals);
+  }
+  return totals;
+}
+
+async function importOpenFoodMasterModal() {
+  const businessTypeId = getCatalogBusinessTypeId();
+  if (!businessTypeId) {
+    showAlert('Select a shop type first', 'error');
+    return;
+  }
+  const typeName = getBusinessTypeById(businessTypeId)?.name || 'this catalog';
+  openFoodRows = [];
+  openModal('Import from API', `
+    <p class="hint">Products are saved into <strong>${esc(typeName)}</strong>. Set a category tag such as <strong>soap</strong> to load that whole category. Leave it blank to list Indian products. Pack sizes stay one product, each size with its own barcode and MRP.</p>
+    <div class="field-row">
+      <input id="offCategory" placeholder="categories_tags, e.g. soap" />
+      <input id="offSearch" placeholder="Search name or barcode" />
+      <button type="button" class="secondary" id="offLoad">Search</button>
+    </div>
+    <label style="display:flex;gap:8px;margin:8px 0"><input type="checkbox" id="offSelectAll" /> Select all available products</label>
+    <div id="offStatus" class="hint">Loading the first page…</div>
+    <div id="offList" style="max-height:360px;overflow:auto"></div>
+  `, async () => {
+    const term = ($('offSearch')?.value || '').trim();
+    const selectAll = $('offSelectAll')?.checked;
+    const status = $('offStatus');
+    let imported = 0;
+    let created = 0;
+    let updated = 0;
+    let failed = 0;
+    let missedPages = 0;
+    if (selectAll && term.length < 2) {
+      const totals = await importAllAvailableOpenFood(businessTypeId, status);
+      imported = totals.imported;
+      created = totals.created;
+      updated = totals.updated;
+      failed = totals.failed;
+      missedPages = totals.missedPages;
+      if (!imported) throw new Error('No products could be imported');
+    } else {
+      const selected = selectAll
+        ? (await searchOpenFoodCatalog(term)).products || []
+        : [...document.querySelectorAll('.off-pick:checked')]
+          .map((box) => openFoodRows[Number(box.dataset.index)])
+          .filter(Boolean);
+      if (!selected.length) throw new Error('Select at least one product');
+      const totals = await importOpenFoodBatches(businessTypeId, selected, status, { done: 0, total: selected.length });
+      imported = totals.imported;
+      created = totals.created;
+      updated = totals.updated;
+      failed = totals.failed;
+    }
+    const missedNote = missedPages ? ` ${missedPages} pages could not be loaded.` : '';
+    showAlert(`Saved ${imported} into ${typeName}. Added ${created}, updated ${updated}, failed ${failed}.${missedNote}`);
+    await loadBusinessTypes();
+    await loadCatalogProducts();
+  }, { saveLabel: 'Import', wide: true });
+
+  $('offLoad').onclick = () => {
+    loadOpenFoodList().catch((err) => {
+      const status = $('offStatus');
+      if (status) status.textContent = err.message || 'Could not load products';
+    });
+  };
+  $('offSearch').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      $('offLoad').click();
+    }
+  });
+  $('offCategory').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      $('offLoad').click();
+    }
+  });
+  loadOpenFoodList().catch((err) => {
+    const status = $('offStatus');
+    if (status) status.textContent = err.message || 'Could not load products';
+  });
 }
 
 async function editMasterProduct(id) {
@@ -3135,17 +3649,140 @@ function bindImportFilePreview(fileInputId, statusId, normalizer) {
   };
 }
 
+function normalizeNameImportRow(row) {
+  const out = {};
+  for (const [key, val] of Object.entries(row)) {
+    const k = String(key).trim();
+    if (!k || val == null || val === '') continue;
+    out[k] = String(val).trim();
+  }
+  // Accept common CSV header aliases
+  if (!out.name && out.Name) out.name = out.Name;
+  if (!out.nameMr && (out.name_mr || out['Marathi name'] || out.marathiName)) {
+    out.nameMr = out.name_mr || out['Marathi name'] || out.marathiName;
+  }
+  return out.name ? out : null;
+}
+
+function importMasterCategoriesModal() {
+  const businessTypeId = getCatalogBusinessTypeId();
+  if (!businessTypeId) {
+    showAlert('Select a business type first', 'error');
+    return;
+  }
+  const sampleCsv = 'name,nameMr,description,sortOrder\nGrocery,किराणा,Daily grocery,1\nSnacks,स्नॅक्स,Packaged snacks,2';
+  openModal('Import Categories (CSV)', `
+    <p style="font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.5">
+      Import categories for the selected shop type from <strong>CSV</strong>.
+      Required: <code>name</code>. Optional: <code>nameMr</code> (Marathi), <code>description</code>, <code>sortOrder</code>, <code>status</code>.
+      Existing English names are skipped (Marathi is filled if missing).
+    </p>
+    <p style="margin:0 0 12px">
+      <a href="#" id="mcimp_downloadCsv" style="color:var(--primary);font-weight:600">Download sample CSV</a>
+    </p>
+    <div class="field"><label>CSV file</label><input id="mcimp_file" type="file" accept=".csv,text/csv" /></div>
+    <div class="field"><label>Or paste CSV</label><textarea id="mcimp_text" rows="8" placeholder="${sampleCsv}"></textarea></div>
+    <p id="mcimp_status" style="font-size:13px;color:var(--muted);margin:0"></p>
+  `, async () => {
+    let rows = [];
+    const fileInput = $('mcimp_file');
+    const text = $('mcimp_text').value.trim();
+    if (fileInput.files?.[0]) {
+      rows = parseCsv(await fileInput.files[0].text()).map(normalizeNameImportRow).filter(Boolean);
+    } else if (text) {
+      rows = parseCsv(text).map(normalizeNameImportRow).filter(Boolean);
+    }
+    if (!rows.length) throw new Error('No valid rows found (each row needs name)');
+    const result = await api('/master-categories/import', {
+      method: 'POST',
+      body: JSON.stringify({ businessTypeId, rows }),
+    });
+    let msg = `Imported ${result.success} categor${result.success === 1 ? 'y' : 'ies'}`;
+    if (result.skipped) msg += `, ${result.skipped} skipped`;
+    if (result.failed) msg += `, ${result.failed} failed`;
+    showAlert(msg, result.failed ? 'error' : 'success');
+    if (result.errors?.length) console.warn('Category import errors:', result.errors);
+    await loadBusinessTypes();
+    await loadMasterCategories();
+  });
+  $('mcimp_downloadCsv').onclick = (e) => {
+    e.preventDefault();
+    const blob = new Blob([sampleCsv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'master-categories-import-sample.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  bindImportFilePreview('mcimp_file', 'mcimp_status', normalizeNameImportRow);
+}
+
+function importMasterBrandsModal() {
+  const businessTypeId = $('catalogBrandTypeSelect')?.value || getCatalogBusinessTypeId();
+  if (!businessTypeId) {
+    showAlert('Select a business type first', 'error');
+    return;
+  }
+  const sampleCsv = 'name,nameMr,description,sortOrder\nAmul,अमूल,Dairy brand,1\nBritannia,ब्रिटानिया,Bakery brand,2';
+  openModal('Import Brands (CSV)', `
+    <p style="font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.5">
+      Import brands for the selected shop type from <strong>CSV</strong>.
+      Required: <code>name</code>. Optional: <code>nameMr</code> (Marathi), <code>description</code>, <code>sortOrder</code>, <code>status</code>.
+      Existing English names are skipped (Marathi is filled if missing).
+    </p>
+    <p style="margin:0 0 12px">
+      <a href="#" id="mbimp_downloadCsv" style="color:var(--primary);font-weight:600">Download sample CSV</a>
+    </p>
+    <div class="field"><label>CSV file</label><input id="mbimp_file" type="file" accept=".csv,text/csv" /></div>
+    <div class="field"><label>Or paste CSV</label><textarea id="mbimp_text" rows="8" placeholder="${sampleCsv}"></textarea></div>
+    <p id="mbimp_status" style="font-size:13px;color:var(--muted);margin:0"></p>
+  `, async () => {
+    let rows = [];
+    const fileInput = $('mbimp_file');
+    const text = $('mbimp_text').value.trim();
+    if (fileInput.files?.[0]) {
+      rows = parseCsv(await fileInput.files[0].text()).map(normalizeNameImportRow).filter(Boolean);
+    } else if (text) {
+      rows = parseCsv(text).map(normalizeNameImportRow).filter(Boolean);
+    }
+    if (!rows.length) throw new Error('No valid rows found (each row needs name)');
+    const result = await api('/master-brands/import', {
+      method: 'POST',
+      body: JSON.stringify({ businessTypeId, rows }),
+    });
+    let msg = `Imported ${result.success} brand${result.success === 1 ? '' : 's'}`;
+    if (result.skipped) msg += `, ${result.skipped} skipped`;
+    if (result.failed) msg += `, ${result.failed} failed`;
+    showAlert(msg, result.failed ? 'error' : 'success');
+    if (result.errors?.length) console.warn('Brand import errors:', result.errors);
+    await loadBusinessTypes();
+    await loadMasterBrands();
+  });
+  $('mbimp_downloadCsv').onclick = (e) => {
+    e.preventDefault();
+    const blob = new Blob([sampleCsv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'master-brands-import-sample.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  bindImportFilePreview('mbimp_file', 'mbimp_status', normalizeNameImportRow);
+}
+
 function importCatalogProductsModal() {
   const defaultBusinessTypeId = $('catalogProductTypeSelect')?.value || getCatalogBusinessTypeId() || '';
-  const sampleCsv = 'name,sellingPrice,costPrice,mrp,uom,category,sku,barcode,description,sortOrder,businessTypeCode\nRice 1kg,60,50,65,kg,Grocery,KIR-RICE-1KG,8901001001001,Basmati rice,1,kirana';
+  const sampleCsv = 'name,nameMr,sellingPrice,costPrice,mrp,uom,category,categoryNameMr,brand,brandNameMr,sku,barcode,description,sortOrder,businessTypeCode\nRice 1kg,तांदूळ १ किलो,60,50,65,kg,Grocery,किराणा,India Gate,इंडिया गेट,KIR-RICE-1KG,8901001001001,Basmati rice,1,kirana';
 
   openModal('Import Catalog Products', `
     <p style="font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.5">
       Import product templates into the <strong>catalog master</strong> (not tenant shops).
       Supports <strong>Excel (.xlsx)</strong>, <strong>CSV</strong>, and <strong>JSON</strong>.
       Required: <code>name</code>, <code>sellingPrice</code>.
-      Optional: <code>costPrice, mrp, uom, category, sku, barcode, description, sortOrder, businessTypeCode</code>.
-      Unknown categories are created automatically for the selected business type.
+      Optional: <code>nameMr, costPrice, mrp, uom, category, categoryNameMr, brand, brandNameMr, sku, barcode, description, sortOrder, businessTypeCode</code>.
+      Unknown categories/brands are created automatically for the selected business type.
     </p>
     <div class="field">
       <label>Default business type</label>
@@ -3154,6 +3791,7 @@ function importCatalogProductsModal() {
     </div>
     <div class="grid-2">
       <div class="field"><label><input type="checkbox" id="cimp_createCategories" checked /> Auto-create categories</label></div>
+      <div class="field"><label><input type="checkbox" id="cimp_createBrands" checked /> Auto-create brands</label></div>
       <div class="field"><label><input type="checkbox" id="cimp_skipDuplicates" checked /> Skip duplicate SKUs</label></div>
     </div>
     <p style="margin:0 0 12px">
@@ -3201,6 +3839,7 @@ function importCatalogProductsModal() {
         rows,
         options: {
           createCategories: $('cimp_createCategories').checked,
+          createBrands: $('cimp_createBrands')?.checked !== false,
           skipDuplicates: $('cimp_skipDuplicates').checked,
         },
       }),
@@ -3209,6 +3848,7 @@ function importCatalogProductsModal() {
     let msg = `Imported ${result.success} product(s)`;
     if (result.skipped) msg += `, ${result.skipped} skipped (duplicate SKU)`;
     if (result.categoriesCreated) msg += `, ${result.categoriesCreated} new categor${result.categoriesCreated === 1 ? 'y' : 'ies'}`;
+    if (result.brandsCreated) msg += `, ${result.brandsCreated} new brand${result.brandsCreated === 1 ? '' : 's'}`;
     if (result.failed) msg += `, ${result.failed} failed`;
     showAlert(msg, result.failed ? 'error' : 'success');
     if (result.errors?.length) console.warn('Catalog import errors:', result.errors);
@@ -3216,6 +3856,7 @@ function importCatalogProductsModal() {
     await loadBusinessTypes();
     await loadCatalogProducts();
     if (selectedCatalogTab === 'categories') await loadMasterCategories();
+    if (selectedCatalogTab === 'brands') await loadMasterBrands();
   });
 
   $('cimp_downloadCsv').onclick = (e) => {
@@ -3643,9 +4284,12 @@ function bindEvents() {
   $('createPlanBtn').onclick = createPlanModal;
   $('createBusinessTypeBtn').onclick = createBusinessTypeModal;
   $('createMasterCategoryBtn').onclick = createMasterCategoryModal;
+  if ($('importMasterCategoriesBtn')) $('importMasterCategoriesBtn').onclick = importMasterCategoriesModal;
   if ($('createMasterBrandBtn')) $('createMasterBrandBtn').onclick = createMasterBrandModal;
+  if ($('importMasterBrandsBtn')) $('importMasterBrandsBtn').onclick = importMasterBrandsModal;
   $('createMasterProductBtn').onclick = createMasterProductModal;
   $('importCatalogProductsBtn').onclick = importCatalogProductsModal;
+  if ($('importOpenFoodMasterBtn')) $('importOpenFoodMasterBtn').onclick = importOpenFoodMasterModal;
   document.querySelectorAll('.catalog-tab').forEach((btn) => {
     btn.onclick = () => switchCatalogTab(btn.dataset.catalogTab);
   });

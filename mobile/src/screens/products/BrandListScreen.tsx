@@ -1,22 +1,32 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, HelperText, Portal, TextInput } from 'react-native-paper';
+import { Button, Dialog, FAB, HelperText, Portal } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
-import { createBrand, deleteBrand, fetchBrands, updateBrand } from '../../services/catalogService';
+import { useT } from '../../i18n';
+import {
+  createBrand,
+  deleteBrand,
+  fetchBrands,
+  updateBrand,
+} from '../../services/catalogService';
 import type { Brand } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing } from '../../theme/layout';
+import { common, dialogCard } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'BrandList'>;
 
 type DialogMode = 'add' | 'edit';
 
 export default function BrandListScreen({}: Props) {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [brands, setBrands] = useState<Brand[]>([]);
   const [search, setSearch] = useState('');
   const [visible, setVisible] = useState(false);
@@ -31,11 +41,13 @@ export default function BrandListScreen({}: Props) {
     try {
       setBrands(await fetchBrands());
     } catch (err) {
-      Alert.alert('Load failed', apiError(err, 'Could not load brands'));
+      Alert.alert(tRef.current('Load failed'), apiError(err, tRef.current('Could not load brands')));
     }
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   const filtered = brands.filter((b) => {
     const q = search.trim().toLowerCase();
@@ -61,7 +73,7 @@ export default function BrandListScreen({}: Props) {
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setError('Name is required');
+      setError(t('Name is required'));
       return;
     }
     setLoading(true);
@@ -75,47 +87,54 @@ export default function BrandListScreen({}: Props) {
       setVisible(false);
       await load();
     } catch (err) {
-      setError(apiError(err, mode === 'add' ? 'Could not add brand' : 'Could not update brand'));
+      setError(apiError(err, mode === 'add' ? t('Could not add brand') : t('Could not update brand')));
     } finally {
       setLoading(false);
     }
   };
 
   const confirmDelete = (brand: Brand) => {
-    Alert.alert(
-      'Delete brand?',
-      `Remove "${brand.name}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteBrand(brand.id);
-              await load();
-            } catch (err) {
-              Alert.alert('Delete failed', apiError(err, 'Could not delete brand'));
-            }
-          },
+    Alert.alert(t('Delete brand?'), t('Remove "{{name}}"?', { name: brand.name }), [
+      { text: t('Cancel'), style: 'cancel' },
+      {
+        text: t('Delete'),
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteBrand(brand.id);
+            setVisible(false);
+            await load();
+          } catch (err) {
+            Alert.alert(t('Delete failed'), apiError(err, t('Could not delete brand')));
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search brands..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search brands...')} />
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
         contentContainerStyle={filtered.length ? common.listContent : styles.emptyList}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} colors={[colors.primary]} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await load();
+              setRefreshing(false);
+            }}
+            colors={[colors.primary]}
+          />
+        }
         ListEmptyComponent={
           <EmptyState
             icon="tag-outline"
-            title={search.trim() ? 'No matching brands' : 'No brands yet'}
-            subtitle={search.trim() ? 'Try a different search' : 'Add brands to group your products'}
+            title={search.trim() ? t('No matching brands') : t('No brands yet')}
+            subtitle={search.trim() ? t('Try a different search') : t('Add brands for your products')}
           />
         }
         renderItem={({ item }) => (
@@ -129,23 +148,37 @@ export default function BrandListScreen({}: Props) {
           />
         )}
       />
-      <FAB icon="plus" style={common.fab} color={colors.textOnPrimary} onPress={openAdd} />
+
+      <FAB icon="plus" style={styles.fabMain} color={colors.textOnPrimary} onPress={openAdd} />
+
       <Portal>
         <Dialog visible={visible} onDismiss={() => !loading && setVisible(false)} style={styles.dialog}>
-          <Dialog.Title>{mode === 'add' ? 'Add Brand' : 'Edit Brand'}</Dialog.Title>
+          <Dialog.Title>{mode === 'add' ? t('Add Brand') : t('Edit Brand')}</Dialog.Title>
           <Dialog.Content>
-            <TextInput label="Name" value={name} onChangeText={setName} mode="outlined" />
-            {error ? <HelperText type="error" visible>{error}</HelperText> : null}
+            <AppTextInput label={t('Name')} value={name} onChangeText={setName} mode="outlined" />
+            {error ? (
+              <HelperText type="error" visible>
+                {error}
+              </HelperText>
+            ) : null}
           </Dialog.Content>
           <Dialog.Actions>
             {mode === 'edit' && editingId ? (
-              <Button textColor={colors.error} onPress={() => {
-                const brand = brands.find((b) => b.id === editingId);
-                if (brand) confirmDelete(brand);
-              }}>Delete</Button>
+              <Button
+                textColor={colors.error}
+                onPress={() => {
+                  const brand = brands.find((b) => b.id === editingId);
+                  if (brand) confirmDelete(brand);
+                }}>
+                {t('Delete')}
+              </Button>
             ) : null}
-            <Button onPress={() => setVisible(false)} disabled={loading}>Cancel</Button>
-            <Button loading={loading} onPress={handleSave} disabled={!name.trim()}>Save</Button>
+            <Button onPress={() => setVisible(false)} disabled={loading}>
+              {t('Cancel')}
+            </Button>
+            <Button loading={loading} onPress={handleSave} disabled={!name.trim()}>
+              {t('Save')}
+            </Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -155,5 +188,6 @@ export default function BrandListScreen({}: Props) {
 
 const styles = StyleSheet.create({
   emptyList: { flexGrow: 1 },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
+  fabMain: { ...common.fab, backgroundColor: colors.primary },
 });

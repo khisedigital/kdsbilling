@@ -14,6 +14,11 @@ async function createCategory(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function bulkImportCategories(req, res) {
+  const data = await categoryService.bulkImportCategories(req.db, req.body.rows);
+  res.status(201).json({ success: true, data });
+}
+
 async function updateCategory(req, res) {
   const data = await categoryService.updateCategory(req.db, req.params.id, req.body);
   res.json({ success: true, data });
@@ -32,6 +37,11 @@ async function listBrands(req, res) {
 
 async function createBrand(req, res) {
   const data = await brandService.createBrand(req.db, req.body);
+  res.status(201).json({ success: true, data });
+}
+
+async function bulkImportBrands(req, res) {
+  const data = await brandService.bulkImportBrands(req.db, req.body.rows);
   res.status(201).json({ success: true, data });
 }
 
@@ -74,8 +84,23 @@ async function updateProduct(req, res) {
   res.json({ success: true, data });
 }
 
+async function bulkUpdateVariantPricing(req, res) {
+  const data = await productService.bulkUpdateVariantPricing(
+    req.db,
+    req.auth?.branchId,
+    req.auth?.sub,
+    req.body?.items || [],
+  );
+  res.json({ success: true, data });
+}
+
 async function deleteProduct(req, res) {
   const data = await productService.deleteProduct(req.db, req.params.id);
+  res.json({ success: true, data });
+}
+
+async function deleteAllProducts(req, res) {
+  const data = await productService.deleteAllProducts(req.db);
   res.json({ success: true, data });
 }
 
@@ -155,6 +180,26 @@ async function listMasterCatalogBusinessTypes(req, res) {
   res.json({ success: true, data });
 }
 
+async function searchOpenFoodFacts(req, res) {
+  const openFoodFactsService = require('../services/openFoodFactsService');
+  const data = await openFoodFactsService.searchOpenFoodFacts(req.query);
+  res.json({ success: true, data });
+}
+
+async function importOpenFoodFacts(req, res) {
+  const openFoodFactsService = require('../services/openFoodFactsService');
+  const data = await openFoodFactsService.importOpenFoodProducts(
+    req.db,
+    req.body,
+    {
+      branchId: req.auth?.branchId || null,
+      userId: req.auth?.sub || null,
+      tenant: req.tenant,
+    },
+  );
+  res.status(201).json({ success: true, data });
+}
+
 async function importFromMasterCatalog(req, res) {
   const masterCatalogImportService = require('../services/masterCatalogImportService');
   const data = await masterCatalogImportService.importMasterProductsToTenant(
@@ -172,17 +217,21 @@ async function importFromMasterCatalog(req, res) {
 module.exports = {
   listCategories,
   createCategory,
+  bulkImportCategories,
   updateCategory,
   deleteCategory,
   listBrands,
   createBrand,
+  bulkImportBrands,
   updateBrand,
   deleteBrand,
   listProducts,
   getProduct,
   createProduct,
   updateProduct,
+  bulkUpdateVariantPricing,
   deleteProduct,
+  deleteAllProducts,
   searchProducts,
   generateBarcodes,
   productBarcodeStatus,
@@ -195,5 +244,7 @@ module.exports = {
   listMasterCatalog,
   listMasterCatalogCategories,
   listMasterCatalogBusinessTypes,
+  searchOpenFoodFacts,
+  importOpenFoodFacts,
   importFromMasterCatalog,
 };

@@ -3,17 +3,20 @@ import {
   FlatList,
   Keyboard,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type TextInput as RNTextInput,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { radius, shadow, spacing } from '../../theme/layout';
+import { dialogCard, radius, shadow, spacing } from '../../theme/layout';
 
 export type CategoryOption = {
   id: string;
@@ -40,7 +43,10 @@ function CategoryPickerSheet({
   onSelect,
   onClose,
 }: Props) {
+  const t = useT();
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const compact = width >= 720 || Platform.OS === 'web';
   const [query, setQuery] = useState('');
   const inputRef = useRef<RNTextInput>(null);
 
@@ -50,8 +56,8 @@ function CategoryPickerSheet({
       Keyboard.dismiss();
       return;
     }
-    const t = setTimeout(() => inputRef.current?.focus(), 250);
-    return () => clearTimeout(t);
+    const focusTimer = setTimeout(() => inputRef.current?.focus(), 250);
+    return () => clearTimeout(focusTimer);
   }, [visible]);
 
   const filtered = useMemo(() => {
@@ -88,13 +94,18 @@ function CategoryPickerSheet({
       animationType="slide"
       onRequestClose={dismissAndClose}
       statusBarTranslucent>
-      <View style={styles.root}>
-        <Pressable style={styles.overlay} onPress={dismissAndClose} accessibilityLabel="Close" />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+      <View style={[styles.root, compact && styles.rootCentered]}>
+        <Pressable style={styles.overlay} onPress={dismissAndClose} accessibilityLabel={t('Close')} />
+        <View
+          style={[
+            styles.sheet,
+            compact && styles.sheetCompact,
+            { paddingBottom: Math.max(insets.bottom, spacing.md) },
+          ]}>
           <View style={styles.handle} />
           <View style={styles.header}>
-            <Text style={styles.title}>Category</Text>
-            <Pressable onPress={dismissAndClose} hitSlop={10} accessibilityLabel="Close">
+            <Text style={styles.title}>{t('Category')}</Text>
+            <Pressable onPress={dismissAndClose} hitSlop={10} accessibilityLabel={t('Close')}>
               <Icon name="close" size={22} color={colors.textMuted} />
             </Pressable>
           </View>
@@ -105,7 +116,7 @@ function CategoryPickerSheet({
               ref={inputRef}
               value={query}
               onChangeText={setQuery}
-              placeholder="Search categories…"
+              placeholder={t('Search categories…')}
               placeholderTextColor={colors.textMuted}
               style={styles.searchInput}
               autoCorrect={false}
@@ -133,13 +144,13 @@ function CategoryPickerSheet({
                   onPress={() => pick(id)}
                   style={[styles.row, active && styles.rowOn]}>
                   <Text style={[styles.rowText, active && styles.rowTextOn]} numberOfLines={1}>
-                    {item.label}
+                    {item.id ? item.label : t(item.label)}
                   </Text>
                   {active ? <Icon name="check" size={20} color={colors.primary} /> : null}
                 </Pressable>
               );
             }}
-            ListEmptyComponent={<Text style={styles.empty}>No matching categories</Text>}
+            ListEmptyComponent={<Text style={styles.empty}>{t('No matching categories')}</Text>}
           />
         </View>
       </View>
@@ -154,6 +165,11 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
+  rootCentered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+  },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(15, 23, 42, 0.4)',
@@ -165,6 +181,14 @@ const styles = StyleSheet.create({
     maxHeight: '70%',
     paddingTop: spacing.sm,
     ...shadow.lg,
+  },
+  sheetCompact: {
+    ...dialogCard,
+    width: '100%',
+    maxWidth: 380,
+    maxHeight: 420,
+    borderRadius: radius.lg,
+    marginHorizontal: 0,
   },
   handle: {
     alignSelf: 'center',
@@ -212,8 +236,8 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   rowOn: {
     backgroundColor: colors.primaryLight,

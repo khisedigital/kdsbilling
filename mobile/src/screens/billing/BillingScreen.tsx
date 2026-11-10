@@ -13,12 +13,14 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Text, TextInput as PaperInput } from 'react-native-paper';
+import { Button, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
 import QtyStepper from '../../components/ui/QtyStepper';
 import CategoryPickerSheet from '../../components/ui/CategoryPickerSheet';
 import {
@@ -33,7 +35,9 @@ import { useProductAddToCart } from '../../hooks/useProductAddToCart';
 import { useCartStore } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
 import { common, radius, shadow, spacing } from '../../theme/layout';
+import { totalSaving } from '../../utils/billSaving';
 import { formatQuantity } from '../../utils/quantity';
+import { screenProductName } from '../../utils/productName';
 import { variantLabel } from '../../utils/variantLabel';
 import ProductGridTile from './ProductGridTile';
 import QuantityEntryDialog from './QuantityEntryDialog';
@@ -60,6 +64,7 @@ function productMatches(product: SearchProductResult, query: string) {
   if (!q) return true;
   return (
     product.productName.toLowerCase().includes(q) ||
+    (product.productNameMr || '').toLowerCase().includes(q) ||
     (product.sku || '').toLowerCase().includes(q) ||
     (product.size || '').toLowerCase().includes(q) ||
     (product.color || '').toLowerCase().includes(q) ||
@@ -68,6 +73,8 @@ function productMatches(product: SearchProductResult, query: string) {
 }
 
 export default function BillingScreen({ navigation, route }: Props) {
+  const t = useT();
+  useLanguageStore((s) => s.ui);
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const [hostWidth, setHostWidth] = useState(windowWidth);
@@ -172,9 +179,9 @@ export default function BillingScreen({ navigation, route }: Props) {
   }, [catalog]);
 
   const selectedCategoryLabel = useMemo(() => {
-    if (!categoryId) return 'All';
-    return categories.find((c) => c.id === categoryId)?.label || 'All';
-  }, [categories, categoryId]);
+    if (!categoryId) return t('All');
+    return categories.find((c) => c.id === categoryId)?.label || t('All');
+  }, [categories, categoryId, t]);
 
   const onCategoryChange = useCallback((id: string | null) => {
     setCategoryId(id);
@@ -185,6 +192,7 @@ export default function BillingScreen({ navigation, route }: Props) {
     () => items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
     [items],
   );
+  const youSaved = useMemo(() => totalSaving(items), [items]);
 
   /** Prefer server preview; if missing/stale, still apply cart bill discount locally. */
   const billTotals = useMemo(() => {
@@ -285,6 +293,7 @@ export default function BillingScreen({ navigation, route }: Props) {
         variantId: i.variantId,
         quantity: i.quantity,
         unitPrice: i.unitPrice,
+        mrp: i.mrp ?? null,
         discountAmount: i.discountAmount,
         discountPercent: i.discountPercent,
         isCustom: i.isCustom === true,
@@ -319,8 +328,8 @@ export default function BillingScreen({ navigation, route }: Props) {
   const q = search.trim();
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(q), q ? 120 : 0);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setDebouncedQ(q), q ? 120 : 0);
+    return () => clearTimeout(timer);
   }, [q]);
 
   useEffect(() => {
@@ -329,7 +338,7 @@ export default function BillingScreen({ navigation, route }: Props) {
       setSearching(false);
       return;
     }
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       setSearching(true);
       try {
         setRemoteResults(await searchProducts(q));
@@ -339,7 +348,7 @@ export default function BillingScreen({ navigation, route }: Props) {
         setSearching(false);
       }
     }, 280);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [q]);
 
   const gridItems = useMemo(() => {
@@ -384,12 +393,12 @@ export default function BillingScreen({ navigation, route }: Props) {
     }
     const value = parseFloat(raw);
     if (Number.isNaN(value) || value < 0) {
-      setDiscountError('Enter a valid number');
+      setDiscountError(t('Enter a valid number'));
       return;
     }
     if (discountMode === 'percent') {
       if (value > 100) {
-        setDiscountError('Percent cannot exceed 100');
+        setDiscountError(t('Percent cannot exceed 100'));
         return;
       }
       setBillDiscount(0, Math.round(value * 100) / 100);
@@ -549,10 +558,10 @@ export default function BillingScreen({ navigation, route }: Props) {
 
   const confirmClear = () => {
     if (!items.length) return;
-    Alert.alert('Clear bill?', 'Remove all items from this bill?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(t('Clear bill?'), t('Remove all items from this bill?'), [
+      { text: t('Cancel'), style: 'cancel' },
       {
-        text: 'Clear',
+        text: t('Clear'),
         style: 'destructive',
         onPress: () => {
           clearCart();
@@ -633,14 +642,15 @@ export default function BillingScreen({ navigation, route }: Props) {
   const renderCartLine = ({ item }: { item: (typeof items)[number] }) => {
     const lineTotal = item.unitPrice * item.quantity;
     const size = variantLabel(item.size, item.color);
+    const lineName = screenProductName(item.productName, item.productNameMr);
     const editingPrice = priceEditId === item.variantId;
     return (
       <View style={styles.line}>
         <View style={styles.lineTop}>
           <View style={styles.lineInfo}>
             <Text style={styles.lineName} numberOfLines={1}>
-              {item.productName}
-              {item.isCustom ? ' · Custom' : size ? ` · ${size}` : ''}
+              {lineName}
+              {item.isCustom ? t(' · Custom') : size ? ` · ${size}` : ''}
             </Text>
             {editingPrice ? (
               <View style={styles.priceEditRow}>
@@ -654,7 +664,7 @@ export default function BillingScreen({ navigation, route }: Props) {
                   selectTextOnFocus
                   keyboardType="decimal-pad"
                   style={styles.priceInput}
-                  accessibilityLabel={`Price for ${item.productName}`}
+                  accessibilityLabel={t('Price for {{name}}', { name: lineName })}
                 />
               </View>
             ) : (
@@ -662,7 +672,7 @@ export default function BillingScreen({ navigation, route }: Props) {
                 onPress={() => beginPriceEdit(item.variantId, item.unitPrice)}
                 hitSlop={6}
                 style={styles.priceTap}
-                accessibilityLabel={`Edit price for ${item.productName}`}>
+                accessibilityLabel={t('Edit price for {{name}}', { name: lineName })}>
                 <Text style={styles.lineMeta}>
                   ₹{item.unitPrice}
                   {item.uom?.code ? `/${item.uom.code}` : ''}
@@ -714,26 +724,26 @@ export default function BillingScreen({ navigation, route }: Props) {
             <Pressable
               onPress={() => navigation.navigate('ProductForm')}
               style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-              accessibilityLabel="Add product">
+              accessibilityLabel={t('Add product')}>
               <Icon name="package-variant" size={24} color={colors.primary} />
             </Pressable>
             <Pressable
               onPress={() => navigation.navigate('HeldBills')}
               style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-              accessibilityLabel="Held bills">
+              accessibilityLabel={t('Held bills')}>
               <Icon name="pause-circle-outline" size={22} color={colors.primary} />
             </Pressable>
             <Pressable
               onPress={() => setCustomOpen(true)}
               style={({ pressed }) => [styles.iconBtn, styles.customBtn, pressed && styles.pressed]}
-              accessibilityLabel="Custom item">
+              accessibilityLabel={t('Custom item')}>
               <Icon name="cart-plus" size={24} color={colors.primary} />
             </Pressable>
             <View style={styles.actionsSpacer} />
             <Pressable
               onPress={() => navigation.navigate('BarcodeScanner')}
               style={({ pressed }) => [styles.scanBtn, pressed && styles.pressed]}
-              accessibilityLabel="Scan barcode">
+              accessibilityLabel={t('Scan barcode')}>
               <Icon name="barcode-scan" size={24} color={colors.textOnPrimary} />
             </Pressable>
           </View>
@@ -744,19 +754,19 @@ export default function BillingScreen({ navigation, route }: Props) {
               <Pressable
                 onPress={() => navigation.navigate('ProductForm')}
                 style={({ pressed }) => [styles.iconBtnSm, pressed && styles.pressed]}
-                accessibilityLabel="Add product">
+                accessibilityLabel={t('Add product')}>
                 <Icon name="package-variant" size={20} color={colors.primary} />
               </Pressable>
               <Pressable
                 onPress={() => navigation.navigate('HeldBills')}
                 style={({ pressed }) => [styles.iconBtnSm, pressed && styles.pressed]}
-                accessibilityLabel="Held bills">
+                accessibilityLabel={t('Held bills')}>
                 <Icon name="pause-circle-outline" size={20} color={colors.primary} />
               </Pressable>
               <Pressable
                 onPress={() => setCustomOpen(true)}
                 style={({ pressed }) => [styles.iconBtnSm, pressed && styles.pressed]}
-                accessibilityLabel="Custom item">
+                accessibilityLabel={t('Custom item')}>
                 <Icon name="cart-plus" size={20} color={colors.primary} />
               </Pressable>
             </>
@@ -770,7 +780,7 @@ export default function BillingScreen({ navigation, route }: Props) {
               onSubmitEditing={(e) => {
                 void commitScan(e.nativeEvent.text || search);
               }}
-              placeholder="Search name, SKU, barcode"
+              placeholder={t('Search name, SKU, barcode')}
               placeholderTextColor={colors.textMuted}
               style={styles.searchInput}
               autoCorrect={false}
@@ -797,7 +807,7 @@ export default function BillingScreen({ navigation, route }: Props) {
                 isWideBill && styles.categoryBtnCompact,
                 categoryId ? styles.categoryBtnOn : null,
               ]}
-              accessibilityLabel="Filter by category">
+              accessibilityLabel={t('Filter by category')}>
               <Icon
                 name="shape-outline"
                 size={18}
@@ -812,7 +822,7 @@ export default function BillingScreen({ navigation, route }: Props) {
                 <Pressable
                   onPress={() => setCategoryId(null)}
                   hitSlop={8}
-                  accessibilityLabel="Clear category">
+                  accessibilityLabel={t('Clear category')}>
                   <Icon name="close-circle" size={16} color={colors.textOnPrimary} />
                 </Pressable>
               ) : (
@@ -824,7 +834,7 @@ export default function BillingScreen({ navigation, route }: Props) {
             <Pressable
               onPress={() => navigation.navigate('BarcodeScanner')}
               style={({ pressed }) => [styles.scanBtnSm, pressed && styles.pressed]}
-              accessibilityLabel="Scan barcode">
+              accessibilityLabel={t('Scan barcode')}>
               <Icon name="barcode-scan" size={20} color={colors.textOnPrimary} />
             </Pressable>
           ) : null}
@@ -854,20 +864,24 @@ export default function BillingScreen({ navigation, route }: Props) {
           loadingCatalog ? (
             <View style={styles.emptyWrap}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={styles.emptySubtitle}>Loading products…</Text>
+              <Text style={styles.emptySubtitle}>{t('Loading products…')}</Text>
             </View>
           ) : (
             <View style={styles.emptyWrap}>
               <Icon name="package-variant-closed" size={42} color={colors.primary} />
               <Text style={styles.emptyTitle}>
-                {loadError || (q ? 'No matching products' : 'No products yet')}
+                {loadError
+                  ? t('Could not load products')
+                  : q
+                    ? t('No matching products')
+                    : t('No products yet')}
               </Text>
               <Text style={styles.emptySubtitle}>
                 {loadError
-                  ? 'Pull to refresh, or scan a barcode'
+                  ? t('Pull to refresh, or scan a barcode')
                   : q
-                    ? `Nothing found for “${q}”`
-                    : 'Add a product, or use Custom item'}
+                    ? t('Nothing found for “{{query}}”', { query: q })
+                    : t('Add a product, or use Custom item')}
               </Text>
               {!loadError ? (
                 <View style={styles.emptyActions}>
@@ -876,14 +890,14 @@ export default function BillingScreen({ navigation, route }: Props) {
                     icon="cart-plus"
                     style={styles.emptyAddBtn}
                     onPress={() => setCustomOpen(true)}>
-                    Custom item
+                    {t('Custom item')}
                   </Button>
                   <Button
                     mode="outlined"
                     icon="package-variant"
                     style={styles.emptyAddBtn}
                     onPress={() => navigation.navigate('ProductForm')}>
-                    Add product
+                    {t('Add product')}
                   </Button>
                 </View>
               ) : null}
@@ -899,16 +913,15 @@ export default function BillingScreen({ navigation, route }: Props) {
           <Pressable
             onPress={() => setCartOpen(true)}
             style={({ pressed }) => [styles.billPeek, pressed && styles.pressed]}
-            accessibilityLabel="Open bill">
+            accessibilityLabel={t('Open bill')}>
             <View style={styles.billBadge}>
               <Text style={styles.billBadgeText}>{qtyLabel}</Text>
             </View>
             <View style={styles.billPeekText}>
               <Text style={styles.billPeekLabel}>
-                View bill
                 {billTotals.discountAmount > 0
-                  ? ` · −₹${billTotals.discountAmount.toFixed(2)}`
-                  : ''}
+                  ? t('View bill · −₹{{amount}}', { amount: billTotals.discountAmount.toFixed(2) })
+                  : t('View bill')}
               </Text>
               <Text style={styles.billPeekTotal}>{totalLabel}</Text>
             </View>
@@ -917,8 +930,8 @@ export default function BillingScreen({ navigation, route }: Props) {
           <Pressable
             onPress={goPay}
             style={({ pressed }) => [styles.payBtn, pressed && styles.pressed]}
-            accessibilityLabel="Proceed to payment">
-            <Text style={styles.payBtnText}>Pay</Text>
+            accessibilityLabel={t('Proceed to payment')}>
+            <Text style={styles.payBtnText}>{t('Pay')}</Text>
           </Pressable>
         </View>
       ) : null}
@@ -951,7 +964,7 @@ export default function BillingScreen({ navigation, route }: Props) {
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Current bill</Text>
+              <Text style={styles.sheetTitle}>{t('Current bill')}</Text>
               <Pressable onPress={() => setCartOpen(false)} hitSlop={10}>
                 <Icon name="close" size={22} color={colors.textMuted} />
               </Pressable>
@@ -966,17 +979,17 @@ export default function BillingScreen({ navigation, route }: Props) {
                 style={styles.sheetAction}>
                 <Icon name={customerName ? 'account-check' : 'account-plus-outline'} size={18} color={colors.primary} />
                 <Text style={styles.sheetActionText} numberOfLines={1}>
-                  {customerName || 'Customer'}
+                  {customerName || t('Customer')}
                 </Text>
               </Pressable>
               <Pressable onPress={openDiscount} style={styles.sheetAction}>
                 <Icon name="percent-outline" size={18} color={hasBillDiscount ? colors.secondary : colors.primary} />
                 <Text style={styles.sheetActionText} numberOfLines={1}>
                   {billDiscountPercent > 0
-                    ? `${billDiscountPercent}% off`
+                    ? t('{{percent}}% off', { percent: billDiscountPercent })
                     : billDiscountAmount > 0
-                      ? `₹${billDiscountAmount} off`
-                      : 'Discount'}
+                      ? t('₹{{amount}} off', { amount: billDiscountAmount })
+                      : t('Discount')}
                 </Text>
               </Pressable>
               <Pressable
@@ -986,11 +999,11 @@ export default function BillingScreen({ navigation, route }: Props) {
                 }}
                 style={styles.sheetAction}>
                 <Icon name="content-save-outline" size={18} color={colors.primary} />
-                <Text style={styles.sheetActionText}>Hold</Text>
+                <Text style={styles.sheetActionText}>{t('Hold')}</Text>
               </Pressable>
               <Pressable onPress={confirmClear} style={styles.sheetAction}>
                 <Icon name="trash-can-outline" size={18} color={colors.error} />
-                <Text style={[styles.sheetActionText, { color: colors.error }]}>Clear</Text>
+                <Text style={[styles.sheetActionText, { color: colors.error }]}>{t('Clear')}</Text>
               </Pressable>
             </View>
 
@@ -1004,15 +1017,35 @@ export default function BillingScreen({ navigation, route }: Props) {
 
             <View style={styles.sheetTotalRow}>
               <Text style={styles.sheetTotalMeta}>
-                {qtyLabel} qty
-                {billTotals.taxAmount > 0 ? ` · Tax ₹${billTotals.taxAmount.toFixed(2)}` : ''}
-                {billTotals.discountAmount > 0 ? ` · Disc -₹${billTotals.discountAmount.toFixed(2)}` : ''}
+                {billTotals.taxAmount > 0 && billTotals.discountAmount > 0
+                  ? t('{{qty}} qty · Tax ₹{{tax}} · Disc -₹{{disc}}', {
+                      qty: qtyLabel,
+                      tax: billTotals.taxAmount.toFixed(2),
+                      disc: billTotals.discountAmount.toFixed(2),
+                    })
+                  : billTotals.taxAmount > 0
+                    ? t('{{qty}} qty · Tax ₹{{tax}}', {
+                        qty: qtyLabel,
+                        tax: billTotals.taxAmount.toFixed(2),
+                      })
+                    : billTotals.discountAmount > 0
+                      ? t('{{qty}} qty · Disc -₹{{disc}}', {
+                          qty: qtyLabel,
+                          disc: billTotals.discountAmount.toFixed(2),
+                        })
+                      : t('{{qty}} qty', { qty: qtyLabel })}
               </Text>
               <Text style={styles.sheetTotal}>{totalLabel}</Text>
             </View>
+            {youSaved > 0 ? (
+              <View style={styles.sheetSaveRow}>
+                <Text style={styles.sheetSaveLbl}>{t('Total saving')}</Text>
+                <Text style={styles.sheetSaveVal}>₹{youSaved.toFixed(2)}</Text>
+              </View>
+            ) : null}
 
             <Pressable onPress={goPay} style={({ pressed }) => [styles.sheetPay, pressed && styles.pressed]}>
-              <Text style={styles.payBtnText}>Pay {totalLabel}</Text>
+              <Text style={styles.payBtnText}>{t('Pay ₹{{amount}}', { amount: displayTotal.toFixed(2) })}</Text>
             </Pressable>
           </View>
 
@@ -1020,8 +1053,8 @@ export default function BillingScreen({ navigation, route }: Props) {
             <View style={styles.discountOverlay} pointerEvents="box-none">
               <Pressable style={styles.discountScrim} onPress={() => setDiscountOpen(false)} />
               <View style={[styles.discountCard, { marginBottom: Math.max(insets.bottom, spacing.md) }]}>
-                <Text style={styles.discountTitle}>Bill discount</Text>
-                <Text style={styles.dialogHint}>Apply on the whole bill — pick ₹ amount or %</Text>
+                <Text style={styles.discountTitle}>{t('Bill discount')}</Text>
+                <Text style={styles.dialogHint}>{t('Apply on the whole bill — pick ₹ amount or %')}</Text>
                 <View style={styles.modeRow}>
                   <Pressable
                     onPress={() => {
@@ -1030,7 +1063,7 @@ export default function BillingScreen({ navigation, route }: Props) {
                     }}
                     style={[styles.modeBtn, discountMode === 'amount' && styles.modeBtnOn]}>
                     <Text style={[styles.modeBtnText, discountMode === 'amount' && styles.modeBtnTextOn]}>
-                      ₹ Amount
+                      {t('₹ Amount')}
                     </Text>
                   </Pressable>
                   <Pressable
@@ -1040,12 +1073,12 @@ export default function BillingScreen({ navigation, route }: Props) {
                     }}
                     style={[styles.modeBtn, discountMode === 'percent' && styles.modeBtnOn]}>
                     <Text style={[styles.modeBtnText, discountMode === 'percent' && styles.modeBtnTextOn]}>
-                      % Percent
+                      {t('% Percent')}
                     </Text>
                   </Pressable>
                 </View>
                 <PaperInput
-                  label={discountMode === 'percent' ? 'Discount %' : 'Discount ₹'}
+                  label={discountMode === 'percent' ? t('Discount %') : t('Discount ₹')}
                   value={discountInput}
                   onChangeText={(v) => {
                     setDiscountInput(v);
@@ -1063,12 +1096,12 @@ export default function BillingScreen({ navigation, route }: Props) {
                     textColor={colors.error}
                     onPress={clearDiscount}
                     disabled={!hasBillDiscount && !discountInput}>
-                    Remove
+                    {t('Remove')}
                   </Button>
                   <View style={styles.dialogRight}>
-                    <Button onPress={() => setDiscountOpen(false)}>Cancel</Button>
+                    <Button onPress={() => setDiscountOpen(false)}>{t('Cancel')}</Button>
                     <Button mode="contained" onPress={applyDiscount}>
-                      Apply
+                      {t('Apply')}
                     </Button>
                   </View>
                 </View>
@@ -1115,7 +1148,7 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
+    borderBottomColor: colors.border,
   },
   headerCompact: {
     paddingTop: spacing.xs,
@@ -1275,7 +1308,7 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     backgroundColor: colors.surface,
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
+    borderTopColor: colors.border,
     ...shadow.lg,
   },
   billPeek: {
@@ -1371,8 +1404,8 @@ const styles = StyleSheet.create({
   sheetList: { maxHeight: 280 },
   line: {
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   lineTop: {
     flexDirection: 'row',
@@ -1424,6 +1457,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  sheetSaveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.successLight,
+  },
+  sheetSaveLbl: { fontSize: 13, fontWeight: '700', color: colors.secondaryDark },
+  sheetSaveVal: { fontSize: 16, fontWeight: '800', color: colors.secondaryDark },
   sheetTotalRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1441,15 +1487,19 @@ const styles = StyleSheet.create({
   },
   discountOverlay: {
     ...StyleSheet.absoluteFill,
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+    alignItems: 'center',
     zIndex: 20,
     elevation: 20,
+    paddingHorizontal: spacing.lg,
   },
   discountScrim: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 27, 72, 0.45)',
   },
   discountCard: {
+    width: '100%',
+    maxWidth: 380,
     marginHorizontal: spacing.md,
     backgroundColor: colors.surface,
     borderRadius: radius.lg,

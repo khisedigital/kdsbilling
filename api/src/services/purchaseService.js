@@ -56,6 +56,63 @@ async function deleteSupplier(db, id) {
   return { deleted: true };
 }
 
+/**
+ * Bulk create suppliers from rows [{ name, phone?, email?, address?, taxNumber? }].
+ * Skips names that already exist (case-insensitive).
+ */
+async function bulkImportSuppliers(db, rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    throw new AppError('Import rows array is required', 400, 'VALIDATION_ERROR');
+  }
+  if (rows.length > 500) {
+    throw new AppError('Import at most 500 suppliers at a time', 400, 'VALIDATION_ERROR');
+  }
+
+  const { Supplier } = db;
+  const results = { success: 0, skipped: 0, failed: 0, errors: [] };
+  const seen = new Set();
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i] || {};
+    const name = String(row.name || '').trim();
+    if (!name) {
+      results.failed += 1;
+      results.errors.push({ row: i + 1, message: 'Name is required' });
+      continue;
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      results.skipped += 1;
+      continue;
+    }
+    seen.add(key);
+
+    try {
+      const existing = await Supplier.findOne({
+        where: { deleted_at: null, name: { [Op.like]: name } },
+      });
+      if (existing && String(existing.name).trim().toLowerCase() === key) {
+        results.skipped += 1;
+        continue;
+      }
+      await Supplier.create({
+        name,
+        phone: row.phone ? String(row.phone).trim() : null,
+        email: row.email ? String(row.email).trim() : null,
+        address: row.address ? String(row.address).trim() : null,
+        tax_number: row.taxNumber ? String(row.taxNumber).trim() : null,
+        status: 'active',
+      });
+      results.success += 1;
+    } catch (err) {
+      results.failed += 1;
+      results.errors.push({ row: i + 1, message: err.message || 'Could not create supplier' });
+    }
+  }
+
+  return results;
+}
+
 async function createPurchaseBill(db, branchId, userId, data) {
   const { PurchaseBill, PurchaseBillItem, ProductVariant, Supplier } = db;
 
@@ -332,6 +389,7 @@ module.exports = {
   createSupplier,
   updateSupplier,
   deleteSupplier,
+  bulkImportSuppliers,
   createPurchaseBill,
   getPurchaseBill,
   listPurchaseBills,

@@ -1,3 +1,5 @@
+import { t } from '../i18n';
+
 type ApiErrorBody = {
   response?: {
     data?: {
@@ -11,9 +13,9 @@ type ApiErrorBody = {
 
 export function apiError(err: unknown, fallback: string): string {
   const message = (err as ApiErrorBody)?.response?.data?.error?.message;
-  if (message) return message;
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
+  if (message) return t(message);
+  if (err instanceof Error && err.message) return t(err.message);
+  return t(fallback);
 }
 
 export function apiErrorCode(err: unknown): string | undefined {

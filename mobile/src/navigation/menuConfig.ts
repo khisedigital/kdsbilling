@@ -35,6 +35,7 @@ const rawMenuSections: MenuSection[] = [
     title: 'Catalog',
     items: [
       { label: 'Products', icon: 'package-variant', screen: 'ProductList' },
+      { label: 'Price Management', icon: 'currency-inr', screen: 'PriceManagement' },
       { label: 'Categories', icon: 'shape-outline', screen: 'CategoryList' },
       { label: 'Brands', icon: 'tag-outline', screen: 'BrandList' },
     ],
@@ -55,7 +56,7 @@ const rawMenuSections: MenuSection[] = [
       { label: 'Customers', icon: 'account-group-outline', screen: 'CustomerList' },
       { label: 'Reports', icon: 'chart-bar', screen: 'Reports' },
       { label: 'Expenses', icon: 'cash-minus', screen: 'Expenses' },
-      { label: 'Daily Closing', icon: 'calendar-check-outline', screen: 'DailyClosing' },
+      { label: 'Close Register', icon: 'cash-register', screen: 'DailyClosing' },
     ],
   },
   {

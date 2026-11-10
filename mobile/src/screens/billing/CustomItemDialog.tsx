@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
-import { Button, Dialog, Portal, Text, TextInput } from 'react-native-paper';
+import { Platform, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
+import { Button, Dialog, Portal, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { dialogCard, radius, spacing } from '../../theme/layout';
 
 export type CustomItemInput = { name: string; price: number; quantity: number };
 
@@ -45,8 +46,9 @@ function lineTotal(row: DraftRow): number | null {
 }
 
 export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props) {
+  const t = useT();
   const { height, width } = useWindowDimensions();
-  const compact = width < 720;
+  const compact = width < 520;
   const [rows, setRows] = useState<DraftRow[]>(() => [newRow()]);
   const [focusKey, setFocusKey] = useState('');
   const [error, setError] = useState('');
@@ -82,27 +84,26 @@ export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props
   const submit = () => {
     const filled = rows.filter((row) => !rowIsBlank(row));
     if (!filled.length) {
-      setError('Enter at least one item');
+      setError(t('Enter at least one item'));
       return;
     }
 
     const ready: CustomItemInput[] = [];
     for (let index = 0; index < filled.length; index += 1) {
       const row = filled[index];
-      const label = `Item ${index + 1}`;
       const name = row.name.trim();
       if (!name) {
-        setError(`${label} needs a name`);
+        setError(t('Item {{n}} needs a name', { n: index + 1 }));
         return;
       }
       const unitPrice = parseAmount(row.price);
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        setError(`${label} needs a valid price`);
+        setError(t('Item {{n}} needs a valid price', { n: index + 1 }));
         return;
       }
       const quantity = parseAmount(row.qty);
       if (!Number.isFinite(quantity) || quantity <= 0) {
-        setError(`${label} needs a quantity greater than 0`);
+        setError(t('Item {{n}} needs a quantity greater than 0', { n: index + 1 }));
         return;
       }
       ready.push({
@@ -117,85 +118,89 @@ export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props
 
   const readyCount = rows.filter((row) => row.name.trim() && lineTotal(row) != null).length;
   const readyTotal = rows.reduce((sum, row) => sum + (row.name.trim() ? lineTotal(row) || 0 : 0), 0);
-  const addLabel = readyCount > 1 ? `Add ${readyCount} items` : 'Add to bill';
+  const addLabel = readyCount > 1
+    ? t('Add {{count}} items', { count: readyCount })
+    : t('Add to bill');
 
   return (
     <Portal>
       <Dialog visible={visible} onDismiss={onDismiss} style={[styles.dialog, { maxHeight: height * 0.88 }]}>
-        <Dialog.Title>Custom items</Dialog.Title>
+        <Dialog.Title>{t('Custom items')}</Dialog.Title>
         <Dialog.Content style={styles.content}>
-          <Text style={styles.hint}>
-            Bill one-off items that are not in the catalog. Add as many as you need, then put them on the bill together.
-          </Text>
+          <View style={styles.tableHeader}>
+            <Text style={[styles.th, styles.colName]}>{t('Item')}</Text>
+            <Text style={[styles.th, styles.alignEnd, styles.colPrice, compact && styles.colPriceCompact]}>{t('Price')}</Text>
+            <Text style={[styles.th, styles.alignEnd, styles.colQty, compact && styles.colQtyCompact]}>{t('Qty')}</Text>
+            {compact ? null : <Text style={[styles.th, styles.colTotal]}>{t('Total')}</Text>}
+            <View style={styles.colRemove} />
+          </View>
           <ScrollView
-            style={{ maxHeight: Math.max(220, height * 0.48) }}
+            style={{ maxHeight: Math.max(160, height * 0.42) }}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.list}>
             {rows.map((row, index) => {
               const total = lineTotal(row);
               return (
-                <View key={row.key} style={styles.card}>
-                  <View style={styles.cardHead}>
-                    <Text style={styles.cardIndex}>Item {index + 1}</Text>
-                    {total != null && row.name.trim() ? (
-                      <Text style={styles.cardTotal}>₹{total.toFixed(2)}</Text>
-                    ) : (
-                      <Text style={styles.cardTotalMuted}>Price × qty</Text>
-                    )}
-                    <Pressable
-                      onPress={() => removeRow(row.key)}
-                      hitSlop={8}
-                      accessibilityLabel={`Remove item ${index + 1}`}
-                      style={styles.removeBtn}>
-                      <Icon name="close" size={18} color={colors.textMuted} />
-                    </Pressable>
-                  </View>
+                <View key={row.key} style={styles.tableRow}>
                   <TextInput
-                    label="Item name"
                     value={row.name}
                     onChangeText={(name) => patchRow(row.key, { name })}
-                    mode="outlined"
-                    style={styles.input}
+                    placeholder={t('Name')}
+                    placeholderTextColor={colors.textMuted}
+                    style={[styles.field, styles.colName]}
                     autoFocus={row.key === focusKey}
                     maxLength={120}
-                    dense
+                    accessibilityLabel={t('Item {{n}} name', { n: index + 1 })}
                   />
-                  <View style={compact ? styles.stack : styles.row}>
-                    <TextInput
-                      label="Price ₹"
-                      value={row.price}
-                      onChangeText={(price) => patchRow(row.key, { price })}
-                      mode="outlined"
-                      keyboardType="decimal-pad"
-                      style={[styles.input, styles.grow]}
-                      dense
-                    />
-                    <TextInput
-                      label="Qty"
-                      value={row.qty}
-                      onChangeText={(qty) => patchRow(row.key, { qty })}
-                      mode="outlined"
-                      keyboardType="decimal-pad"
-                      style={[styles.input, compact ? styles.grow : styles.qty]}
-                      dense
-                    />
-                  </View>
+                  <TextInput
+                    value={row.price}
+                    onChangeText={(price) => patchRow(row.key, { price })}
+                    placeholder="0"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="decimal-pad"
+                    style={[styles.field, styles.colPrice, styles.alignEnd, compact && styles.colPriceCompact]}
+                    accessibilityLabel={t('Item {{n}} price', { n: index + 1 })}
+                  />
+                  <TextInput
+                    value={row.qty}
+                    onChangeText={(qty) => patchRow(row.key, { qty })}
+                    placeholder="1"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="decimal-pad"
+                    style={[styles.field, styles.colQty, styles.alignEnd, compact && styles.colQtyCompact]}
+                    accessibilityLabel={t('Item {{n}} quantity', { n: index + 1 })}
+                  />
+                  {compact ? null : (
+                    <Text style={[styles.total, styles.colTotal]} numberOfLines={1}>
+                      {total != null ? `₹${total.toFixed(2)}` : '—'}
+                    </Text>
+                  )}
+                  <Pressable
+                    onPress={() => removeRow(row.key)}
+                    hitSlop={8}
+                    accessibilityLabel={t('Remove item {{n}}', { n: index + 1 })}
+                    style={styles.removeBtn}>
+                    <Icon name="close" size={16} color={colors.textMuted} />
+                  </Pressable>
                 </View>
               );
             })}
           </ScrollView>
-          <Button mode="outlined" icon="plus" onPress={addRow} style={styles.addAnother} textColor={colors.primary}>
-            Add another item
-          </Button>
+          <Pressable onPress={addRow} style={styles.addAnother} accessibilityLabel={t('Add another item')}>
+            <Icon name="plus" size={16} color={colors.primary} />
+            <Text style={styles.addAnotherText}>{t('Add another item')}</Text>
+          </Pressable>
           {error ? <Text style={styles.error}>{error}</Text> : null}
           {readyCount > 0 ? (
             <Text style={styles.summary}>
-              {readyCount} {readyCount === 1 ? 'item' : 'items'} · ₹{readyTotal.toFixed(2)}
+              {readyCount === 1
+                ? t('{{count}} item · ₹{{total}}', { count: readyCount, total: readyTotal.toFixed(2) })
+                : t('{{count}} items · ₹{{total}}', { count: readyCount, total: readyTotal.toFixed(2) })}
             </Text>
           ) : null}
         </Dialog.Content>
         <Dialog.Actions style={styles.actions}>
-          <Button onPress={onDismiss}>Cancel</Button>
+          <Button onPress={onDismiss}>{t('Cancel')}</Button>
           <Button mode="contained" onPress={submit}>
             {addLabel}
           </Button>
@@ -207,54 +212,66 @@ export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props
 
 const styles = StyleSheet.create({
   dialog: {
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-    alignSelf: 'center',
-    width: '94%',
-    maxWidth: 640,
+    ...dialogCard,
+    maxWidth: 420,
   },
   content: {
     paddingTop: 0,
   },
-  hint: {
-    color: colors.textMuted,
-    marginBottom: spacing.md,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  list: {
-    gap: spacing.sm,
-    paddingBottom: spacing.xs,
-  },
-  card: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    backgroundColor: colors.background,
-    padding: spacing.sm,
-  },
-  cardHead: {
+  tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: spacing.xs,
-    gap: spacing.sm,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
-  cardIndex: {
-    fontSize: 12,
+  th: {
+    fontSize: 11,
     fontWeight: '700',
-    color: colors.textSecondary,
+    color: colors.textMuted,
+    textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
-  cardTotal: {
-    marginLeft: 'auto',
+  list: {
+    paddingBottom: spacing.xs,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: 6,
+    paddingHorizontal: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+  colName: { flex: 1, minWidth: 0 },
+  colPrice: { width: 88 },
+  colPriceCompact: { width: 72 },
+  colQty: { width: 56 },
+  colQtyCompact: { width: 48 },
+  colTotal: { width: 78, textAlign: 'right' },
+  colRemove: { width: 28 },
+  field: {
+    height: 32,
+    paddingVertical: 0,
+    paddingHorizontal: 8,
+    fontSize: 14,
+    color: colors.text,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...(Platform.OS === 'web'
+      ? ({ outlineStyle: 'none', outlineWidth: 0, outlineColor: 'transparent' } as object)
+      : null),
+  },
+  alignEnd: { textAlign: 'right' },
+  total: {
     fontSize: 13,
     fontWeight: '700',
     color: colors.text,
-  },
-  cardTotalMuted: {
-    marginLeft: 'auto',
-    fontSize: 12,
-    color: colors.textMuted,
   },
   removeBtn: {
     width: 28,
@@ -262,29 +279,20 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.surface,
-  },
-  input: {
-    marginBottom: spacing.xs,
-    backgroundColor: colors.surface,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  stack: {
-    gap: 0,
-  },
-  grow: {
-    flex: 1,
-  },
-  qty: {
-    width: 110,
   },
   addAnother: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
     marginTop: spacing.sm,
-    borderRadius: radius.md,
-    borderColor: colors.primary,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  addAnotherText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.primary,
   },
   error: {
     color: colors.error,

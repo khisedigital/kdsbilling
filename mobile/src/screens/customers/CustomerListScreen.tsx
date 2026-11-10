@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, HelperText, Portal, TextInput } from 'react-native-paper';
+import { Button, Dialog, FAB, HelperText, Portal } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -8,9 +9,10 @@ import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
 import { createCustomer, deleteCustomer, fetchCustomers, updateCustomer } from '../../services/businessService';
+import { t as translate, useT } from '../../i18n';
 import { useCartStore } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing } from '../../theme/layout';
+import { common, radius, spacing, dialogCard} from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'CustomerList'>;
 
@@ -25,10 +27,12 @@ type Customer = {
 type DialogMode = 'add' | 'edit';
 
 function apiError(err: unknown, fallback: string) {
-  return (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message || fallback;
+  const message = (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message;
+  return translate(message || fallback);
 }
 
 export default function CustomerListScreen({ navigation, route }: Props) {
+  const t = useT();
   const pickForBill = !!route.params?.pickForBill;
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
@@ -53,9 +57,9 @@ export default function CustomerListScreen({ navigation, route }: Props) {
       setCustomers(result?.items || []);
     } catch (err) {
       setCustomers([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load customers'));
+      Alert.alert(t('Load failed'), t(apiError(err, 'Could not load customers')));
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     setListLoading(true);
@@ -64,8 +68,8 @@ export default function CustomerListScreen({ navigation, route }: Props) {
       run();
       return;
     }
-    const t = setTimeout(run, 280);
-    return () => clearTimeout(t);
+    const timer = setTimeout(run, 280);
+    return () => clearTimeout(timer);
   }, [load, search]);
 
   useFocusEffect(
@@ -104,7 +108,7 @@ export default function CustomerListScreen({ navigation, route }: Props) {
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setError('Name is required');
+      setError(t('Name is required'));
       return;
     }
     setLoading(true);
@@ -122,7 +126,7 @@ export default function CustomerListScreen({ navigation, route }: Props) {
       setVisible(false);
       await load(search);
     } catch (err) {
-      setError(apiError(err, mode === 'add' ? 'Could not add customer' : 'Could not update customer'));
+      setError(t(apiError(err, mode === 'add' ? 'Could not add customer' : 'Could not update customer')));
     } finally {
       setLoading(false);
     }
@@ -134,12 +138,12 @@ export default function CustomerListScreen({ navigation, route }: Props) {
     if (!customer) return;
 
     Alert.alert(
-      'Delete customer?',
-      `Remove "${customer.name}" from your customer list?`,
+      t('Delete customer?'),
+      t('Remove "{{name}}" from your customer list?', { name: customer.name }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('Cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('Delete'),
           style: 'destructive',
           onPress: async () => {
             setLoading(true);
@@ -151,7 +155,7 @@ export default function CustomerListScreen({ navigation, route }: Props) {
               setVisible(false);
               await load(search);
             } catch (err) {
-              setError(apiError(err, 'Could not delete customer'));
+              setError(t(apiError(err, 'Could not delete customer')));
             } finally {
               setLoading(false);
             }
@@ -165,12 +169,12 @@ export default function CustomerListScreen({ navigation, route }: Props) {
     if (!editingId) return;
     setCustomer(editingId, name.trim());
     setVisible(false);
-    Alert.alert('Customer selected', `${name.trim()} is set for the current bill.`);
+    Alert.alert(t('Customer selected'), t('{{name}} is set for the current bill.', { name: name.trim() }));
   };
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search customers..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search customers...')} />
       <FlatList
         data={customers}
         keyExtractor={(i) => i.id}
@@ -184,7 +188,7 @@ export default function CustomerListScreen({ navigation, route }: Props) {
         }
         ListEmptyComponent={
           listLoading ? null : (
-          <EmptyState icon="account-group-outline" title={search.trim() ? 'No matching customers' : 'No customers'} subtitle={search.trim() ? 'Try a different search' : 'Tap + to add your first customer'} />
+          <EmptyState icon="account-group-outline" title={search.trim() ? t('No matching customers') : t('No customers')} subtitle={search.trim() ? t('Try a different search') : t('Tap + to add your first customer')} />
           )
         }
         renderItem={({ item }) => {
@@ -192,11 +196,11 @@ export default function CustomerListScreen({ navigation, route }: Props) {
           return (
             <ListRow
               title={item.name}
-              subtitle={[item.phone, `Pts ${item.loyalty_points}`, `Credit ₹${parseFloat(String(item.store_credit_balance)).toFixed(0)}`].filter(Boolean).join(' · ')}
+              subtitle={[item.phone, t('Pts {{points}}', { points: item.loyalty_points }), t('Credit ₹{{amount}}', { amount: parseFloat(String(item.store_credit_balance)).toFixed(0) })].filter(Boolean).join(' · ')}
               icon={isSelected ? 'account-check' : 'account-circle'}
               iconColor={isSelected ? colors.secondary : colors.primary}
               iconBg={isSelected ? colors.secondaryLight : colors.primaryLight}
-              badge={isSelected ? { label: 'On bill', color: colors.secondary, bg: colors.secondaryLight } : undefined}
+              badge={isSelected ? { label: t('On bill'), color: colors.secondary, bg: colors.secondaryLight } : undefined}
               onPress={() => {
                 if (pickForBill) {
                   setCustomer(item.id, item.name);
@@ -211,7 +215,7 @@ export default function CustomerListScreen({ navigation, route }: Props) {
                   navigation.goBack();
                   return;
                 }
-                Alert.alert('Customer selected', `${item.name} is set for the current bill.`);
+                Alert.alert(t('Customer selected'), t('{{name}} is set for the current bill.', { name: item.name }));
               }}
             />
           );
@@ -222,18 +226,18 @@ export default function CustomerListScreen({ navigation, route }: Props) {
 
       <Portal>
         <Dialog visible={visible} onDismiss={closeDialog} style={styles.dialog}>
-          <Dialog.Title>{mode === 'add' ? 'Add Customer' : 'Edit Customer'}</Dialog.Title>
+          <Dialog.Title>{mode === 'add' ? t('Add Customer') : t('Edit Customer')}</Dialog.Title>
           <Dialog.Content>
-            <TextInput
-              label="Name *"
+            <AppTextInput
+              label={t('Name *')}
               value={name}
               onChangeText={setName}
               mode="outlined"
               style={styles.input}
               autoFocus={mode === 'add'}
             />
-            <TextInput
-              label="Phone"
+            <AppTextInput
+              label={t('Phone')}
               value={phone}
               onChangeText={setPhone}
               mode="outlined"
@@ -243,22 +247,22 @@ export default function CustomerListScreen({ navigation, route }: Props) {
             {error ? <HelperText type="error">{error}</HelperText> : null}
             {mode === 'edit' ? (
               <Button mode="outlined" icon="cart-check" onPress={handleUseForBilling} style={styles.useBtn} textColor={colors.secondary}>
-                Use for current bill
+                {t('Use for current bill')}
               </Button>
             ) : null}
           </Dialog.Content>
           <Dialog.Actions style={styles.dialogActions}>
             {mode === 'edit' ? (
               <Button textColor={colors.error} onPress={confirmDelete} disabled={loading}>
-                Delete
+                {t('Delete')}
               </Button>
             ) : (
               <View />
             )}
             <View style={styles.dialogRight}>
-              <Button onPress={closeDialog} disabled={loading}>Cancel</Button>
+              <Button onPress={closeDialog} disabled={loading}>{t('Cancel')}</Button>
               <Button onPress={handleSave} loading={loading} disabled={!name.trim()}>
-                {mode === 'add' ? 'Add' : 'Save'}
+                {mode === 'add' ? t('Add') : t('Save')}
               </Button>
             </View>
           </Dialog.Actions>
@@ -270,7 +274,7 @@ export default function CustomerListScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   emptyList: { flexGrow: 1 },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
   input: { marginBottom: spacing.sm, backgroundColor: colors.surface },
   useBtn: { marginTop: spacing.sm, borderColor: colors.secondary },
   dialogActions: { justifyContent: 'space-between', paddingHorizontal: spacing.md },

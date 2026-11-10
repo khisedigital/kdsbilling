@@ -9,6 +9,7 @@ import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
 import { fetchPurchaseBills } from '../../services/inventoryService';
 import type { PurchaseBill } from '../../services/inventoryService';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
 import { common } from '../../theme/layout';
@@ -16,6 +17,7 @@ import { common } from '../../theme/layout';
 type Props = NativeStackScreenProps<MainStackParamList, 'PurchaseBillList'>;
 
 export default function PurchaseBillListScreen({ navigation }: Props) {
+  const t = useT();
   const [bills, setBills] = useState<PurchaseBill[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -28,9 +30,9 @@ export default function PurchaseBillListScreen({ navigation }: Props) {
       setBills(result?.items || []);
     } catch (err) {
       setBills([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load purchase bills'));
+      Alert.alert(t('Load failed'), apiError(err, 'Could not load purchase bills'));
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     setLoading(true);
@@ -59,7 +61,7 @@ export default function PurchaseBillListScreen({ navigation }: Props) {
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search bill no. or supplier..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search bill no. or supplier...')} />
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
@@ -75,15 +77,15 @@ export default function PurchaseBillListScreen({ navigation }: Props) {
           loading ? null : (
             <EmptyState
               icon="file-document-outline"
-              title={search.trim() ? 'No matching bills' : 'No purchase bills'}
-              subtitle={search.trim() ? 'Try a different search' : 'Record purchases to stock in inventory'}
+              title={search.trim() ? t('No matching bills') : t('No purchase bills')}
+              subtitle={search.trim() ? t('Try a different search') : t('Record purchases to stock in inventory')}
             />
           )
         }
         renderItem={({ item }) => (
           <ListRow
             title={item.bill_number}
-            subtitle={`${item.supplier?.name || 'Supplier'} · ${item.bill_date}`}
+            subtitle={`${item.supplier?.name || t('Supplier')} · ${item.bill_date}`}
             icon="truck-check"
             iconColor={colors.secondary}
             iconBg={colors.secondaryLight}
@@ -92,7 +94,7 @@ export default function PurchaseBillListScreen({ navigation }: Props) {
           />
         )}
       />
-      <FAB icon="plus" label="Add" style={common.fab} color={colors.textOnPrimary} onPress={() => navigation.navigate('PurchaseBillForm', {})} />
+      <FAB icon="plus" label={t('Add')} style={common.fab} color={colors.textOnPrimary} onPress={() => navigation.navigate('PurchaseBillForm', {})} />
     </View>
   );
 }

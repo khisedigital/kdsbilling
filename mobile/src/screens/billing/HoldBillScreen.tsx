@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Text, TextInput } from 'react-native-paper';
+import { Button, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import { useT } from '../../i18n';
 import SectionCard from '../../components/ui/SectionCard';
 import SurfaceCard from '../../components/ui/SurfaceCard';
 import { holdBill } from '../../services/businessService';
@@ -15,6 +17,7 @@ import { common, spacing, typography } from '../../theme/layout';
 type Props = NativeStackScreenProps<MainStackParamList, 'HoldBill'>;
 
 export default function HoldBillScreen({ navigation }: Props) {
+  const t = useT();
   const items = useCartStore((s) => s.items);
   const customerId = useCartStore((s) => s.customerId);
   const customerName = useCartStore((s) => s.customerName);
@@ -27,7 +30,7 @@ export default function HoldBillScreen({ navigation }: Props) {
     setLoading(true);
     try {
       await holdBill(
-        name || `Hold ${Date.now()}`,
+        name || t('Hold {{time}}', { time: Date.now() }),
         {
           items,
           customerId,
@@ -41,7 +44,7 @@ export default function HoldBillScreen({ navigation }: Props) {
       useCartStore.getState().clear();
       navigation.navigate('Billing');
     } catch (err) {
-      Alert.alert('Hold failed', apiError(err, 'Could not hold bill'));
+      Alert.alert(t('Hold failed'), apiError(err, 'Could not hold bill'));
     } finally {
       setLoading(false);
     }
@@ -54,34 +57,34 @@ export default function HoldBillScreen({ navigation }: Props) {
           <View style={styles.heroIcon}>
             <Icon name="pause-circle" size={32} color={colors.warning} />
           </View>
-          <Text style={styles.heroTitle}>Hold Bill</Text>
-          <Text style={styles.heroSub}>Save this cart and resume billing later</Text>
+          <Text style={styles.heroTitle}>{t('Hold Bill')}</Text>
+          <Text style={styles.heroSub}>{t('Save this cart and resume billing later')}</Text>
         </View>
 
         <SurfaceCard padding style={styles.summary}>
           <View style={styles.summaryRow}>
-            <Text style={typography.bodySm}>Items</Text>
+            <Text style={typography.bodySm}>{t('Items')}</Text>
             <Text style={typography.h3}>{items.length}</Text>
           </View>
           <View style={styles.summaryRow}>
-            <Text style={typography.bodySm}>Estimated total</Text>
+            <Text style={typography.bodySm}>{t('Estimated total')}</Text>
             <Text style={typography.moneySm}>₹{total.toFixed(2)}</Text>
           </View>
           {customerName ? (
             <View style={styles.summaryRow}>
-              <Text style={typography.bodySm}>Customer</Text>
+              <Text style={typography.bodySm}>{t('Customer')}</Text>
               <Text style={typography.h3}>{customerName}</Text>
             </View>
           ) : null}
         </SurfaceCard>
 
-        <SectionCard title="Hold name" icon="tag-outline" subtitle="Optional label to find this bill later">
-          <TextInput
-            label="Name"
+        <SectionCard title={t('Hold name')} icon="tag-outline" subtitle={t('Optional label to find this bill later')}>
+          <AppTextInput
+            label={t('Name')}
             value={name}
             onChangeText={setName}
             mode="outlined"
-            placeholder="e.g. Table 3, Rajesh"
+            placeholder={t('e.g. Table 3, Rajesh')}
             style={styles.input}
           />
         </SectionCard>
@@ -94,7 +97,7 @@ export default function HoldBillScreen({ navigation }: Props) {
           icon="pause"
           style={styles.btn}
           contentStyle={styles.btnContent}>
-          Hold Bill ({items.length} items)
+          {t('Hold Bill ({{count}} items)', { count: items.length })}
         </Button>
       </ScrollView>
     </KeyboardAvoidingView>

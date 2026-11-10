@@ -1,4 +1,12 @@
-export type DesktopPrinter = { name: string; displayName: string; isDefault: boolean };
+export type DesktopPrinter = {
+  name: string;
+  displayName: string;
+  isDefault: boolean;
+  /** Windows: spooler driver name (e.g. Generic / Text Only). */
+  driverName?: string;
+  /** Windows: driver looks safe for RAW ESC/POS. */
+  rawFriendly?: boolean;
+};
 
 export type DesktopPrintHtmlOptions = {
   html: string;
@@ -28,9 +36,23 @@ export type DesktopBridge = {
   platform: string;
   listPrinters: () => Promise<DesktopPrinter[]>;
   printHtml: (options: DesktopPrintHtmlOptions) => Promise<void>;
-  printRaw: (options: { host: string; port: number; base64: string }) => Promise<void>;
+  printRaw: (options: {
+    host: string;
+    port: number;
+    base64: string;
+    copies?: number;
+    /** Gap labels: stickers per OS write (e.g. 3). */
+    batchSize?: number;
+  }) => Promise<void>;
   /** ESC/POS to an OS-installed POS printer (58/80 mm). Optional on older desktop builds. */
-  printRawSystem?: (options: { printerName: string; base64: string }) => Promise<void>;
+  printRawSystem?: (options: {
+    printerName: string;
+    base64: string;
+    /** How many times to send the unit buffer (one sticker). */
+    copies?: number;
+    /** Stickers per spool write — keeps DeTong gap aligned (use 3). */
+    batchSize?: number;
+  }) => Promise<void>;
   saveFile: (options: DesktopSaveFileOptions) => Promise<{ saved: boolean; path?: string }>;
 };
 

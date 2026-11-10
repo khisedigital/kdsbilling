@@ -24,8 +24,10 @@ async function resolveDefaultBranch(db, preferredBranchId) {
 function serializeSettings(tenant, branch) {
   return {
     shopName: tenant.name,
+    shopNameMr: branch?.name_mr || '',
     shopCode: tenant.slug,
     address: branch?.address || '',
+    addressMr: branch?.address_mr || '',
     city: branch?.city || '',
     gstin: branch?.tax_registration_number || '',
     phone: branch?.phone || tenant.owner_mobile || '',
@@ -65,6 +67,16 @@ async function updateShopSettings(db, tenant, branchId, data = {}) {
   }
 
   if (data.address !== undefined) branchUpdates.address = String(data.address || '').trim() || null;
+  if (data.shopNameMr !== undefined) {
+    const nameMr = String(data.shopNameMr || '').trim();
+    if (nameMr.length > 150) throw new AppError('Marathi shop name is too long', 400, 'VALIDATION_ERROR');
+    branchUpdates.name_mr = nameMr || null;
+  }
+  if (data.addressMr !== undefined) {
+    const addressMr = String(data.addressMr || '').trim();
+    if (addressMr.length > 500) throw new AppError('Marathi address is too long', 400, 'VALIDATION_ERROR');
+    branchUpdates.address_mr = addressMr || null;
+  }
   if (data.city !== undefined) branchUpdates.city = String(data.city || '').trim() || null;
   if (data.gstin !== undefined) {
     branchUpdates.tax_registration_number = String(data.gstin || '').trim().toUpperCase() || null;

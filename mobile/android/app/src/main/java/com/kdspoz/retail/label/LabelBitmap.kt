@@ -17,14 +17,18 @@ private const val LABEL_WIDTH_PX = 384
 private const val LABEL_WIDTH_MM = 50
 
 private fun labelHeightPx(heightMm: Int): Int {
-  val h = if (heightMm == 25) 25 else 28
+  val h = when (heightMm) {
+    25 -> 25
+    30 -> 30
+    else -> 28
+  }
   return LABEL_WIDTH_PX * h / LABEL_WIDTH_MM
 }
 
-private val TITLE_FONT: Typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+private val TITLE_FONT: Typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
 private val DEVANAGARI = Regex("[\\u0900-\\u097F]")
 /** Readable monospace for the human-readable barcode under the bars. */
-private val DIGIT_FONT: Typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+private val DIGIT_FONT: Typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
 
 data class LabelContent(
   val shopName: String,
@@ -45,8 +49,18 @@ data class LabelContent(
 fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   val width = LABEL_WIDTH_PX
   val height = labelHeightPx(heightMm)
+  /**
+   * One sticker frame — shop / product / divider / barcode / digits / white gap margin.
+   * Never let bars or digits spill into the gap (that looks like a "broken" barcode).
+   */
   val padX = maxOf(6, width / 32)
-  val padY = maxOf(4, height / 24)
+  // ~1.2 mm top clearance — small padY was clipping the shop title on thermal heads.
+  val padY = maxOf(10, height / 22)
+  val lineGap = 3f
+  val preferredFooter = 17f
+  val bottomClear = 18f
+  val digitGap = 3f
+  val footerReserve = preferredFooter + digitGap + bottomClear
 
   val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
   val canvas = Canvas(bitmap)
@@ -75,21 +89,28 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   paint.textSize = shopSize
   paint.textAlign = Paint.Align.CENTER
   paint.isAntiAlias = indic
+  // FontMetrics: draw baseline so the full ascent sits below padY (not clipped at top).
   val shop = ellipsize(paint, shopSource, shopSize, (width - padX * 2).toFloat())
-  y += shopSize
+  val fm = paint.fontMetrics
+  y += -fm.ascent
   canvas.drawText(shop, (width / 2).toFloat(), y, paint)
-  y += if (indic) 8f else 5f
+  y += fm.descent + lineGap
 
+  // ~2.5–3 mm. Smaller strokes heat into a dark blur on 203 dpi heads.
   val productSize = if (indic) 20f else 18f
-  val priceSize = if (indic) 20f else 18f
-  paint.textSize = priceSize
+  val qtySize = if (indic) 18f else 17f
+  val priceSize = if (indic) 22f else 20f
 
   val qtyText = content.detail.trim()
   val priceText = content.price.ifBlank { content.mrp }.trim()
-  val rightPart = listOf(qtyText, priceText).filter { it.isNotBlank() }.joinToString("  ")
-  val rightWidth = if (rightPart.isBlank()) 0f else paint.measureText(rightPart)
-  val gap = 10f
-  val leftMax = (width - padX * 2 - rightWidth - gap).coerceAtLeast(width * 0.32f)
+  paint.textSize = qtySize
+  val qtyW = if (qtyText.isBlank()) 0f else paint.measureText(qtyText)
+  paint.textSize = priceSize
+  val priceW = if (priceText.isBlank()) 0f else paint.measureText(priceText)
+  val between = if (qtyText.isNotBlank() && priceText.isNotBlank()) 10f else 0f
+  val rightWidth = qtyW + between + priceW
+  val gap = 8f
+  val leftMax = (width - padX * 2 - rightWidth - gap).coerceAtLeast(width * 0.28f)
 
   paint.textSize = productSize
   val productText = ellipsize(
@@ -99,31 +120,39 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
     leftMax,
   )
 
-  y += productSize.coerceAtLeast(priceSize)
+  y += maxOf(productSize, qtySize, priceSize)
   paint.textAlign = Paint.Align.LEFT
   paint.textSize = productSize
   paint.isAntiAlias = DEVANAGARI.containsMatchIn(productText)
   canvas.drawText(productText, padX.toFloat(), y, paint)
 
-  if (rightPart.isNotBlank()) {
+  // Right: quantity then selling price (e.g. "500 g  ₹70").
+  if (qtyText.isNotBlank() || priceText.isNotBlank()) {
     paint.textAlign = Paint.Align.RIGHT
-    paint.textSize = priceSize
-    paint.isAntiAlias = DEVANAGARI.containsMatchIn(rightPart)
-    canvas.drawText(rightPart, (width - padX).toFloat(), y, paint)
+    var x = (width - padX).toFloat()
+    if (priceText.isNotBlank()) {
+      paint.textSize = priceSize
+      paint.isAntiAlias = DEVANAGARI.containsMatchIn(priceText)
+      canvas.drawText(priceText, x, y, paint)
+      x -= priceW + between
+    }
+    if (qtyText.isNotBlank()) {
+      paint.textSize = qtySize
+      paint.isAntiAlias = DEVANAGARI.containsMatchIn(qtyText)
+      canvas.drawText(qtyText, x, y, paint)
+    }
   }
-  y += if (indic) 8f else 5f
+  y += lineGap
 
   paint.strokeWidth = 1f
   paint.style = Paint.Style.STROKE
   canvas.drawLine(padX.toFloat(), y, (width - padX).toFloat(), y, paint)
   paint.style = Paint.Style.FILL
-  y += 5f
+  y += 3f
 
-  // Bars fill the sticker down to the digit line so the print uses the selected label height.
-  val preferredFooter = 18f
-  val footerReserve = preferredFooter + padY + 4f
-  val barTop = y.toInt()
+  val barTop = y.toInt().coerceAtMost((height - footerReserve - 24f).toInt().coerceAtLeast(0))
   val barBottom = (height - footerReserve).toInt().coerceAtLeast(barTop + 24)
+  val barH = (barBottom - barTop).coerceAtLeast(22)
 
   val code = content.barcode.ifBlank { "2000000000008" }.replace("\\s+".toRegex(), "")
   drawBarcode(
@@ -132,44 +161,59 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
     padX.toFloat(),
     barTop.toFloat(),
     (width - padX * 2).toFloat(),
-    (barBottom - barTop).toFloat(),
+    barH.toFloat(),
   )
 
-  // White strip under bars, then solid black digits (fit long Code 128 values).
-  val digitTop = barBottom + 2
+  val digitTop = barTop + barH + digitGap.toInt()
   paint.color = Color.WHITE
   canvas.drawRect(0f, digitTop.toFloat(), width.toFloat(), height.toFloat(), paint)
   paint.color = Color.BLACK
   paint.typeface = DIGIT_FONT
   paint.isFakeBoldText = false
   paint.isAntiAlias = false
-  paint.textAlign = Paint.Align.CENTER
+  paint.textAlign = Paint.Align.LEFT
   val maxDigitWidth = (width - padX * 2).toFloat()
   var digitSize = preferredFooter
   paint.textSize = digitSize
-  while (digitSize >= 11f && paint.measureText(code) > maxDigitWidth) {
-    digitSize -= 1f
-    paint.textSize = digitSize
+  val digitGapPx = maxOf(2f, digitSize / 6f)
+  fun spacedWidth(size: Float): Float {
+    paint.textSize = size
+    var total = 0f
+    for (i in code.indices) {
+      total += paint.measureText(code, i, i + 1)
+      if (i < code.lastIndex) total += digitGapPx
+    }
+    return total
   }
-  val digitText =
-    if (paint.measureText(code) <= maxDigitWidth) code
-    else ellipsizeDigits(paint, code, maxDigitWidth)
-  // Baseline inside the footer — not clipped off the sticker edge.
-  val digitY = (digitTop + digitSize).coerceAtMost((height - 2).toFloat())
-  canvas.drawText(digitText, (width / 2).toFloat(), digitY, paint)
+  while (digitSize >= 13f && spacedWidth(digitSize) > maxDigitWidth) {
+    digitSize -= 1f
+  }
+  paint.textSize = digitSize
+  val digitY = (digitTop + digitSize).coerceAtMost(height - bottomClear)
+  var digitX = (width - spacedWidth(digitSize)) / 2f
+  for (i in code.indices) {
+    val ch = code.substring(i, i + 1)
+    canvas.drawText(ch, digitX, digitY, paint)
+    digitX += paint.measureText(ch) + digitGapPx
+  }
 
-  if (indic) solidifyDevanagari(bitmap)
+  // Pure white gap margin — no ink in the sensor/cutter band.
+  paint.color = Color.WHITE
+  canvas.drawRect(0f, height - bottomClear, width.toFloat(), height.toFloat(), paint)
+
+  // Always. Gray edges (even with anti-alias off) become a dark smear after dithering.
+  solidify(bitmap)
   return bitmap
 }
 
-/** Turn gray anti-aliased Marathi strokes into solid black so the thermal head prints them. */
-private fun solidifyDevanagari(bitmap: Bitmap) {
+/** Pure black or white. A high cut (168) kept the gray halo and filled letter gaps. */
+private fun solidify(bitmap: Bitmap) {
   val pixels = IntArray(bitmap.width * bitmap.height)
   bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
   for (i in pixels.indices) {
     val color = pixels[i]
     val lum = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
-    pixels[i] = if (lum < 170) Color.BLACK else Color.WHITE
+    pixels[i] = if (lum < 128) Color.BLACK else Color.WHITE
   }
   bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
 }
@@ -218,8 +262,8 @@ private fun drawBarcode(canvas: Canvas, barcode: String, x: Float, y: Float, wid
   }
   val quiet = BarcodeEncoder.QUIET_ZONE_MODULES
   val total = modules.length + quiet * 2
-  val module = width / total.toFloat()
-  val x0 = x
+  val left = x.toInt()
+  val span = width.toInt().coerceAtLeast(total)
   val top = y.toInt()
   val bottom = (y + height).toInt().coerceAtLeast(top + 1)
   val paint = Paint().apply {
@@ -227,6 +271,8 @@ private fun drawBarcode(canvas: Canvas, barcode: String, x: Float, y: Float, wid
     style = Paint.Style.FILL
     isAntiAlias = false
   }
+  // Integer columns so a 1-module white gap is never rounded away.
+  fun col(index: Int) = left + (index * span) / total
   var i = 0
   while (i < modules.length) {
     if (modules[i] != '1') {
@@ -235,10 +281,10 @@ private fun drawBarcode(canvas: Canvas, barcode: String, x: Float, y: Float, wid
     }
     var run = 1
     while (i + run < modules.length && modules[i + run] == '1') run += 1
-    val start = x0 + (quiet + i) * module
-    val end = x0 + (quiet + i + run) * module
+    val start = col(quiet + i)
+    val end = col(quiet + i + run)
     if (end > start) {
-      canvas.drawRect(start, top.toFloat(), end, bottom.toFloat(), paint)
+      canvas.drawRect(start.toFloat(), top.toFloat(), end.toFloat(), bottom.toFloat(), paint)
     }
     i += run
   }

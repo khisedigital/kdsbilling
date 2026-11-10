@@ -9,6 +9,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import SurfaceCard from '../../components/ui/SurfaceCard';
 import { fetchStockBalances } from '../../services/inventoryService';
 import type { StockBalance } from '../../services/inventoryService';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
@@ -24,6 +25,7 @@ const FILTERS: Array<{ id: StockFilter; label: string; icon: string }> = [
 ];
 
 export default function StockListScreen({ navigation }: Props) {
+  const t = useT();
   const [items, setItems] = useState<StockBalance[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<StockFilter>('all');
@@ -49,9 +51,9 @@ export default function StockListScreen({ navigation }: Props) {
       setItems(result.items || []);
     } catch (err) {
       setItems([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load stock'));
+      Alert.alert(t('Load failed'), apiError(err, 'Could not load stock'));
     }
-  }, [search]);
+  }, [search, t]);
 
   useEffect(() => {
     setLoading(true);
@@ -59,8 +61,8 @@ export default function StockListScreen({ navigation }: Props) {
       load().finally(() => setLoading(false));
       return;
     }
-    const t = setTimeout(() => load().finally(() => setLoading(false)), 300);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => load().finally(() => setLoading(false)), 300);
+    return () => clearTimeout(timer);
   }, [load, search]);
 
   useFocusEffect(
@@ -86,19 +88,19 @@ export default function StockListScreen({ navigation }: Props) {
   }, [items, isLow]);
 
   const emptyTitle =
-    filter === 'low' ? 'No low stock items'
-      : filter === 'in_stock' ? 'No products in stock'
-        : 'No products yet';
+    filter === 'low' ? t('No low stock items')
+      : filter === 'in_stock' ? t('No products in stock')
+        : t('No products yet');
   const emptySubtitle =
-    filter === 'low' ? 'Nothing is at or below reorder / zero stock'
-      : filter === 'in_stock' ? 'Add stock to products to see them here'
-        : 'Add products, then stock will show here';
+    filter === 'low' ? t('Nothing is at or below reorder / zero stock')
+      : filter === 'in_stock' ? t('Add stock to products to see them here')
+        : t('Add products, then stock will show here');
 
   return (
     <View style={common.screen}>
       <View style={styles.header}>
         <Searchbar
-          placeholder="Search stock..."
+          placeholder={t('Search stock...')}
           value={search}
           onChangeText={setSearch}
           style={styles.search}
@@ -109,15 +111,15 @@ export default function StockListScreen({ navigation }: Props) {
         <View style={styles.statRow}>
           <SurfaceCard style={styles.statCard} padding>
             <Text style={styles.statNum}>{stats.total}</Text>
-            <Text style={styles.statLbl}>All</Text>
+            <Text style={styles.statLbl}>{t('All')}</Text>
           </SurfaceCard>
           <SurfaceCard style={[styles.statCard, stats.low > 0 ? styles.statWarn : undefined]} padding>
             <Text style={[styles.statNum, stats.low > 0 && { color: colors.error }]}>{stats.low}</Text>
-            <Text style={styles.statLbl}>Low</Text>
+            <Text style={styles.statLbl}>{t('Low')}</Text>
           </SurfaceCard>
           <SurfaceCard style={styles.statCard} padding>
             <Text style={styles.statNum}>{stats.inStock}</Text>
-            <Text style={styles.statLbl}>In stock</Text>
+            <Text style={styles.statLbl}>{t('In stock')}</Text>
           </SurfaceCard>
         </View>
         <View style={styles.chips}>
@@ -130,11 +132,11 @@ export default function StockListScreen({ navigation }: Props) {
               style={styles.chip}
               showSelectedOverlay
               selectedColor={colors.primary}>
-              {f.label}
+              {t(f.label)}
             </Chip>
           ))}
           <Chip onPress={() => navigation.navigate('StockHistory')} icon="history" style={styles.chip}>
-            History
+            {t('History')}
           </Chip>
         </View>
       </View>
@@ -166,7 +168,7 @@ export default function StockListScreen({ navigation }: Props) {
                 mode: 'in',
                 variantId: item.variant_id,
                 productId: item.variant?.product?.id,
-                productName: item.variant?.product?.name || 'Product',
+                productName: item.variant?.product?.name || t('Product'),
                 sku: item.variant?.sku,
                 size: item.variant?.size,
                 color: item.variant?.color,
@@ -177,27 +179,27 @@ export default function StockListScreen({ navigation }: Props) {
                 <Icon name="cube-outline" size={22} color={low ? colors.error : colors.primary} />
               </View>
               <View style={styles.rowBody}>
-                <Text style={styles.rowTitle} numberOfLines={1}>{item.variant?.product?.name || 'Unknown'}</Text>
+                <Text style={styles.rowTitle} numberOfLines={1}>{item.variant?.product?.name || t('Unknown')}</Text>
                 <Text style={styles.rowSub}>{item.variant?.sku}</Text>
               </View>
               <View style={styles.rowRight}>
                 <Text style={[styles.rowQty, low && { color: colors.error }]}>{qty.toFixed(qty % 1 ? 2 : 0)}</Text>
                 <Text style={styles.rowUom}>{uom}</Text>
-                {low && <View style={styles.lowTag}><Text style={styles.lowTagText}>LOW</Text></View>}
+                {low && <View style={styles.lowTag}><Text style={styles.lowTagText}>{t('LOW')}</Text></View>}
               </View>
             </Pressable>
           );
         }}
       />
 
-      <FAB icon="plus" label="Add" style={styles.fab} color={colors.textOnPrimary} onPress={() => navigation.navigate('StockOperation', { mode: 'in' })} />
+      <FAB icon="plus" label={t('Add')} style={styles.fab} color={colors.textOnPrimary} onPress={() => navigation.navigate('StockOperation', { mode: 'in' })} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   header: { padding: spacing.lg, paddingBottom: spacing.sm },
-  search: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.borderLight, marginBottom: spacing.md },
+  search: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md },
   searchInput: { fontSize: 15 },
   statRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.md },
   statCard: { flex: 1, marginBottom: 0, alignItems: 'center' },
@@ -216,7 +218,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   rowPressed: { backgroundColor: colors.primaryLight },
   rowIcon: {

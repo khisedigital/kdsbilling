@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Text, TextInput } from 'react-native-paper';
+import { ActivityIndicator, Button, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import SectionCard from '../../components/ui/SectionCard';
@@ -8,11 +9,13 @@ import * as profileService from '../../services/profileService';
 import { useAuthStore } from '../../store/authStore';
 import { colors } from '../../theme/colors';
 import { common, spacing, typography } from '../../theme/layout';
+import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Profile'>;
 
 export default function ProfileScreen({}: Props) {
+  const t = useT();
   const user = useAuthStore((s) => s.user);
   const updateLocalUser = useAuthStore((s) => s.updateLocalUser);
   const logout = useAuthStore((s) => s.logout);
@@ -41,7 +44,7 @@ export default function ProfileScreen({}: Props) {
           email: profile.email,
         });
       } catch (err) {
-        if (alive) Alert.alert('Error', apiError(err, 'Could not load profile'));
+        if (alive) Alert.alert(t('Error'), apiError(err, t('Could not load profile')));
       } finally {
         if (alive) setLoading(false);
       }
@@ -60,9 +63,9 @@ export default function ProfileScreen({}: Props) {
         phone: profile.phone,
         email: profile.email,
       });
-      Alert.alert('Saved', 'Profile updated.');
+      Alert.alert(t('Saved'), t('Profile updated.'));
     } catch (err) {
-      Alert.alert('Error', apiError(err, 'Could not save profile'));
+      Alert.alert(t('Error'), apiError(err, t('Could not save profile')));
     } finally {
       setSaving(false);
     }
@@ -70,31 +73,31 @@ export default function ProfileScreen({}: Props) {
 
   const handleChangePassword = async () => {
     if (!currentPassword || !newPassword) {
-      Alert.alert('Missing fields', 'Enter current and new password.');
+      Alert.alert(t('Missing fields'), t('Enter current and new password.'));
       return;
     }
     if (newPassword.length < 6) {
-      Alert.alert('Weak password', 'New password must be at least 6 characters.');
+      Alert.alert(t('Weak password'), t('New password must be at least 6 characters.'));
       return;
     }
     if (newPassword !== confirmPassword) {
-      Alert.alert('Mismatch', 'New password and confirmation do not match.');
+      Alert.alert(t('Mismatch'), t('New password and confirmation do not match.'));
       return;
     }
 
     setChangingPassword(true);
     try {
       await profileService.changePassword({ currentPassword, newPassword });
-      Alert.alert('Password changed', 'Please sign in again with your new password.', [
+      Alert.alert(t('Password changed'), t('Please sign in again with your new password.'), [
         {
-          text: 'OK',
+          text: t('OK'),
           onPress: () => {
             logout();
           },
         },
       ]);
     } catch (err) {
-      Alert.alert('Error', apiError(err, 'Could not change password'));
+      Alert.alert(t('Error'), apiError(err, t('Could not change password')));
     } finally {
       setChangingPassword(false);
     }
@@ -110,19 +113,19 @@ export default function ProfileScreen({}: Props) {
 
   return (
     <ScrollView style={common.screen} contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
-      <Text style={styles.title}>My Profile</Text>
-      <Text style={styles.subtitle}>Update your name, mobile, and password</Text>
+      <Text style={styles.title}>{t('My Profile')}</Text>
+      <Text style={styles.subtitle}>{t('Update your name, mobile, and password')}</Text>
 
-      <SectionCard title="Account" icon="account-circle-outline">
-        <TextInput
-          label="Name"
+      <SectionCard title={t('Account')} icon="account-circle-outline">
+        <AppTextInput
+          label={t('Name')}
           mode="outlined"
           value={name}
           onChangeText={setName}
           style={styles.input}
         />
-        <TextInput
-          label="Mobile"
+        <AppTextInput
+          label={t('Mobile')}
           mode="outlined"
           value={phone}
           onChangeText={setPhone}
@@ -131,32 +134,32 @@ export default function ProfileScreen({}: Props) {
           style={styles.input}
         />
         {user?.role ? (
-          <Text style={styles.meta}>Role: {user.role}</Text>
+          <Text style={styles.meta}>{t('Role')}: {t(user.role)}</Text>
         ) : null}
         <Button mode="contained" onPress={handleSaveProfile} loading={saving} disabled={saving} style={styles.btn}>
-          Save profile
+          {t('Save profile')}
         </Button>
       </SectionCard>
 
-      <SectionCard title="Change password" icon="lock-reset" subtitle="You will be signed out after changing">
-        <TextInput
-          label="Current password"
+      <SectionCard title={t('Change password')} icon="lock-reset" subtitle={t('You will be signed out after changing')}>
+        <AppTextInput
+          label={t('Current password')}
           mode="outlined"
           value={currentPassword}
           onChangeText={setCurrentPassword}
           secureTextEntry
           style={styles.input}
         />
-        <TextInput
-          label="New password"
+        <AppTextInput
+          label={t('New password')}
           mode="outlined"
           value={newPassword}
           onChangeText={setNewPassword}
           secureTextEntry
           style={styles.input}
         />
-        <TextInput
-          label="Confirm new password"
+        <AppTextInput
+          label={t('Confirm new password')}
           mode="outlined"
           value={confirmPassword}
           onChangeText={setConfirmPassword}
@@ -170,7 +173,7 @@ export default function ProfileScreen({}: Props) {
           disabled={changingPassword}
           style={styles.btn}
         >
-          Update password
+          {t('Update password')}
         </Button>
       </SectionCard>
     </ScrollView>

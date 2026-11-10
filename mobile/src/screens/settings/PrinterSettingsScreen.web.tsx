@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, SegmentedButtons, Text, TextInput } from 'react-native-paper';
+import { ActivityIndicator, Button, SegmentedButtons, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import SectionCard from '../../components/ui/SectionCard';
 import { listSystemPrinters } from '../../print/PrintService';
@@ -13,12 +14,14 @@ import {
   type PrinterSettings,
   type PrinterType,
 } from '../../store/printerStore';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
 
 type SystemPrinter = { name: string; displayName: string; isDefault: boolean };
 
 export default function PrinterSettingsScreen() {
+  const t = useT();
   const isDesktopApp = Boolean(getDesktopBridge());
   const [settings, setSettings] = useState<PrinterSettings>({
     type: 'system',
@@ -34,11 +37,11 @@ export default function PrinterSettingsScreen() {
     try {
       setPrinters(await listSystemPrinters());
     } catch (err: unknown) {
-      Alert.alert('Printers', err instanceof Error ? err.message : 'Could not list printers');
+      Alert.alert(t('Printers'), err instanceof Error ? t(err.message) : t('Could not list printers'));
     } finally {
       setLoadingPrinters(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     getPrinterSettings().then((s) => {
@@ -53,9 +56,9 @@ export default function PrinterSettingsScreen() {
     setSaving(true);
     try {
       await savePrinterSettings(settings);
-      Alert.alert('Saved', 'Printer settings saved.');
+      Alert.alert(t('Saved'), t('Printer settings saved.'));
     } catch (err: unknown) {
-      Alert.alert('Save failed', err instanceof Error ? err.message : 'Error');
+      Alert.alert(t('Save failed'), err instanceof Error ? t(err.message) : t('Error'));
     } finally {
       setSaving(false);
     }
@@ -68,12 +71,12 @@ export default function PrinterSettingsScreen() {
       await savePrinterSettings(settings);
       await testPrint();
       if (settings.paperSize === 'a4' && settings.type === 'system' && !settings.systemPrinterName) {
-        Alert.alert('Test print ready', 'Choose a printer or Save as PDF in the print dialog.');
+        Alert.alert(t('Test print ready'), t('Choose a printer or Save as PDF in the print dialog.'));
       } else {
-        Alert.alert('Success', 'Test print sent.');
+        Alert.alert(t('Success'), t('Test print sent.'));
       }
     } catch (err: unknown) {
-      Alert.alert('Print failed', err instanceof Error ? err.message : 'Error');
+      Alert.alert(t('Print failed'), err instanceof Error ? t(err.message) : t('Error'));
     } finally {
       setTesting(false);
     }
@@ -100,7 +103,7 @@ export default function PrinterSettingsScreen() {
             color={!settings.systemPrinterName ? colors.primary : colors.textMuted}
           />
           <Text style={[styles.printerName, !settings.systemPrinterName && styles.printerNameOn]}>
-            Ask every time (show print dialog)
+            {t('Ask every time (show print dialog)')}
           </Text>
         </Pressable>
       ) : null}
@@ -120,12 +123,12 @@ export default function PrinterSettingsScreen() {
             <Text style={[styles.printerName, active && styles.printerNameOn]} numberOfLines={1}>
               {p.displayName}
             </Text>
-            {p.isDefault ? <Text style={styles.defaultTag}>Default</Text> : null}
+            {p.isDefault ? <Text style={styles.defaultTag}>{t('Default')}</Text> : null}
           </Pressable>
         );
       })}
       {!printers.length && !loadingPrinters ? (
-        <Text style={styles.hint}>No online printers found. Turn the printer on, then Refresh.</Text>
+        <Text style={styles.hint}>{t('No online printers found. Turn the printer on, then Refresh.')}</Text>
       ) : null}
       <Button
         mode="outlined"
@@ -134,21 +137,21 @@ export default function PrinterSettingsScreen() {
         loading={loadingPrinters}
         style={styles.refreshBtn}
       >
-        Refresh list
+        {t('Refresh list')}
       </Button>
     </>
   );
 
   return (
     <ScrollView style={common.screen} contentContainerStyle={[common.screenPad, styles.page]}>
-      <Text style={styles.title}>Billing Printer</Text>
+      <Text style={styles.title}>{t('Billing Printer')}</Text>
       <Text style={styles.subtitle}>
-        Receipt / bill printer only. Barcode labels use a separate printer on the Barcode label screen.
+        {t('Receipt / bill printer only. Barcode labels use a separate printer on the Barcode label screen.')}
       </Text>
 
-      <SectionCard title="Paper size" icon="file-outline">
+      <SectionCard title={t('Paper size')} icon="file-outline">
         <Text style={styles.paperHint}>
-          Choose the paper your printer uses. This selects the print engine — save after changing.
+          {t('Choose the paper your printer uses. This selects the print engine — save after changing.')}
         </Text>
         <SegmentedButtons
           value={settings.paperSize}
@@ -162,58 +165,58 @@ export default function PrinterSettingsScreen() {
             }
           }}
           buttons={[
-            { value: '58', label: '58mm POS' },
-            { value: '80', label: '80mm POS' },
-            { value: 'a4', label: 'A4 office' },
+            { value: '58', label: t('58mm POS') },
+            { value: '80', label: t('80mm POS') },
+            { value: 'a4', label: t('A4 office') },
           ]}
         />
         <Text style={styles.a4Hint}>
           {settings.paperSize === 'a4'
-            ? 'A4 uses a normal printer (HTML). Pick a laser/inkjet/PDF under Office printer.'
+            ? t('A4 uses a normal printer (HTML). Pick a laser/inkjet/PDF under Office printer.')
             : isDesktopApp
-              ? `${settings.paperSize} mm POS uses ESC/POS (same as the phone). Connect via Bluetooth, USB, or Wi‑Fi.`
-              : `${settings.paperSize} mm POS: use Wi‑Fi / LAN here, or open the desktop app for Bluetooth / USB.`}
+              ? t('{{size}} mm POS uses ESC/POS (same as the phone). Connect via Bluetooth, USB, or Wi‑Fi.', { size: settings.paperSize })
+              : t('{{size}} mm POS: use Wi‑Fi / LAN here, or open the desktop app for Bluetooth / USB.', { size: settings.paperSize })}
         </Text>
       </SectionCard>
 
       {settings.paperSize !== 'a4' ? (
-        <SectionCard title="POS printer connection" icon="printer">
+        <SectionCard title={t('POS printer connection')} icon="printer">
           <SegmentedButtons
             value={settings.type === 'system' || settings.type === 'bluetooth' || settings.type === 'network' ? settings.type : 'bluetooth'}
             onValueChange={(v) => setSettings({ ...settings, type: v as PrinterType })}
             buttons={[
-              { value: 'bluetooth', label: 'Bluetooth', icon: 'bluetooth' },
-              { value: 'system', label: 'USB', icon: 'usb' },
-              { value: 'network', label: 'Wi-Fi', icon: 'wifi' },
+              { value: 'bluetooth', label: t('Bluetooth'), icon: 'bluetooth' },
+              { value: 'system', label: t('USB'), icon: 'usb' },
+              { value: 'network', label: t('Wi-Fi'), icon: 'wifi' },
             ]}
           />
           <Text style={[styles.hint, { marginTop: spacing.sm }]}>
             {settings.type === 'network'
-              ? 'Ethernet / Wi‑Fi thermal printers (ESC/POS port 9100).'
+              ? t('Ethernet / Wi‑Fi thermal printers (ESC/POS port 9100).')
               : settings.type === 'bluetooth'
                 ? isDesktopApp
-                  ? 'Pair the POS printer in macOS/Windows Bluetooth settings, then select it below. ESC/POS is sent the same way as on the phone.'
-                  : 'Bluetooth POS needs the desktop app (pair in system Bluetooth, then select the printer). Or use Wi‑Fi / LAN.'
+                  ? t('Pair the POS printer in macOS/Windows Bluetooth settings, then select it below. ESC/POS is sent the same way as on the phone.')
+                  : t('Bluetooth POS needs the desktop app (pair in system Bluetooth, then select the printer). Or use Wi‑Fi / LAN.')
                 : isDesktopApp
-                  ? 'USB or other installed POS thermal printer. Select it by name below.'
-                  : 'USB POS needs the desktop app. Prefer Bluetooth (desktop) or Wi‑Fi / LAN.'}
+                  ? t('USB or other installed POS thermal printer. Select it by name below.')
+                  : t('USB POS needs the desktop app. Prefer Bluetooth (desktop) or Wi‑Fi / LAN.')}
           </Text>
         </SectionCard>
       ) : (
-        <SectionCard title="Office printer (A4)" icon="printer">
+        <SectionCard title={t('Office printer (A4)')} icon="printer">
           <Text style={styles.hint}>
             {isDesktopApp
-              ? 'Any normal printer from System Settings. Optional: choose one for silent print, or Ask every time.'
-              : 'The browser print dialog opens for each bill (Save as PDF works too).'}
+              ? t('Any normal printer from System Settings. Optional: choose one for silent print, or Ask every time.')
+              : t('The browser print dialog opens for each bill (Save as PDF works too).')}
           </Text>
           {isDesktopApp ? renderPrinterList(true) : null}
         </SectionCard>
       )}
 
       {settings.paperSize !== 'a4' && settings.type === 'bluetooth' && isDesktopApp ? (
-        <SectionCard title="Bluetooth POS printer" icon="bluetooth">
+        <SectionCard title={t('Bluetooth POS printer')} icon="bluetooth">
           <Text style={styles.hint}>
-            Pair the printer in system Bluetooth first, then select it here (required).
+            {t('Pair the printer in system Bluetooth first, then select it here (required).')}
           </Text>
           {printers.map((p) => {
             const active = settings.bluetoothAddress === p.name;
@@ -238,12 +241,12 @@ export default function PrinterSettingsScreen() {
                 <Text style={[styles.printerName, active && styles.printerNameOn]} numberOfLines={1}>
                   {p.displayName}
                 </Text>
-                {p.isDefault ? <Text style={styles.defaultTag}>Default</Text> : null}
+                {p.isDefault ? <Text style={styles.defaultTag}>{t('Default')}</Text> : null}
               </Pressable>
             );
           })}
           {!printers.length && !loadingPrinters ? (
-            <Text style={styles.hint}>No online printers found. Turn the POS printer on, then Refresh.</Text>
+            <Text style={styles.hint}>{t('No online printers found. Turn the POS printer on, then Refresh.')}</Text>
           ) : null}
           <Button
             mode="outlined"
@@ -252,43 +255,43 @@ export default function PrinterSettingsScreen() {
             loading={loadingPrinters}
             style={styles.refreshBtn}
           >
-            Refresh list
+            {t('Refresh list')}
           </Button>
         </SectionCard>
       ) : null}
 
       {settings.paperSize !== 'a4' && settings.type === 'bluetooth' && !isDesktopApp ? (
-        <SectionCard title="Bluetooth POS printer" icon="bluetooth">
+        <SectionCard title={t('Bluetooth POS printer')} icon="bluetooth">
           <Text style={styles.hint}>
-            Open this screen in the KDSPOZ desktop app after pairing the printer in system Bluetooth. In the browser, use Wi‑Fi / LAN instead.
+            {t('Open this screen in the KDSPOZ desktop app after pairing the printer in system Bluetooth. In the browser, use Wi‑Fi / LAN instead.')}
           </Text>
         </SectionCard>
       ) : null}
 
       {settings.paperSize !== 'a4' && settings.type === 'system' && isDesktopApp ? (
-        <SectionCard title="USB / installed POS printer" icon="printer">
+        <SectionCard title={t('USB / installed POS printer')} icon="printer">
           <Text style={styles.hint}>
-            Select the thermal printer by name (required for 58/80 mm).
+            {t('Select the thermal printer by name (required for 58/80 mm).')}
           </Text>
           {renderPrinterList(false)}
         </SectionCard>
       ) : null}
 
       {settings.paperSize !== 'a4' && settings.type === 'network' && (
-        <SectionCard title="Wi-Fi / LAN printer" icon="wifi">
+        <SectionCard title={t('Wi-Fi / LAN printer')} icon="wifi">
           <Text style={styles.hint}>
-            For Ethernet / Wi‑Fi thermal printers (ESC/POS port 9100).
+            {t('For Ethernet / Wi‑Fi thermal printers (ESC/POS port 9100).')}
           </Text>
-          <TextInput
-            label="Printer address (IP)"
+          <AppTextInput
+            label={t('Printer address (IP)')}
             value={settings.networkHost || ''}
             onChangeText={(v) => setSettings({ ...settings, networkHost: v })}
             mode="outlined"
             style={styles.input}
             placeholder="192.168.1.50"
           />
-          <TextInput
-            label="Port (optional)"
+          <AppTextInput
+            label={t('Port (optional)')}
             value={settings.networkPort ? String(settings.networkPort) : ''}
             placeholder="9100"
             onChangeText={(v) => setSettings({ ...settings, networkPort: parseInt(v, 10) || undefined })}
@@ -307,7 +310,7 @@ export default function PrinterSettingsScreen() {
           loading={saving}
           disabled={saving || testing}
         >
-          {saving ? 'Saving...' : 'Save Settings'}
+          {saving ? t('Saving...') : t('Save Settings')}
         </Button>
         <Button
           mode="outlined"
@@ -316,7 +319,7 @@ export default function PrinterSettingsScreen() {
           loading={testing}
           disabled={saving || testing}
         >
-          {testing ? 'Printing...' : 'Test Print'}
+          {testing ? t('Printing...') : t('Test Print')}
         </Button>
       </View>
     </ScrollView>
@@ -338,7 +341,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
   },
   printerRowOn: { backgroundColor: colors.primaryLight, borderRadius: radius.sm },

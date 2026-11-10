@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Button, HelperText, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -17,6 +18,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import SurfaceCard from '../../components/ui/SurfaceCard';
 import { fetchStockHistory, postStockMovement } from '../../services/inventoryService';
 import type { StockLedgerEntry } from '../../services/inventoryService';
+import { useT } from '../../i18n';
 import {
   fetchProduct,
   productVariantToSearchResult,
@@ -122,6 +124,7 @@ const TYPE_LABELS: Record<string, string> = {
 const QUICK_QTY = ['1', '5', '10', '20', '50'];
 
 export default function StockOperationScreen({ route, navigation }: Props) {
+  const t = useT();
   const initialMode = (route.params?.mode || 'in') as Mode;
   const isOpening = initialMode === 'opening';
   const [mode, setMode] = useState<Mode>(initialMode);
@@ -278,8 +281,8 @@ export default function StockOperationScreen({ route, navigation }: Props) {
       if (!filled.length) {
         setError(
           mode === 'adjust'
-            ? 'Enter a non-zero adjustment for at least one size'
-            : 'Enter quantity for at least one size',
+            ? t('Enter a non-zero adjustment for at least one size')
+            : t('Enter quantity for at least one size'),
         );
         return;
       }
@@ -301,7 +304,12 @@ export default function StockOperationScreen({ route, navigation }: Props) {
           }),
         );
         setSuccess(
-          `${meta.label} saved · ${filled.length} size${filled.length > 1 ? 's' : ''} updated for ${productTitle}`,
+          t(
+            filled.length > 1
+              ? '{{action}} saved · {{count}} sizes updated for {{product}}'
+              : '{{action}} saved · {{count}} size updated for {{product}}',
+            { action: t(meta.label), count: filled.length, product: productTitle },
+          ),
         );
         setNotes('');
         await loadHistory();
@@ -314,17 +322,17 @@ export default function StockOperationScreen({ route, navigation }: Props) {
     }
 
     if (!selected) {
-      setError('Search and select a product first');
+      setError(t('Search and select a product first'));
       return;
     }
     if (!quantity.trim()) {
-      setError('Enter a quantity');
+      setError(t('Enter a quantity'));
       return;
     }
 
     let qty = parseFloat(quantity);
     if (Number.isNaN(qty) || qty === 0) {
-      setError(mode === 'adjust' ? 'Enter a non-zero adjustment' : 'Enter a valid quantity');
+      setError(mode === 'adjust' ? t('Enter a non-zero adjustment') : t('Enter a valid quantity'));
       return;
     }
     qty = normalizeQty(qty);
@@ -340,10 +348,14 @@ export default function StockOperationScreen({ route, navigation }: Props) {
       const nextStock = Math.max(0, nextStockFor(selected.stockQty ?? 0, qty));
 
       setSuccess(
-        `${meta.label} saved · ${selected.productName} now ${formatQuantity(
-          Math.round(nextStock * 1000) / 1000,
-          selected.uom || undefined,
-        )}`,
+        t('{{action}} saved · {{product}} now {{qty}}', {
+          action: t(meta.label),
+          product: selected.productName,
+          qty: formatQuantity(
+            Math.round(nextStock * 1000) / 1000,
+            selected.uom || undefined,
+          ),
+        }),
       );
       setSelected({ ...selected, stockQty: nextStock });
       setQuantity(mode === 'adjust' ? '' : '1');
@@ -379,21 +391,21 @@ export default function StockOperationScreen({ route, navigation }: Props) {
                   }}
                   style={[styles.modeCard, on && { borderColor: item.color, backgroundColor: item.bg }]}>
                   <Icon name={item.icon} size={22} color={on ? item.color : colors.textMuted} />
-                  <Text style={[styles.modeLabel, on && { color: item.color }]}>{item.label}</Text>
+                  <Text style={[styles.modeLabel, on && { color: item.color }]}>{t(item.label)}</Text>
                 </Pressable>
               );
             })}
           </View>
         ) : null}
 
-        <Text style={styles.sectionLabel}>1. Product</Text>
+        <Text style={styles.sectionLabel}>{t('1. Product')}</Text>
         <SurfaceCard>
           <ProductSearchField
             onSelect={onSelect}
             groupByProduct
             selectedLabel={
               isMultiVariant
-                ? `${productTitle} · ${variantRows.length} sizes`
+                ? t('{{name}} · {{count}} sizes', { name: productTitle, count: variantRows.length })
                 : selected
                   ? `${selected.productName}${size ? ` · ${size}` : ''} (${selected.sku})`
                   : undefined
@@ -402,7 +414,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
           {loadingVariants ? (
             <View style={styles.variantLoading}>
               <ActivityIndicator color={meta.color} />
-              <Text style={styles.fieldHint}>Loading sizes…</Text>
+              <Text style={styles.fieldHint}>{t('Loading sizes…')}</Text>
             </View>
           ) : null}
           {isMultiVariant ? (
@@ -414,7 +426,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
                 <View style={styles.productBody}>
                   <Text style={styles.productName} numberOfLines={2}>{productTitle}</Text>
                   <Text style={styles.productMeta}>
-                    {variantRows.length} sizes · enter qty for each
+                    {t('{{count}} sizes · enter qty for each', { count: variantRows.length })}
                   </Text>
                 </View>
                 <Pressable onPress={clearProduct} hitSlop={10} style={styles.clearBtn}>
@@ -445,14 +457,14 @@ export default function StockOperationScreen({ route, navigation }: Props) {
               </View>
               <View style={styles.stockRow}>
                 <View>
-                  <Text style={styles.stockLbl}>Current stock</Text>
+                  <Text style={styles.stockLbl}>{t('Current stock')}</Text>
                   <Text style={styles.stockVal}>
                     {formatQuantity(selected.stockQty ?? 0, selected.uom || undefined)}
                   </Text>
                 </View>
                 {previewAfter != null ? (
                   <View style={styles.afterBox}>
-                    <Text style={styles.stockLbl}>After save</Text>
+                    <Text style={styles.stockLbl}>{t('After save')}</Text>
                     <Text style={[styles.stockVal, { color: meta.color }]}>
                       {formatQuantity(Math.max(0, Math.round(previewAfter * 1000) / 1000), selected.uom || undefined)}
                     </Text>
@@ -463,15 +475,15 @@ export default function StockOperationScreen({ route, navigation }: Props) {
           ) : null}
         </SurfaceCard>
 
-        <Text style={styles.sectionLabel}>2. Quantity</Text>
+        <Text style={styles.sectionLabel}>{t('2. Quantity')}</Text>
         <SurfaceCard>
           {isMultiVariant ? (
             <>
               <Text style={styles.fieldHint}>
-                {meta.qtyHint} Leave a size blank to skip it.
+                {t(meta.qtyHint)} {t('Leave a size blank to skip it.')}
               </Text>
               {variantRows.map((row) => {
-                const rowSize = variantLabel(row.size, row.color) || 'Default';
+                const rowSize = variantLabel(row.size, row.color) || t('Default');
                 const raw = parseFloat(row.quantity);
                 const after =
                   !Number.isNaN(raw) && raw !== 0
@@ -483,14 +495,14 @@ export default function StockOperationScreen({ route, navigation }: Props) {
                       <Text style={styles.variantSize}>{rowSize}</Text>
                       <Text style={styles.variantSku}>{row.sku}</Text>
                       <Text style={styles.variantStock}>
-                        Stock {formatQuantity(row.stockQty ?? 0, row.uom || undefined)}
+                        {t('Stock {{qty}}', { qty: formatQuantity(row.stockQty ?? 0, row.uom || undefined) })}
                         {after != null
                           ? ` → ${formatQuantity(Math.round(after * 1000) / 1000, row.uom || undefined)}`
                           : ''}
                       </Text>
                     </View>
-                    <TextInput
-                      label={mode === 'adjust' ? '+/−' : 'Qty'}
+                    <AppTextInput
+                      label={mode === 'adjust' ? '+/−' : t('Qty')}
                       value={row.quantity}
                       onChangeText={(v) => updateVariantQty(row.variantId, v)}
                       keyboardType="numbers-and-punctuation"
@@ -506,9 +518,9 @@ export default function StockOperationScreen({ route, navigation }: Props) {
             </>
           ) : (
             <>
-              <Text style={styles.fieldHint}>{meta.qtyHint}</Text>
-              <TextInput
-                label={meta.qtyLabel}
+              <Text style={styles.fieldHint}>{t(meta.qtyHint)}</Text>
+              <AppTextInput
+                label={t(meta.qtyLabel)}
                 value={quantity}
                 onChangeText={(v) => {
                   setQuantity(v);
@@ -547,8 +559,8 @@ export default function StockOperationScreen({ route, navigation }: Props) {
               )}
             </>
           )}
-          <TextInput
-            label="Notes (optional)"
+          <AppTextInput
+            label={t('Notes (optional)')}
             value={notes}
             onChangeText={setNotes}
             mode="outlined"
@@ -577,22 +589,22 @@ export default function StockOperationScreen({ route, navigation }: Props) {
           style={styles.saveBtn}
           contentStyle={styles.saveContent}
           labelStyle={styles.saveLabel}>
-          {meta.cta}
+          {t(meta.cta)}
         </Button>
 
         <View style={styles.historyHeader}>
-          <Text style={styles.sectionLabel}>Recent movements</Text>
+          <Text style={styles.sectionLabel}>{t('Recent movements')}</Text>
           <Button compact onPress={() => navigation.navigate('StockHistory')} textColor={colors.primary}>
-            See all
+            {t('See all')}
           </Button>
         </View>
         <SurfaceCard>
           {history.length === 0 ? (
-            <EmptyState icon="history" title="No history yet" subtitle="Stock changes will show here" />
+            <EmptyState icon="history" title={t('No history yet')} subtitle={t('Stock changes will show here')} />
           ) : (
             history.map((h, i) => {
               const ch = parseFloat(String(h.quantity_change));
-              const name = h.variant?.product?.name || 'Product';
+              const name = h.variant?.product?.name || t('Product');
               const sku = h.variant?.sku;
               const when = h.created_at
                 ? new Date(h.created_at).toLocaleString([], {
@@ -618,7 +630,7 @@ export default function StockOperationScreen({ route, navigation }: Props) {
                   <View style={styles.histBody}>
                     <Text style={styles.histName} numberOfLines={1}>{name}</Text>
                     <Text style={styles.histMeta}>
-                      {[TYPE_LABELS[h.movement_type] || h.movement_type, sku, when].filter(Boolean).join(' · ')}
+                      {[t(TYPE_LABELS[h.movement_type] || h.movement_type), sku, when].filter(Boolean).join(' · ')}
                     </Text>
                   </View>
                   <Text style={[styles.histQty, { color: ch >= 0 ? colors.secondary : colors.error }]}>
@@ -666,7 +678,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surfaceVariant,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   productTop: { flexDirection: 'row', alignItems: 'flex-start' },
   productIcon: {
@@ -693,7 +705,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: spacing.md,
     paddingTop: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
   },
   stockLbl: { fontSize: 11, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
@@ -738,7 +750,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   histRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm + 2 },
-  histBorder: { borderTopWidth: 1, borderTopColor: colors.borderLight },
+  histBorder: { borderTopWidth: 1, borderTopColor: colors.border },
   histIcon: {
     width: 32,
     height: 32,
@@ -764,8 +776,8 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginBottom: spacing.md,
     paddingBottom: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   variantInfo: { flex: 1, minWidth: 0 },
   variantSize: { fontSize: 15, fontWeight: '700', color: colors.text },

@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, HelperText, Text, TextInput } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import ModePills from '../../components/ui/ModePills';
 import SectionCard from '../../components/ui/SectionCard';
 import { createReturn, fetchBill, fetchBills, type BillDetail } from '../../services/businessService';
+import { useT } from '../../i18n';
 import { apiError, apiErrorCode } from '../../utils/apiError';
 import { canProcessReturn, getBillStatus, itemRemainingQty } from '../../utils/billStatus';
 import { colors } from '../../theme/colors';
@@ -33,6 +35,7 @@ function clampQtyInput(raw: string, max: number): string {
 }
 
 export default function ReturnScreen({ route, navigation }: Props) {
+  const t = useT();
   const initialBillId = route.params?.billId || '';
   const [billQuery, setBillQuery] = useState(initialBillId);
   const [bill, setBill] = useState<BillDetail | null>(null);
@@ -70,7 +73,7 @@ export default function ReturnScreen({ route, navigation }: Props) {
   const loadBill = async (idOrNumber: string) => {
     const q = idOrNumber.trim();
     if (!q) {
-      setError('Enter a bill number');
+      setError(t('Enter a bill number'));
       return;
     }
     setLookingUp(true);
@@ -86,7 +89,7 @@ export default function ReturnScreen({ route, navigation }: Props) {
           (b: BillDetail) => b.bill_number.toLowerCase() === q.toLowerCase(),
         );
         if (!match?.id) {
-          setError('Bill not found');
+          setError(t('Bill not found'));
           setBill(null);
           setLines([]);
           return;
@@ -97,8 +100,8 @@ export default function ReturnScreen({ route, navigation }: Props) {
       if (!canProcessReturn(found)) {
         setError(
           found.status === 'fully_returned' || !(found.items || []).some((i) => itemRemainingQty(i) > 0)
-            ? 'This bill is already fully returned'
-            : 'Only completed or partially returned bills can be returned',
+            ? t('This bill is already fully returned')
+            : t('Only completed or partially returned bills can be returned'),
         );
         setBill(found.status === 'fully_returned' || found.status === 'partially_returned' ? found : null);
         setLines([]);
@@ -121,16 +124,16 @@ export default function ReturnScreen({ route, navigation }: Props) {
 
   const selectedTotalHint = useMemo(() => {
     const selected = lines.filter((l) => parseFloat(l.qty) > 0);
-    if (!selected.length) return 'Enter qty up to Max for each item';
+    if (!selected.length) return t('Enter qty up to Max for each item');
     const units = selected.reduce((sum, l) => sum + (parseFloat(l.qty) || 0), 0);
-    return `${selected.length} line(s) · ${units} unit(s) selected`;
-  }, [lines]);
+    return t('{{count}} line(s) · {{units}} unit(s) selected', { count: selected.length, units });
+  }, [lines, t]);
 
   const handleReturn = async () => {
     setError('');
     if (submittingRef.current || loading) return;
     if (!bill) {
-      setError('Look up a completed bill first');
+      setError(t('Look up a completed bill first'));
       return;
     }
     const items = lines
@@ -143,16 +146,16 @@ export default function ReturnScreen({ route, navigation }: Props) {
       .filter((item) => item.quantity > 0);
 
     if (!items.length) {
-      setError('Enter quantity for at least one item');
+      setError(t('Enter quantity for at least one item'));
       return;
     }
     const over = items.find((item) => item.quantity > item.max + 0.0005);
     if (over) {
-      setError(`${over.name}: max returnable is ${over.max}`);
+      setError(t('{{name}}: max returnable is {{max}}', { name: over.name, max: over.max }));
       return;
     }
     if (refundMode === 'store_credit' && !bill.customer?.id) {
-      setError('Store credit needs a customer on the original bill');
+      setError(t('Store credit needs a customer on the original bill'));
       return;
     }
 
@@ -169,15 +172,15 @@ export default function ReturnScreen({ route, navigation }: Props) {
       });
       const cn = result?.credit_note_number || result?.return_number || '';
       Alert.alert(
-        'Credit note saved',
-        cn ? `${cn}\nOpen the bill to see it under Credit notes.` : 'Open the bill to see it under Credit notes.',
+        t('Credit note saved'),
+        cn ? t('{{cn}}\nOpen the bill to see it under Credit notes.', { cn }) : t('Open the bill to see it under Credit notes.'),
         [
           {
-            text: 'View bill',
+            text: t('View bill'),
             onPress: () => navigation.replace('SaleDetail', { billId: bill.id }),
           },
           {
-            text: 'Done',
+            text: t('Done'),
             style: 'cancel',
             onPress: () => navigation.navigate('ReturnsList'),
           },
@@ -195,7 +198,7 @@ export default function ReturnScreen({ route, navigation }: Props) {
           setLines([]);
           setError(
             code === 'ALREADY_RETURNED' || fresh.status === 'fully_returned'
-              ? 'This bill is already fully returned'
+              ? t('This bill is already fully returned')
               : message,
           );
         } else {
@@ -215,9 +218,9 @@ export default function ReturnScreen({ route, navigation }: Props) {
   return (
     <KeyboardAvoidingView style={common.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
-        <SectionCard title="Bill" icon="receipt" subtitle="Look up the original sale">
-          <TextInput
-            label="Bill number"
+        <SectionCard title={t('Bill')} icon="receipt" subtitle={t('Look up the original sale')}>
+          <AppTextInput
+            label={t('Bill number')}
             value={billQuery}
             onChangeText={setBillQuery}
             mode="outlined"
@@ -227,7 +230,7 @@ export default function ReturnScreen({ route, navigation }: Props) {
             onSubmitEditing={() => loadBill(billQuery)}
           />
           <Button mode="outlined" onPress={() => loadBill(billQuery)} loading={lookingUp} disabled={!billQuery.trim()}>
-            Find bill
+            {t('Find bill')}
           </Button>
           {bill ? (
             <View style={styles.billMetaWrap}>
@@ -245,7 +248,7 @@ export default function ReturnScreen({ route, navigation }: Props) {
         </SectionCard>
 
         {lines.length ? (
-          <SectionCard title="Items to return" icon="package-variant" subtitle={selectedTotalHint}>
+          <SectionCard title={t('Items to return')} icon="package-variant" subtitle={selectedTotalHint}>
             {lines.map((line) => (
               <View key={line.id} style={styles.line}>
                 <Pressable
@@ -257,14 +260,14 @@ export default function ReturnScreen({ route, navigation }: Props) {
                   )))}>
                   <Text style={styles.lineName}>{line.product_name}</Text>
                   <Text style={styles.lineMeta}>
-                    Sold {line.soldQty}
-                    {line.returnedQty > 0 ? ` · Already returned ${line.returnedQty}` : ''}
+                    {t('Sold {{qty}}', { qty: line.soldQty })}
+                    {line.returnedQty > 0 ? t(' · Already returned {{qty}}', { qty: line.returnedQty }) : ''}
                   </Text>
-                  <Text style={styles.lineMax}>Max returnable {line.remainingQty}</Text>
+                  <Text style={styles.lineMax}>{t('Max returnable {{qty}}', { qty: line.remainingQty })}</Text>
                   <Text style={styles.lineSku}>{line.sku}</Text>
                 </Pressable>
-                <TextInput
-                  label="Qty"
+                <AppTextInput
+                  label={t('Qty')}
                   value={line.qty}
                   onChangeText={(v) => setLines((prev) => prev.map((l) => (
                     l.id === line.id ? { ...l, qty: clampQtyInput(v, l.remainingQty) } : l
@@ -280,13 +283,13 @@ export default function ReturnScreen({ route, navigation }: Props) {
         ) : null}
 
         {lines.length ? (
-          <SectionCard title="Refund mode" icon="cash-refund">
+          <SectionCard title={t('Refund mode')} icon="cash-refund">
             <ModePills
               value={refundMode}
               onChange={setRefundMode}
               options={[
-                { value: 'cash', label: 'Cash', icon: 'cash', color: colors.secondary, bg: colors.secondaryLight },
-                { value: 'store_credit', label: 'Store credit', icon: 'wallet-outline', color: colors.primary, bg: colors.primaryLight },
+                { value: 'cash', label: t('Cash'), icon: 'cash', color: colors.secondary, bg: colors.secondaryLight },
+                { value: 'store_credit', label: t('Store credit'), icon: 'wallet-outline', color: colors.primary, bg: colors.primaryLight },
               ]}
             />
           </SectionCard>
@@ -301,7 +304,7 @@ export default function ReturnScreen({ route, navigation }: Props) {
             disabled={!bill || loading}
             icon="undo"
             style={styles.submit}>
-            Create credit note
+            {t('Create credit note')}
           </Button>
         ) : null}
       </ScrollView>
@@ -327,7 +330,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.md,
     paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
   },
   lineInfo: { flex: 1 },

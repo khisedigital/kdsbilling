@@ -51,6 +51,7 @@ export interface QuantityBarcodeInput {
 export interface Product {
   id: string;
   name: string;
+  name_mr?: string | null;
   description?: string;
   category_id?: string;
   brand_id?: string;
@@ -78,6 +79,7 @@ export interface Paginated<T> {
 
 export interface CreateProductPayload {
   name: string;
+  nameMr?: string | null;
   description?: string;
   categoryId?: string;
   brandId?: string;
@@ -88,14 +90,19 @@ export interface CreateProductPayload {
   allowDecimalQty?: boolean;
   sku?: string;
   barcode?: string;
+  /** All plain barcodes for the default variant (first = primary). Prefer over single barcode. */
+  barcodes?: string[];
   quantityBarcodes?: QuantityBarcodeInput[];
   costPrice?: number;
   sellingPrice: number;
   mrp?: number;
+  /** Opening quantity for a product with no sizes. */
+  stockQty?: number;
   variants?: Array<{
     id?: string;
     sku?: string;
     barcode?: string;
+    barcodes?: string[];
     quantityBarcodes?: QuantityBarcodeInput[];
     size?: string;
     color?: string;
@@ -108,6 +115,7 @@ export interface CreateProductPayload {
 
 export interface UpdateProductPayload {
   name?: string;
+  nameMr?: string | null;
   description?: string;
   categoryId?: string | null;
   brandId?: string | null;
@@ -119,6 +127,8 @@ export interface UpdateProductPayload {
   variantId?: string;
   sku?: string;
   barcode?: string;
+  barcodes?: string[];
+  quantityBarcodes?: QuantityBarcodeInput[];
   size?: string;
   color?: string;
   costPrice?: number;
@@ -130,6 +140,7 @@ export interface UpdateProductPayload {
     id?: string;
     sku?: string;
     barcode?: string;
+    barcodes?: string[];
     quantityBarcodes?: QuantityBarcodeInput[];
     size?: string;
     color?: string;

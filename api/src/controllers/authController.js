@@ -41,20 +41,18 @@ async function verifyPin(req, res, next) {
   }
 }
 
-async function me(req, res) {
-  res.json({
-    success: true,
-    data: {
-      auth: req.auth,
-      tenant: {
-        id: req.tenant.id,
-        name: req.tenant.name,
-        slug: req.tenant.slug,
-        currencyCode: req.tenant.currency_code,
-        countryCode: req.tenant.country_code,
+async function me(req, res, next) {
+  try {
+    res.json({
+      success: true,
+      data: {
+        auth: req.auth,
+        tenant: await authService.serializeTenant(req.tenant),
       },
-    },
-  });
+    });
+  } catch (err) {
+    next(err);
+  }
 }
 
 async function getProfile(req, res) {

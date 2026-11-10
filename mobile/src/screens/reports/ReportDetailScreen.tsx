@@ -11,7 +11,6 @@ import SurfaceCard from '../../components/ui/SurfaceCard';
 import { getReportConfig, type ReportType } from '../../reports/reportConfig';
 import { exportReportToExcel } from '../../reports/reportExport';
 import {
-  periodSummaryLabel,
   rangeForPeriod,
   shiftAnchor,
   type PeriodMode,
@@ -32,6 +31,7 @@ import {
   fetchSupplierReport,
 } from '../../services/businessService';
 import { apiError } from '../../utils/apiError';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography } from '../../theme/layout';
 
@@ -116,6 +116,7 @@ function SummaryCards({ items }: { items: Array<{ label: string; value: string; 
 }
 
 export default function ReportDetailScreen({ route }: Props) {
+  const t = useT();
   const { reportType } = route.params;
   const config = getReportConfig(reportType);
   const dateFilterEnabled = usesDateFilter(reportType);
@@ -137,10 +138,10 @@ export default function ReportDetailScreen({ route }: Props) {
     try {
       setData(await loadReport(reportType, range));
     } catch (err) {
-      setError(apiError(err, 'Could not load report'));
+      setError(apiError(err, t('Could not load report')));
       setData(null);
     }
-  }, [reportType, range]);
+  }, [reportType, range, t]);
 
   React.useEffect(() => {
     setLoading(true);
@@ -153,13 +154,18 @@ export default function ReportDetailScreen({ route }: Props) {
     setRefreshing(false);
   };
 
-  const periodLabel = dateFilterEnabled
-    ? periodSummaryLabel(periodMode, range as { from: string; to: string })
-    : 'Current stock snapshot';
+  const periodRange = range as { from?: string; to?: string };
+  const periodLabel = !dateFilterEnabled
+    ? t('Current stock snapshot')
+    : periodMode === 'day'
+      ? t('Day · {{from}}', { from: periodRange.from || '' })
+      : periodMode === 'month'
+        ? t('Month · {{from}} to {{to}}', { from: periodRange.from || '', to: periodRange.to || '' })
+        : t('Year · {{from}} to {{to}}', { from: periodRange.from || '', to: periodRange.to || '' });
 
   const handleExport = async () => {
     if (!data || !hasReportData(data, reportType)) {
-      Alert.alert('Nothing to export', 'This report has no data yet.');
+      Alert.alert(t('Nothing to export'), t('This report has no data yet.'));
       return;
     }
     setExporting(true);
@@ -168,7 +174,7 @@ export default function ReportDetailScreen({ route }: Props) {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Could not export report';
       if (!String(message).toLowerCase().includes('cancel')) {
-        Alert.alert('Export failed', message);
+        Alert.alert(t('Export failed'), t(message));
       }
     } finally {
       setExporting(false);
@@ -192,29 +198,29 @@ export default function ReportDetailScreen({ route }: Props) {
         return (
           <>
             <SummaryCards items={[
-              { label: 'Bills', value: String(report.summary.count) },
-              { label: 'Revenue', value: money(report.summary.total), color: colors.secondary },
-              { label: 'Tax', value: money(report.summary.tax || 0) },
-              { label: 'Discount', value: money(report.summary.discount || 0), color: colors.accent },
+              { label: t('Bills'), value: String(report.summary.count) },
+              { label: t('Revenue'), value: money(report.summary.total), color: colors.secondary },
+              { label: t('Tax'), value: money(report.summary.tax || 0) },
+              { label: t('Discount'), value: money(report.summary.discount || 0), color: colors.accent },
             ]} />
             {report.mostSold ? (
               <SurfaceCard style={styles.heroCard} padding>
-                <Text style={styles.heroEyebrow}>Most sold product</Text>
+                <Text style={styles.heroEyebrow}>{t('Most sold product')}</Text>
                 <Text style={styles.heroTitle}>{report.mostSold.product_name}</Text>
                 <Text style={styles.heroMeta}>
-                  Qty {qty(report.mostSold.total_qty)} · {money(report.mostSold.revenue)}
+                  {t('Qty {{qty}}', { qty: qty(report.mostSold.total_qty) })} · {money(report.mostSold.revenue)}
                   {report.mostSold.sku ? ` · ${report.mostSold.sku}` : ''}
                 </Text>
               </SurfaceCard>
             ) : null}
             {topProducts.length ? (
               <>
-                <Text style={styles.sectionLabel}>Top products</Text>
+                <Text style={styles.sectionLabel}>{t('Top products')}</Text>
                 {topProducts.map((item, index) => (
                   <ListRow
                     key={`${item.product_name}-${index}`}
                     title={item.product_name}
-                    subtitle={`#${index + 1} · Qty ${qty(item.total_qty)}`}
+                    subtitle={t('#{{rank}} · Qty {{qty}}', { rank: index + 1, qty: qty(item.total_qty) })}
                     icon={index === 0 ? 'trophy' : 'package-variant'}
                     iconColor={index === 0 ? colors.accent : colors.primary}
                     iconBg={index === 0 ? colors.accentLight : colors.primaryLight}
@@ -225,7 +231,7 @@ export default function ReportDetailScreen({ route }: Props) {
                 ))}
               </>
             ) : null}
-            <Text style={styles.sectionLabel}>Bills</Text>
+            <Text style={styles.sectionLabel}>{t('Bills')}</Text>
             {bills.map((bill) => (
               <ListRow
                 key={bill.id || bill.bill_number}
@@ -237,7 +243,7 @@ export default function ReportDetailScreen({ route }: Props) {
                 style={styles.row}
               />
             ))}
-            {q.trim() && !bills.length && !topProducts.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !bills.length && !topProducts.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
@@ -257,17 +263,17 @@ export default function ReportDetailScreen({ route }: Props) {
           <>
             {report.summary ? (
               <SummaryCards items={[
-                { label: 'Products', value: String(report.summary.products) },
-                { label: 'Qty sold', value: qty(report.summary.totalQty) },
-                { label: 'Revenue', value: money(report.summary.revenue), color: colors.secondary },
+                { label: t('Products'), value: String(report.summary.products) },
+                { label: t('Qty sold'), value: qty(report.summary.totalQty) },
+                { label: t('Revenue'), value: money(report.summary.revenue), color: colors.secondary },
               ]} />
             ) : null}
             {mostSold ? (
               <SurfaceCard style={styles.heroCard} padding>
-                <Text style={styles.heroEyebrow}>Most sold</Text>
+                <Text style={styles.heroEyebrow}>{t('Most sold')}</Text>
                 <Text style={styles.heroTitle}>{mostSold.product_name}</Text>
                 <Text style={styles.heroMeta}>
-                  Qty {qty(mostSold.total_qty)} · {money(mostSold.revenue)}
+                  {t('Qty {{qty}}', { qty: qty(mostSold.total_qty) })} · {money(mostSold.revenue)}
                 </Text>
               </SurfaceCard>
             ) : null}
@@ -275,7 +281,9 @@ export default function ReportDetailScreen({ route }: Props) {
               <ListRow
                 key={`${item.product_name}-${index}`}
                 title={item.product_name}
-                subtitle={`#${index + 1} · Qty ${qty(item.total_qty)}${item.sku ? ` · ${item.sku}` : ''}`}
+                subtitle={item.sku
+                  ? t('#{{rank}} · Qty {{qty}} · {{sku}}', { rank: index + 1, qty: qty(item.total_qty), sku: item.sku })
+                  : t('#{{rank}} · Qty {{qty}}', { rank: index + 1, qty: qty(item.total_qty) })}
                 icon={index === 0 ? 'trophy' : 'package-variant'}
                 iconColor={index === 0 ? colors.accent : colors.primary}
                 iconBg={index === 0 ? colors.accentLight : colors.primaryLight}
@@ -284,19 +292,19 @@ export default function ReportDetailScreen({ route }: Props) {
                 style={styles.row}
               />
             ))}
-            {q.trim() && !items.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !items.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
       case 'category_sales': {
         const items = (data as Array<{ category_name: string; total_qty: number; revenue: number }>)
           .filter((item) => matchesSearch(q, item.category_name));
-        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>No matching rows</Text>;
+        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item) => (
           <ListRow
             key={item.category_name}
             title={item.category_name}
-            subtitle={`Qty ${qty(item.total_qty)}`}
+            subtitle={t('Qty {{qty}}', { qty: qty(item.total_qty) })}
             icon="folder-outline"
             right={money(item.revenue)}
             showChevron={false}
@@ -307,12 +315,12 @@ export default function ReportDetailScreen({ route }: Props) {
       case 'brand_sales': {
         const items = (data as Array<{ brand_name: string; total_qty: number; revenue: number }>)
           .filter((item) => matchesSearch(q, item.brand_name));
-        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>No matching rows</Text>;
+        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item) => (
           <ListRow
             key={item.brand_name}
             title={item.brand_name}
-            subtitle={`Qty ${qty(item.total_qty)}`}
+            subtitle={t('Qty {{qty}}', { qty: qty(item.total_qty) })}
             icon="tag-outline"
             right={money(item.revenue)}
             showChevron={false}
@@ -330,33 +338,39 @@ export default function ReportDetailScreen({ route }: Props) {
         return (
           <>
             <SummaryCards items={[
-              { label: 'Revenue', value: money(report.summary.revenue), color: colors.secondary },
-              { label: 'Cost', value: money(report.summary.cost), color: colors.accent },
-              { label: 'Gross profit', value: money(report.summary.grossProfit), color: colors.primary },
-              { label: 'Expenses', value: money(report.summary.expenses), color: colors.error },
+              { label: t('Revenue'), value: money(report.summary.revenue), color: colors.secondary },
+              { label: t('Cost'), value: money(report.summary.cost), color: colors.accent },
+              { label: t('Gross profit'), value: money(report.summary.grossProfit), color: colors.primary },
+              { label: t('Expenses'), value: money(report.summary.expenses), color: colors.error },
             ]} />
             <SurfaceCard style={[styles.heroCard, net >= 0 ? styles.profitHero : styles.lossHero]} padding>
-              <Text style={styles.heroEyebrow}>{net >= 0 ? 'Net profit' : 'Net loss'}</Text>
+              <Text style={styles.heroEyebrow}>{net >= 0 ? t('Net profit') : t('Net loss')}</Text>
               <Text style={[styles.heroTitle, { color: net >= 0 ? colors.success : colors.error }]}>
                 {money(Math.abs(net))}
               </Text>
               <Text style={styles.heroMeta}>
-                Revenue {money(report.summary.revenue)} − Cost {money(report.summary.cost)} − Expenses {money(report.summary.expenses)}
+                {t('Revenue {{revenue}} − Cost {{cost}} − Expenses {{expenses}}', {
+                  revenue: money(report.summary.revenue),
+                  cost: money(report.summary.cost),
+                  expenses: money(report.summary.expenses),
+                })}
               </Text>
             </SurfaceCard>
-            <Text style={styles.sectionLabel}>Profit by product</Text>
+            <Text style={styles.sectionLabel}>{t('Profit by product')}</Text>
             {items.map((item, index) => (
               <ListRow
                 key={`${item.product_name}-${index}`}
                 title={item.product_name}
-                subtitle={`Sales ${money(item.revenue)}${item.cost != null ? ` · Cost ${money(item.cost)}` : ''}`}
+                subtitle={item.cost != null
+                  ? t('Sales {{sales}} · Cost {{cost}}', { sales: money(item.revenue), cost: money(item.cost) })
+                  : t('Sales {{sales}}', { sales: money(item.revenue) })}
                 icon="chart-line"
                 right={money(item.profit)}
                 showChevron={false}
                 style={styles.row}
               />
             ))}
-            {q.trim() && !items.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !items.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
@@ -366,21 +380,21 @@ export default function ReportDetailScreen({ route }: Props) {
         return (
           <>
             <SummaryCards items={[
-              { label: 'Bills', value: String(report.summary.count) },
-              { label: 'Purchases', value: money(report.summary.total), color: colors.secondary },
+              { label: t('Bills'), value: String(report.summary.count) },
+              { label: t('Purchases'), value: money(report.summary.total), color: colors.secondary },
             ]} />
             {bills.map((bill) => (
               <ListRow
                 key={bill.id}
                 title={bill.bill_number}
-                subtitle={`${bill.supplier?.name || 'Supplier'} · ${bill.bill_date}`}
+                subtitle={`${bill.supplier?.name || t('Supplier')} · ${bill.bill_date}`}
                 icon="truck-check"
                 right={money(bill.total_amount)}
                 showChevron={false}
                 style={styles.row}
               />
             ))}
-            {q.trim() && !bills.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !bills.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
@@ -391,17 +405,17 @@ export default function ReportDetailScreen({ route }: Props) {
           variant?: { sku?: string; size?: string; color?: string; product?: { name?: string }; uom?: { code?: string } };
         }>)
           .filter((item) => matchesSearch(q, item.variant?.product?.name, item.variant?.sku, item.variant?.size));
-        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>No matching rows</Text>;
-        if (!items.length) return <EmptyState icon="warehouse" title="No stock rows" subtitle="Add products and stock to see them here" />;
+        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
+        if (!items.length) return <EmptyState icon="warehouse" title={t('No stock rows')} subtitle={t('Add products and stock to see them here')} />;
         return (
           <>
-            <SummaryCards items={[{ label: 'Items', value: String(items.length) }]} />
+            <SummaryCards items={[{ label: t('Items'), value: String(items.length) }]} />
             {items.map((item) => {
               const size = [item.variant?.size, item.variant?.color].filter(Boolean).join(' · ');
               return (
                 <ListRow
                   key={item.id}
-                  title={item.variant?.product?.name || 'Unknown'}
+                  title={item.variant?.product?.name || t('Unknown')}
                   subtitle={[item.variant?.sku, size].filter(Boolean).join(' · ') || undefined}
                   icon="warehouse"
                   right={`${qty(item.quantity)} ${item.variant?.uom?.code || ''}`.trim()}
@@ -426,16 +440,16 @@ export default function ReportDetailScreen({ route }: Props) {
         const items = report.items.filter((item) => matchesSearch(q, item.variant?.product?.name, item.variant?.sku, item.variant?.size));
         return (
           <>
-            <SummaryCards items={[{ label: 'Low items', value: String(report.summary.count), color: colors.error }]} />
+            <SummaryCards items={[{ label: t('Low items'), value: String(report.summary.count), color: colors.error }]} />
             {items.map((item) => {
               const size = [item.variant?.size, item.variant?.color].filter(Boolean).join(' · ');
               const reorderLabel = item.reorder_level > 0
-                ? `Reorder ${qty(item.reorder_level)}`
-                : 'Out of stock';
+                ? t('Reorder {{qty}}', { qty: qty(item.reorder_level) })
+                : t('Out of stock');
               return (
                 <ListRow
                   key={item.id}
-                  title={item.variant?.product?.name || 'Unknown'}
+                  title={item.variant?.product?.name || t('Unknown')}
                   subtitle={[item.variant?.sku, size, reorderLabel].filter(Boolean).join(' · ')}
                   icon="alert-outline"
                   iconColor={colors.error}
@@ -446,19 +460,19 @@ export default function ReportDetailScreen({ route }: Props) {
                 />
               );
             })}
-            {q.trim() && !items.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !items.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
       case 'customer': {
         const items = (data as Array<{ id: string; name: string; phone?: string; order_count: number; total_spent: number }>)
           .filter((item) => matchesSearch(q, item.name, item.phone));
-        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>No matching rows</Text>;
+        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item) => (
           <ListRow
             key={item.id}
             title={item.name}
-            subtitle={[item.phone, `${item.order_count} orders`].filter(Boolean).join(' · ')}
+            subtitle={[item.phone, t('{{count}} orders', { count: item.order_count })].filter(Boolean).join(' · ')}
             icon="account-circle"
             right={money(item.total_spent)}
             showChevron={false}
@@ -469,12 +483,12 @@ export default function ReportDetailScreen({ route }: Props) {
       case 'supplier': {
         const items = (data as Array<{ id: string; name: string; phone?: string; bill_count: number; total_purchased: number }>)
           .filter((item) => matchesSearch(q, item.name, item.phone));
-        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>No matching rows</Text>;
+        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item) => (
           <ListRow
             key={item.id}
             title={item.name}
-            subtitle={[item.phone, `${item.bill_count} bills`].filter(Boolean).join(' · ')}
+            subtitle={[item.phone, t('{{count}} bills', { count: item.bill_count })].filter(Boolean).join(' · ')}
             icon="truck"
             right={money(item.total_purchased)}
             showChevron={false}
@@ -485,7 +499,7 @@ export default function ReportDetailScreen({ route }: Props) {
       case 'gst': {
         const items = (data as Array<{ tax_name: string; totalTax: number }>)
           .filter((item) => matchesSearch(q, item.tax_name));
-        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>No matching rows</Text>;
+        if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item, index) => (
           <ListRow
             key={`${item.tax_name}-${index}`}
@@ -502,11 +516,11 @@ export default function ReportDetailScreen({ route }: Props) {
         const expenses = report.expenses.filter((item) => matchesSearch(q, item.category?.name, item.expense_date));
         return (
           <>
-            <SummaryCards items={[{ label: 'Total expenses', value: money(report.total), color: colors.error }]} />
+            <SummaryCards items={[{ label: t('Total expenses'), value: money(report.total), color: colors.error }]} />
             {expenses.map((item) => (
               <ListRow
                 key={item.id}
-                title={item.category?.name || 'Expense'}
+                title={item.category?.name || t('Expense')}
                 subtitle={item.expense_date}
                 icon="cash-minus"
                 right={money(item.amount)}
@@ -514,7 +528,7 @@ export default function ReportDetailScreen({ route }: Props) {
                 style={styles.row}
               />
             ))}
-            {q.trim() && !expenses.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !expenses.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
@@ -527,11 +541,11 @@ export default function ReportDetailScreen({ route }: Props) {
         return (
           <>
             <SummaryCards items={[
-              { label: 'Cash in', value: money(report.summary.cashIn), color: colors.secondary },
-              { label: 'Cash out', value: money(report.summary.cashOut), color: colors.error },
-              { label: 'Net flow', value: money(report.summary.netFlow), color: report.summary.netFlow >= 0 ? colors.success : colors.error },
+              { label: t('Cash in'), value: money(report.summary.cashIn), color: colors.secondary },
+              { label: t('Cash out'), value: money(report.summary.cashOut), color: colors.error },
+              { label: t('Net flow'), value: money(report.summary.netFlow), color: report.summary.netFlow >= 0 ? colors.success : colors.error },
             ]} />
-            <Text style={styles.sectionTitle}>Payment modes</Text>
+            <Text style={styles.sectionTitle}>{t('Payment modes')}</Text>
             {inflows.map((item) => (
               <ListRow
                 key={item.payment_mode}
@@ -542,14 +556,14 @@ export default function ReportDetailScreen({ route }: Props) {
                 style={styles.row}
               />
             ))}
-            {q.trim() && !inflows.length ? <Text style={styles.emptyFilter}>No matching rows</Text> : null}
+            {q.trim() && !inflows.length ? <Text style={styles.emptyFilter}>{t('No matching rows')}</Text> : null}
           </>
         );
       }
       default:
         return null;
     }
-  }, [data, reportType, search]);
+  }, [data, reportType, search, t]);
 
   const hasRows = hasReportData(data, reportType);
 
@@ -564,7 +578,7 @@ export default function ReportDetailScreen({ route }: Props) {
   if (error) {
     return (
       <View style={common.screen}>
-        <EmptyState icon="alert-circle-outline" title="Report unavailable" subtitle={error} />
+        <EmptyState icon="alert-circle-outline" title={t('Report unavailable')} subtitle={error} />
       </View>
     );
   }
@@ -574,8 +588,8 @@ export default function ReportDetailScreen({ route }: Props) {
       style={common.screen}
       contentContainerStyle={common.screenPad}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}>
-      <Text style={styles.title}>{config?.title || 'Report'}</Text>
-      <Text style={styles.subtitle}>{config?.subtitle}</Text>
+      <Text style={styles.title}>{t(config?.title || 'Report')}</Text>
+      <Text style={styles.subtitle}>{config?.subtitle ? t(config.subtitle) : ''}</Text>
 
       {dateFilterEnabled ? (
         <ReportPeriodFilter
@@ -600,16 +614,16 @@ export default function ReportDetailScreen({ route }: Props) {
         disabled={exporting || !hasRows}
         style={styles.exportBtn}
         contentStyle={styles.exportBtnContent}>
-        Export Excel
+        {t('Export Excel')}
       </Button>
 
       {hasRows ? (
         <>
-          <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search report rows..." embedded />
+          <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search report rows...')} embedded />
           {content}
         </>
       ) : (
-        <EmptyState icon={config?.icon || 'chart-box-outline'} title="No data yet" subtitle="Transactions will appear here once available" />
+        <EmptyState icon={config?.icon || 'chart-box-outline'} title={t('No data yet')} subtitle={t('Transactions will appear here once available')} />
       )}
     </ScrollView>
   );
@@ -632,7 +646,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
     backgroundColor: colors.primaryLight,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   profitHero: { backgroundColor: colors.successLight },
   lossHero: { backgroundColor: colors.errorLight },

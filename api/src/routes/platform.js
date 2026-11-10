@@ -32,17 +32,21 @@ router.delete('/business-types/:id', asyncHandler(platform.deleteBusinessType));
 
 router.get('/master-categories', asyncHandler(platform.listMasterCategories));
 router.post('/master-categories', asyncHandler(platform.createMasterCategory));
+router.post('/master-categories/import', asyncHandler(platform.importMasterCategories));
 router.patch('/master-categories/:id', asyncHandler(platform.updateMasterCategory));
 router.delete('/master-categories/:id', asyncHandler(platform.deleteMasterCategory));
 
 router.get('/master-brands', asyncHandler(platform.listMasterBrands));
 router.post('/master-brands', asyncHandler(platform.createMasterBrand));
+router.post('/master-brands/import', asyncHandler(platform.importMasterBrands));
 router.patch('/master-brands/:id', asyncHandler(platform.updateMasterBrand));
 router.delete('/master-brands/:id', asyncHandler(platform.deleteMasterBrand));
 
+router.get('/open-food-facts', asyncHandler(platform.searchOpenFoodFacts));
 router.get('/master-products', asyncHandler(platform.listMasterProducts));
 router.post('/master-products', asyncHandler(platform.createMasterProduct));
 router.post('/master-products/import', asyncHandler(platform.importMasterProducts));
+router.post('/master-products/import-from-open-food', asyncHandler(platform.importOpenFoodMaster));
 router.patch('/master-products/:id', asyncHandler(platform.updateMasterProduct));
 router.delete('/master-products/:id', asyncHandler(platform.deleteMasterProduct));
 

@@ -25,7 +25,8 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Microlan sdk2 thermal label printing (same path as SDKDemoApk).
  * Connect uses SPP with a hard timeout (BluetoothSocket.connect() can hang forever).
- * Print: label bitmap → PrinterSDK.prepareImageForPrint → Utils.decodeBitmap → GS FF.
+ * Print: sharp label bitmap → Utils.decodeBitmap → GS FF.
+ * prepareImageForPrint is skipped — its dither made text and barcodes a dark blur.
  */
 class KdsLabelPrinterModule(
   private val reactContext: ReactApplicationContext,
@@ -157,7 +158,13 @@ class KdsLabelPrinterModule(
         val heightMm = when {
           payload.hasKey("heightMm") && !payload.isNull("heightMm") -> payload.getInt("heightMm")
           else -> 28
-        }.let { if (it == 25) 25 else 28 }
+        }.let {
+          when (it) {
+            25 -> 25
+            30 -> 30
+            else -> 28
+          }
+        }
         val bitmap = renderLabelBitmap(content, heightMm)
         try {
           // Same as SDKDemoApk: ESC/POS raster + GS FF (not TSPL / not continuous feed).

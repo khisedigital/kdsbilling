@@ -7,6 +7,7 @@ import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
 import ScreenSearch from '../../components/ui/ScreenSearch';
 import { REPORTS, type ReportConfig } from '../../reports/reportConfig';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { common, radius, shadow, spacing, typography } from '../../theme/layout';
 
@@ -26,6 +27,7 @@ const GROUP_META: Record<Exclude<GroupFilter, 'All'>, { icon: string; color: str
 };
 
 function ReportTile({ report, onPress }: { report: ReportConfig; onPress: () => void }) {
+  const t = useT();
   return (
     <Pressable
       onPress={onPress}
@@ -33,10 +35,10 @@ function ReportTile({ report, onPress }: { report: ReportConfig; onPress: () => 
       <View style={[styles.tileIcon, { backgroundColor: report.bg }]}>
         <Icon name={report.icon} size={26} color={report.color} />
       </View>
-      <Text style={styles.tileTitle} numberOfLines={2}>{report.title}</Text>
-      <Text style={styles.tileSub} numberOfLines={2}>{report.subtitle}</Text>
+      <Text style={styles.tileTitle} numberOfLines={2}>{t(report.title)}</Text>
+      <Text style={styles.tileSub} numberOfLines={2}>{t(report.subtitle)}</Text>
       <View style={styles.tileFooter}>
-        <Text style={[styles.tileGroup, { color: report.color }]}>{report.group}</Text>
+        <Text style={[styles.tileGroup, { color: report.color }]}>{t(report.group)}</Text>
         <Icon name="arrow-top-right" size={14} color={colors.textMuted} />
       </View>
     </Pressable>
@@ -54,6 +56,7 @@ function ReportGrid({ items, onPress }: { items: ReportConfig[]; onPress: (repor
 }
 
 export default function ReportsScreen({ navigation }: Props) {
+  const t = useT();
   const [search, setSearch] = useState('');
   const [group, setGroup] = useState<GroupFilter>('All');
 
@@ -87,7 +90,7 @@ export default function ReportsScreen({ navigation }: Props) {
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search reports..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search reports...')} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.hero}>
@@ -96,19 +99,19 @@ export default function ReportsScreen({ navigation }: Props) {
               <Icon name="chart-box-outline" size={28} color={colors.textOnPrimary} />
             </View>
             <View style={styles.heroText}>
-              <Text style={styles.heroTitle}>Business Reports</Text>
-              <Text style={styles.heroSub}>13 reports · sales, stock, tax & cash flow</Text>
+              <Text style={styles.heroTitle}>{t('Business Reports')}</Text>
+              <Text style={styles.heroSub}>{t('13 reports · sales, stock, tax & cash flow')}</Text>
             </View>
           </View>
           <View style={styles.heroStats}>
             <View style={styles.heroStat}>
               <Text style={styles.heroStatNum}>13</Text>
-              <Text style={styles.heroStatLbl}>Reports</Text>
+              <Text style={styles.heroStatLbl}>{t('Reports')}</Text>
             </View>
             <View style={styles.heroDivider} />
             <View style={styles.heroStat}>
               <Text style={styles.heroStatNum}>4</Text>
-              <Text style={styles.heroStatLbl}>Categories</Text>
+              <Text style={styles.heroStatLbl}>{t('Categories')}</Text>
             </View>
           </View>
         </View>
@@ -125,7 +128,7 @@ export default function ReportsScreen({ navigation }: Props) {
               style={styles.chip}
               showSelectedOverlay
               icon={item === 'All' ? 'view-grid-outline' : GROUP_META[item].icon}>
-              {item}
+              {t(item)}
             </Chip>
           ))}
         </ScrollView>
@@ -133,8 +136,8 @@ export default function ReportsScreen({ navigation }: Props) {
         {!filtered.length ? (
           <EmptyState
             icon="file-search-outline"
-            title="No reports found"
-            subtitle="Try a different search or category filter"
+            title={t('No reports found')}
+            subtitle={t('Try a different search or category filter')}
           />
         ) : group === 'All' && !search.trim() ? (
           grouped.map((section) => {
@@ -145,7 +148,7 @@ export default function ReportsScreen({ navigation }: Props) {
                   <View style={[styles.sectionIcon, { backgroundColor: `${meta.color}15` }]}>
                     <Icon name={meta.icon} size={18} color={meta.color} />
                   </View>
-                  <Text style={styles.sectionTitle}>{section.group}</Text>
+                  <Text style={styles.sectionTitle}>{t(section.group)}</Text>
                   <Text style={styles.sectionCount}>{section.items.length}</Text>
                 </View>
                 <ReportGrid items={section.items} onPress={openReport} />
@@ -156,7 +159,7 @@ export default function ReportsScreen({ navigation }: Props) {
           <View style={styles.section}>
             <View style={styles.sectionHead}>
               <Text style={styles.sectionTitle}>
-                {group === 'All' ? 'Results' : group}
+                {group === 'All' ? t('Results') : t(group)}
               </Text>
               <Text style={styles.sectionCount}>{filtered.length}</Text>
             </View>
@@ -279,7 +282,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
     padding: spacing.md,
     minHeight: 148,
     ...shadow.sm,
@@ -316,8 +319,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: spacing.sm,
     paddingTop: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderLight,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
   tileGroup: {
     fontSize: 10,

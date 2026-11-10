@@ -8,7 +8,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Dialog, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, Dialog, Portal, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BottomBar from '../../components/ui/BottomBar';
 import { encodeBarcode } from '../../print/barcodeEncode';
@@ -26,9 +27,10 @@ import {
   isNativeLabelPrinterAvailable,
   listNativeLabelPrinters,
 } from '../../print/labelPrinterNative';
-import { getShopSettings } from '../../services/shopSettingsService';
+import { getShopSettings, shopTextForBill } from '../../services/shopSettingsService';
+import { useLanguageStore, useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { dialogCard, radius, spacing } from '../../theme/layout';
 
 const DEMO: GapLabelContent = {
   shopName: 'My Shop',
@@ -73,6 +75,7 @@ function BarcodeStrip({ value }: { value: string }) {
 }
 
 export default function PrintLabelScreen() {
+  const t = useT();
   const useSdk = isNativeLabelPrinterAvailable();
   const { width } = useWindowDimensions();
   const labelWidth = Math.min(width - spacing.lg * 2, 360);
@@ -95,7 +98,7 @@ export default function PrintLabelScreen() {
   useEffect(() => {
     getShopSettings()
       .then((shop) => {
-        const name = shop.shopName?.trim();
+        const name = shopTextForBill(shop, useLanguageStore.getState().bill).shopName;
         if (name) setLabel((current) => ({ ...current, shopName: name }));
       })
       .catch(() => {});
@@ -115,8 +118,8 @@ export default function PrintLabelScreen() {
   const loadPrinters = useCallback(async () => {
     if (!useSdk) {
       Alert.alert(
-        'Android only',
-        'This thermal printer prints only through the Microlan SDK. Open KDSPOZ on your Android phone.',
+        t('Android only'),
+        t('This thermal printer prints only through the Microlan SDK. Open KDSPOZ on your Android phone.'),
       );
       return;
     }
@@ -125,11 +128,11 @@ export default function PrintLabelScreen() {
       setPrinters(await listNativeLabelPrinters());
     } catch (err) {
       setPrinters([]);
-      Alert.alert('Printers', err instanceof Error ? err.message : 'Could not list printers.');
+      Alert.alert(t('Printers'), err instanceof Error ? t(err.message) : t('Could not list printers.'));
     } finally {
       setLoadingPrinters(false);
     }
-  }, [useSdk]);
+  }, [useSdk, t]);
 
   const openQty = () => {
     setQtyDraft(String(qty));
@@ -139,7 +142,7 @@ export default function PrintLabelScreen() {
   const saveQty = () => {
     const next = parseInt(qtyDraft, 10);
     if (!qtyDraft.trim() || Number.isNaN(next) || next < 1 || next > 99) {
-      Alert.alert('Quantity', 'Enter a number from 1 to 99.');
+      Alert.alert(t('Quantity'), t('Enter a number from 1 to 99.'));
       return;
     }
     setQty(next);
@@ -149,8 +152,8 @@ export default function PrintLabelScreen() {
   const openPrinter = () => {
     if (!useSdk) {
       Alert.alert(
-        'Android only',
-        'This thermal printer prints only through the Microlan SDK. Open KDSPOZ on your Android phone.',
+        t('Android only'),
+        t('This thermal printer prints only through the Microlan SDK. Open KDSPOZ on your Android phone.'),
       );
       return;
     }
@@ -170,10 +173,10 @@ export default function PrintLabelScreen() {
     } catch (err) {
       setConnected(false);
       Alert.alert(
-        'Connect failed',
+        t('Connect failed'),
         err instanceof Error
-          ? err.message
-          : 'Could not connect. Turn the printer on and close other print apps, then try again.',
+          ? t(err.message)
+          : t('Could not connect. Turn the printer on and close other print apps, then try again.'),
       );
     } finally {
       setConnecting(false);
@@ -183,19 +186,19 @@ export default function PrintLabelScreen() {
   const onCalibrate = async () => {
     if (calibrating || printing || connecting) return;
     if (!useSdk) {
-      Alert.alert('Android only', 'Calibrate needs the Android app.');
+      Alert.alert(t('Android only'), t('Calibrate needs the Android app.'));
       return;
     }
     if (!connected) {
-      Alert.alert('Printer', 'Select and connect a Bluetooth printer first.');
+      Alert.alert(t('Printer'), t('Select and connect a Bluetooth printer first.'));
       return;
     }
     setCalibrating(true);
     try {
       await calibrateNativeLabelPrinter();
-      Alert.alert('Calibrate', 'Gap sensor learning started. Wait for the labels to feed, then print.');
+      Alert.alert(t('Calibrate'), t('Gap sensor learning started. Wait for the labels to feed, then print.'));
     } catch (err) {
-      Alert.alert('Calibrate failed', err instanceof Error ? err.message : 'Could not calibrate.');
+      Alert.alert(t('Calibrate failed'), err instanceof Error ? t(err.message) : t('Could not calibrate.'));
     } finally {
       setCalibrating(false);
     }
@@ -205,21 +208,24 @@ export default function PrintLabelScreen() {
     if (printing) return;
     if (!useSdk) {
       Alert.alert(
-        'Android only',
-        'This gap-label printer needs the Android app. Open KDSPOZ on your phone.',
+        t('Android only'),
+        t('This gap-label printer needs the Android app. Open KDSPOZ on your phone.'),
       );
       return;
     }
     if (!connected) {
-      Alert.alert('Printer', 'Select and connect a Bluetooth printer first.');
+      Alert.alert(t('Printer'), t('Select and connect a Bluetooth printer first.'));
       return;
     }
     setPrinting(true);
     try {
       await printGapLabel(label, qty);
-      Alert.alert('Sent to printer', `${qty} label${qty === 1 ? '' : 's'} sent.`);
+      Alert.alert(
+        t('Sent to printer'),
+        qty === 1 ? t('{{count}} label sent.', { count: qty }) : t('{{count}} labels sent.', { count: qty }),
+      );
     } catch (err) {
-      Alert.alert('Print failed', err instanceof Error ? err.message : 'Could not print.');
+      Alert.alert(t('Print failed'), err instanceof Error ? t(err.message) : t('Could not print.'));
     } finally {
       setPrinting(false);
     }
@@ -241,14 +247,17 @@ export default function PrintLabelScreen() {
         </View>
         <Text style={styles.sizeCaption}>
           {useSdk
-            ? `${LABEL_WIDTH_MM} × ${LABEL_HEIGHT_MM} mm · match roll size on Barcode label · sensor align`
-            : 'Needs Android app + Microlan SDK'}
+            ? t('{{width}} × {{height}} mm · match roll size on Barcode label · sensor align', {
+                width: LABEL_WIDTH_MM,
+                height: LABEL_HEIGHT_MM,
+              })
+            : t('Needs Android app + Microlan SDK')}
         </Text>
       </View>
 
       <BottomBar
         primary={{
-          label: printing ? 'Printing…' : 'Print',
+          label: printing ? t('Printing…') : t('Print'),
           icon: 'printer',
           onPress: onPrint,
           loading: printing,
@@ -256,13 +265,13 @@ export default function PrintLabelScreen() {
         }}
         secondary={[
           {
-            label: `Qty ${qty}`,
+            label: t('Qty {{count}}', { count: qty }),
             icon: 'counter',
             onPress: openQty,
             disabled: printing || connecting || calibrating,
           },
           {
-            label: calibrating ? '…' : 'Calibrate',
+            label: calibrating ? '…' : t('Calibrate'),
             icon: 'target',
             onPress: onCalibrate,
             disabled: printing || connecting || calibrating || !connected,
@@ -275,9 +284,11 @@ export default function PrintLabelScreen() {
           <Icon name="bluetooth" size={18} color={colors.primary} />
           <View style={styles.printerText}>
             <Text style={styles.printerCaption}>
-              {connected ? 'Connected' : 'Bluetooth printer'}
+              {connected ? t('Connected') : t('Bluetooth printer')}
             </Text>
-            <Text style={styles.printerName} numberOfLines={1}>{printerName}</Text>
+            <Text style={styles.printerName} numberOfLines={1}>
+              {printerName === 'Select printer' || printerName === 'Printer' ? t(printerName) : printerName}
+            </Text>
           </View>
           <Icon name="chevron-down" size={20} color={colors.textMuted} />
         </Pressable>
@@ -285,10 +296,10 @@ export default function PrintLabelScreen() {
 
       <Portal>
         <Dialog visible={qtyOpen} onDismiss={() => setQtyOpen(false)} style={styles.dialog}>
-          <Dialog.Title>How many copies</Dialog.Title>
+          <Dialog.Title>{t('How many copies')}</Dialog.Title>
           <Dialog.Content>
-            <TextInput
-              label="Quantity"
+            <AppTextInput
+              label={t('Quantity')}
               value={qtyDraft}
               onChangeText={setQtyDraft}
               keyboardType="number-pad"
@@ -297,21 +308,21 @@ export default function PrintLabelScreen() {
             />
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setQtyOpen(false)}>Cancel</Button>
-            <Button onPress={saveQty}>Save</Button>
+            <Button onPress={() => setQtyOpen(false)}>{t('Cancel')}</Button>
+            <Button onPress={saveQty}>{t('Save')}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog visible={printerOpen} onDismiss={() => !connecting && setPrinterOpen(false)} style={styles.printerDialog}>
-          <Dialog.Title>Bluetooth printer</Dialog.Title>
+          <Dialog.Title>{t('Bluetooth printer')}</Dialog.Title>
           <Dialog.Content style={styles.printerDialogContent}>
             <Text style={styles.hint}>
-              Pair the printer in Android Bluetooth, then pick it here. Each print uses SIZE/GAP so the sensor pulls the label to the top before printing.
+              {t('Pair the printer in Android Bluetooth, then pick it here. Each print uses SIZE/GAP so the sensor pulls the label to the top before printing.')}
             </Text>
             {loadingPrinters || connecting ? (
               <View style={styles.loadingRow}>
                 <ActivityIndicator color={colors.primary} />
-                <Text style={styles.hint}>{connecting ? 'Connecting…' : 'Looking for printers…'}</Text>
+                <Text style={styles.hint}>{connecting ? t('Connecting…') : t('Looking for printers…')}</Text>
               </View>
             ) : null}
             <ScrollView style={styles.printerList} keyboardShouldPersistTaps="handled">
@@ -339,7 +350,7 @@ export default function PrintLabelScreen() {
               })}
               {!loadingPrinters && !printers.length ? (
                 <Text style={styles.hint}>
-                  No paired printers found. Pair the printer in Bluetooth settings, then refresh.
+                  {t('No paired printers found. Pair the printer in Bluetooth settings, then refresh.')}
                 </Text>
               ) : null}
             </ScrollView>
@@ -350,11 +361,11 @@ export default function PrintLabelScreen() {
               loading={loadingPrinters}
               disabled={connecting}
               style={styles.refreshBtn}>
-              Refresh list
+              {t('Refresh list')}
             </Button>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button disabled={connecting} onPress={() => setPrinterOpen(false)}>Close</Button>
+            <Button disabled={connecting} onPress={() => setPrinterOpen(false)}>{t('Close')}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -406,18 +417,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   printerName: { fontSize: 14, fontWeight: '600', color: colors.text },
-  dialog: {
-    width: 420,
-    maxWidth: '92%',
-    alignSelf: 'center',
-    borderRadius: radius.lg,
-  },
-  printerDialog: {
-    width: 460,
-    maxWidth: '94%',
-    alignSelf: 'center',
-    borderRadius: radius.lg,
-  },
+  dialog: { ...dialogCard },
+  printerDialog: { ...dialogCard },
   printerDialogContent: { paddingBottom: spacing.sm },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
   printerList: { maxHeight: 280 },

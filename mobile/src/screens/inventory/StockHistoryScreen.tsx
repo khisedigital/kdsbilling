@@ -8,6 +8,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import ScreenSearch from '../../components/ui/ScreenSearch';
 import { fetchStockHistory } from '../../services/inventoryService';
 import type { StockLedgerEntry } from '../../services/inventoryService';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { common, radius, shadow, spacing } from '../../theme/layout';
 
@@ -35,6 +36,7 @@ const FILTER_TYPES = [
 ];
 
 export default function StockHistoryScreen({ route }: Props) {
+  const t = useT();
   const productId = route.params?.productId;
   const productName = route.params?.productName;
   const [items, setItems] = useState<StockLedgerEntry[]>([]);
@@ -58,12 +60,12 @@ export default function StockHistoryScreen({ route }: Props) {
       setPage(pageNum);
       setHasMore(result.pagination.page < result.pagination.totalPages);
     } catch {
-      setError('Failed to load stock history');
+      setError(t('Failed to load stock history'));
       if (!append) setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [filter, productId]);
+  }, [filter, productId, t]);
 
   React.useEffect(() => {
     setLoading(true);
@@ -103,7 +105,7 @@ export default function StockHistoryScreen({ route }: Props) {
         <ScreenSearch
           value={search}
           onChangeText={setSearch}
-          placeholder={productId ? 'Search SKU, notes...' : 'Search product, SKU, notes...'}
+          placeholder={productId ? t('Search SKU, notes...') : t('Search product, SKU, notes...')}
         />
         <ScrollView
           horizontal
@@ -118,7 +120,7 @@ export default function StockHistoryScreen({ route }: Props) {
                 onPress={() => setFilter(f.value)}
                 style={[styles.chip, on && styles.chipOn]}>
                 <Icon name={f.icon} size={16} color={on ? colors.primary : colors.textSecondary} />
-                <Text style={[styles.chipText, on && styles.chipTextOn]}>{f.label}</Text>
+                <Text style={[styles.chipText, on && styles.chipTextOn]}>{t(f.label)}</Text>
               </Pressable>
             );
           })}
@@ -138,13 +140,13 @@ export default function StockHistoryScreen({ route }: Props) {
           loading ? null : (
             <EmptyState
               icon="history"
-              title={search.trim() ? 'No matching movements' : 'No movements yet'}
+              title={search.trim() ? t('No matching movements') : t('No movements yet')}
               subtitle={
                 search.trim()
-                  ? 'Try a different search'
+                  ? t('Try a different search')
                   : productId
-                    ? 'No stock movements for this product yet'
-                    : 'Stock add, remove and adjustments will show here'
+                    ? t('No stock movements for this product yet')
+                    : t('Stock add, remove and adjustments will show here')
               }
             />
           )
@@ -162,11 +164,11 @@ export default function StockHistoryScreen({ route }: Props) {
               </View>
               <View style={styles.cardBody}>
                 <Text style={styles.cardTitle} numberOfLines={1}>
-                  {item.variant?.product?.name || 'Product'}
+                  {item.variant?.product?.name || t('Product')}
                 </Text>
                 <View style={styles.metaRow}>
                   <View style={styles.typeBadge}>
-                    <Text style={styles.typeBadgeText}>{typeLabel}</Text>
+                    <Text style={styles.typeBadgeText}>{t(typeLabel)}</Text>
                   </View>
                   <Text style={styles.sku}>{item.variant?.sku}</Text>
                 </View>
@@ -176,18 +178,18 @@ export default function StockHistoryScreen({ route }: Props) {
                   </Text>
                 ) : null}
                 {item.notes ? <Text style={styles.note} numberOfLines={2}>{item.notes}</Text> : null}
-                {item.creator?.name ? <Text style={styles.creator}>by {item.creator.name}</Text> : null}
+                {item.creator?.name ? <Text style={styles.creator}>{t('by {{name}}', { name: item.creator.name })}</Text> : null}
               </View>
               <View style={styles.cardRight}>
                 <Text style={[styles.qty, { color: positive ? colors.secondary : colors.error }]}>
                   {positive ? '+' : ''}{change.toFixed(2)}
                 </Text>
-                <Text style={styles.bal}>Bal {parseFloat(String(item.balance_after)).toFixed(2)}</Text>
+                <Text style={styles.bal}>{t('Bal {{amount}}', { amount: parseFloat(String(item.balance_after)).toFixed(2) })}</Text>
               </View>
             </View>
           );
         }}
-        ListFooterComponent={hasMore ? <Text style={styles.footer}>Loading more...</Text> : <View style={styles.footerSpace} />}
+        ListFooterComponent={hasMore ? <Text style={styles.footer}>{t('Loading more...')}</Text> : <View style={styles.footerSpace} />}
       />
     </View>
   );

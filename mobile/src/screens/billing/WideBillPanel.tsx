@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +12,8 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
 import { printDraftReceipt } from '../../print/receiptPrinter';
 import {
   createBill,
@@ -23,8 +26,10 @@ import {
 } from '../../services/businessService';
 import { useCartStore, type CartItem } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { radius, shadow, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
+import { totalSaving } from '../../utils/billSaving';
+import { screenProductName } from '../../utils/productName';
 import { variantLabel } from '../../utils/variantLabel';
 
 type DiscountMode = 'amount' | 'percent';
@@ -79,6 +84,8 @@ function money(n: number) {
 }
 
 export default function WideBillPanel() {
+  const t = useT();
+  useLanguageStore((s) => s.ui);
   const items = useCartStore((s) => s.items);
   const updateQty = useCartStore((s) => s.updateQty);
   const updatePrice = useCartStore((s) => s.updatePrice);
@@ -145,6 +152,7 @@ export default function WideBillPanel() {
   const balance = Math.max(0, totalDue - totalPaid);
   const change = Math.max(0, totalPaid - totalDue);
   const discountApplied = round2(preview?.discountAmount ?? 0);
+  const youSaved = useMemo(() => totalSaving(items), [items]);
 
   const syncPrimaryAmount = useCallback((due: number, extras = splitExtraRef.current) => {
     const other = extras.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
@@ -195,6 +203,7 @@ export default function WideBillPanel() {
           variantId: item.variantId,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          mrp: item.mrp ?? null,
           discountAmount: item.discountAmount,
           discountPercent: item.discountPercent,
           isCustom: item.isCustom === true,
@@ -331,12 +340,12 @@ export default function WideBillPanel() {
     }
     const value = parseFloat(raw);
     if (Number.isNaN(value) || value < 0) {
-      setDiscountError('Enter a valid number');
+      setDiscountError(t('Enter a valid number'));
       return;
     }
     if (discountMode === 'percent') {
       if (value > 100) {
-        setDiscountError('Percent cannot exceed 100');
+        setDiscountError(t('Percent cannot exceed 100'));
         return;
       }
       setBillDiscount(0, Math.round(value * 100) / 100);
@@ -411,7 +420,7 @@ export default function WideBillPanel() {
     }
     clearCart();
     setConfirmClear(false);
-    setNotice('Bill cleared');
+    setNotice(t('Bill cleared'));
   };
 
   const selectCustomer = (customer: CustomerRow) => {
@@ -422,7 +431,7 @@ export default function WideBillPanel() {
 
   const saveNewCustomer = async () => {
     if (!newName.trim()) {
-      setCustomerError('Name is required');
+      setCustomerError(t('Name is required'));
       return;
     }
     setSavingCustomer(true);
@@ -450,7 +459,7 @@ export default function WideBillPanel() {
     setError('');
     try {
       await holdBill(
-        holdName.trim() || `Hold ${new Date().toLocaleTimeString()}`,
+        holdName.trim() || t('Hold {{time}}', { time: new Date().toLocaleTimeString() }),
         {
           items,
           customerId,
@@ -464,7 +473,7 @@ export default function WideBillPanel() {
       clearCart();
       setHoldName('');
       setView('bill');
-      setNotice('Bill held. Resume it from Held bills.');
+      setNotice(t('Bill held. Resume it from Held bills.'));
     } catch (err) {
       setError(apiError(err, 'Could not hold bill'));
     } finally {
@@ -495,20 +504,24 @@ export default function WideBillPanel() {
       change_amount: Math.max(0, paid - totalDue),
       created_at: new Date().toISOString(),
       customer: customerId
-        ? { id: customerId, name: customerName || 'Customer' }
+        ? { id: customerId, name: customerName || t('Customer') }
         : customerName
           ? { id: '', name: customerName }
           : null,
-      items: preview.items.map((line, idx) => ({
-        id: `item-${idx}`,
-        product_name: line.productName,
-        sku: '',
-        variant_id: line.variantId,
-        quantity: line.quantity,
-        unit_price: line.unitPrice,
-        discount_amount: line.discountAmount || 0,
-        line_total: line.lineTotal,
-      })),
+      items: preview.items.map((line, idx) => {
+        const cart = items.find((i) => i.variantId === line.variantId);
+        return {
+          id: `item-${idx}`,
+          product_name: line.productName,
+          sku: '',
+          variant_id: line.variantId,
+          quantity: line.quantity,
+          unit_price: line.unitPrice,
+          mrp: cart?.mrp ?? null,
+          discount_amount: line.discountAmount || 0,
+          line_total: line.lineTotal,
+        };
+      }),
       payments: paidRows,
     };
   };
@@ -517,14 +530,14 @@ export default function WideBillPanel() {
     setError('');
     const draft = buildDraftBill();
     if (!draft) {
-      setError('Bill not ready to print');
+      setError(t('Bill not ready to print'));
       return;
     }
     setPrinting(true);
     try {
       await printDraftReceipt(draft);
     } catch (err) {
-      Alert.alert('Print failed', apiError(err, 'Could not print receipt.'));
+      Alert.alert(t('Print failed'), apiError(err, 'Could not print receipt.'));
     } finally {
       setPrinting(false);
     }
@@ -533,19 +546,19 @@ export default function WideBillPanel() {
   const handlePay = async () => {
     setError('');
     if (!preview) {
-      setError('Bill not ready');
+      setError(t('Bill not ready'));
       return;
     }
     const needsCustomer = payments.some(
       (p) => parseFloat(p.amount) > 0 && (p.mode === 'credit' || p.mode === 'store_credit'),
     );
     if (needsCustomer && !customerId) {
-      setError('Select a customer for credit or wallet');
+      setError(t('Select a customer for credit or wallet'));
       setView('customer');
       return;
     }
     if (totalPaid < totalDue - 0.01) {
-      setError(`Need ${money(balance)} more`);
+      setError(t('Need {{amount}} more', { amount: money(balance) }));
       return;
     }
     setSaving(true);
@@ -556,6 +569,7 @@ export default function WideBillPanel() {
           variantId: item.variantId,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          mrp: item.mrp ?? null,
           discountAmount: item.discountAmount,
           discountPercent: item.discountPercent,
           isCustom: item.isCustom === true,
@@ -580,7 +594,9 @@ export default function WideBillPanel() {
         }
       }
       clearCart();
-      setNotice(change > 0.01 ? `Sale saved · return ${money(change)}` : 'Sale saved');
+      setNotice(change > 0.01
+        ? t('Sale saved · return {{amount}}', { amount: money(change) })
+        : t('Sale saved'));
     } catch (err) {
       setError(apiError(err, 'Payment failed'));
     } finally {
@@ -590,6 +606,7 @@ export default function WideBillPanel() {
 
   const renderLine = ({ item }: { item: CartItem }) => {
     const size = variantLabel(item.size, item.color);
+    const lineName = screenProductName(item.productName, item.productNameMr);
     const qtyValue =
       qtyDrafts[item.variantId] !== undefined
         ? qtyDrafts[item.variantId]
@@ -602,8 +619,8 @@ export default function WideBillPanel() {
       <View style={styles.tableRow}>
         <View style={styles.colProduct}>
           <Text style={styles.lineName} numberOfLines={2}>
-            {item.productName}
-            {item.isCustom ? ' · Custom' : size ? ` · ${size}` : ''}
+            {lineName}
+            {item.isCustom ? t(' · Custom') : size ? ` · ${size}` : ''}
           </Text>
           {item.uom?.code ? <Text style={styles.lineMeta}>{item.uom.code}</Text> : null}
         </View>
@@ -617,7 +634,7 @@ export default function WideBillPanel() {
             keyboardType="decimal-pad"
             selectTextOnFocus
             style={styles.rateInput}
-            accessibilityLabel={`Price for ${item.productName}`}
+            accessibilityLabel={t('Price for {{name}}', { name: lineName })}
           />
         </View>
         <View style={styles.colQty}>
@@ -626,7 +643,7 @@ export default function WideBillPanel() {
               onPress={() => stepQty(item, -1)}
               hitSlop={6}
               style={styles.qtyBtn}
-              accessibilityLabel={`Decrease ${item.productName}`}>
+              accessibilityLabel={t('Decrease {{name}}', { name: lineName })}>
               <Icon name="minus" size={16} color={colors.primary} />
             </Pressable>
             <TextInput
@@ -637,13 +654,13 @@ export default function WideBillPanel() {
               keyboardType={item.allowDecimalQty ? 'decimal-pad' : 'number-pad'}
               selectTextOnFocus
               style={styles.qtyInput}
-              accessibilityLabel={`Quantity for ${item.productName}`}
+              accessibilityLabel={t('Quantity for {{name}}', { name: lineName })}
             />
             <Pressable
               onPress={() => stepQty(item, 1)}
               hitSlop={6}
               style={styles.qtyBtn}
-              accessibilityLabel={`Increase ${item.productName}`}>
+              accessibilityLabel={t('Increase {{name}}', { name: lineName })}>
               <Icon name="plus" size={16} color={colors.primary} />
             </Pressable>
           </View>
@@ -657,7 +674,7 @@ export default function WideBillPanel() {
           }}
           hitSlop={8}
           style={styles.removeBtn}
-          accessibilityLabel={`Remove ${item.productName}`}>
+          accessibilityLabel={t('Remove {{name}}', { name: lineName })}>
           <Icon name="close" size={16} color={colors.textMuted} />
         </Pressable>
       </View>
@@ -665,20 +682,22 @@ export default function WideBillPanel() {
   };
 
   const discountLabel = billDiscountPercent > 0
-    ? `${billDiscountPercent}% off`
+    ? t('{{percent}}% off', { percent: billDiscountPercent })
     : billDiscountAmount > 0
-      ? `${money(billDiscountAmount)} off`
-      : 'Discount';
+      ? t('{{amount}} off', { amount: money(billDiscountAmount) })
+      : t('Discount');
 
   return (
     <View style={styles.pane}>
       <View style={styles.head}>
         <View style={styles.headText}>
           <Text style={styles.headTitle} numberOfLines={1}>
-            {customerName || 'Walk-in'}
+            {customerName || t('Walk-in')}
           </Text>
           <Text style={styles.headCount}>
-            {items.length} {items.length === 1 ? 'item' : 'items'}
+            {items.length === 1
+              ? t('{{count}} item', { count: items.length })
+              : t('{{count}} items', { count: items.length })}
             {hasBillDiscount ? ` · ${discountLabel}` : ''}
           </Text>
         </View>
@@ -699,7 +718,7 @@ export default function WideBillPanel() {
           disabled={!hasItems}
           hitSlop={6}
           style={[styles.headIconBtn, confirmClear && styles.headIconBtnDanger, !hasItems && styles.actionOff]}
-          accessibilityLabel={confirmClear ? 'Confirm clear' : 'Clear bill'}>
+          accessibilityLabel={confirmClear ? t('Confirm clear') : t('Clear bill')}>
           <Icon name="trash-can-outline" size={16} color={confirmClear ? colors.error : colors.textMuted} />
         </Pressable>
       </View>
@@ -723,7 +742,7 @@ export default function WideBillPanel() {
             size={15}
             color={view === 'bill' ? colors.primary : colors.textMuted}
           />
-          <Text style={[styles.tabText, view === 'bill' && styles.tabTextOn]}>Items</Text>
+          <Text style={[styles.tabText, view === 'bill' && styles.tabTextOn]}>{t('Items')}</Text>
         </Pressable>
         <Pressable
           onPress={() => {
@@ -739,7 +758,7 @@ export default function WideBillPanel() {
           <Text
             style={[styles.tabText, (view === 'customer' || !!customerId) && styles.tabTextOn]}
             numberOfLines={1}>
-            {customerName || 'Customer'}
+            {customerName || t('Customer')}
           </Text>
         </Pressable>
         <Pressable
@@ -755,7 +774,7 @@ export default function WideBillPanel() {
             size={15}
             color={view === 'hold' ? colors.primary : colors.textMuted}
           />
-          <Text style={[styles.tabText, view === 'hold' && styles.tabTextOn]}>Hold</Text>
+          <Text style={[styles.tabText, view === 'hold' && styles.tabTextOn]}>{t('Hold')}</Text>
         </Pressable>
       </View>
 
@@ -766,7 +785,7 @@ export default function WideBillPanel() {
             <TextInput
               value={customerQuery}
               onChangeText={setCustomerQuery}
-              placeholder="Search name or phone"
+              placeholder={t('Search name or phone')}
               placeholderTextColor={colors.textMuted}
               style={styles.searchInput}
               autoCorrect={false}
@@ -779,7 +798,7 @@ export default function WideBillPanel() {
             }}
             style={styles.walkIn}>
             <Icon name="account-outline" size={18} color={colors.primary} />
-            <Text style={styles.walkInText}>Use walk-in customer</Text>
+            <Text style={styles.walkInText}>{t('Use walk-in customer')}</Text>
           </Pressable>
           {customerLoading ? (
             <ActivityIndicator color={colors.primary} style={styles.subSpinner} />
@@ -792,7 +811,7 @@ export default function WideBillPanel() {
               contentContainerStyle={styles.customerListContent}
               ListEmptyComponent={
                 <Text style={styles.emptyHint}>
-                  {customerError || 'No customers found'}
+                  {customerError || t('No customers found')}
                 </Text>
               }
               renderItem={({ item }) => {
@@ -820,14 +839,14 @@ export default function WideBillPanel() {
               <TextInput
                 value={newName}
                 onChangeText={setNewName}
-                placeholder="Customer name"
+                placeholder={t('Customer name')}
                 placeholderTextColor={colors.textMuted}
                 style={styles.field}
               />
               <TextInput
                 value={newPhone}
                 onChangeText={setNewPhone}
-                placeholder="Phone (optional)"
+                placeholder={t('Phone (optional)')}
                 placeholderTextColor={colors.textMuted}
                 keyboardType="phone-pad"
                 style={styles.field}
@@ -840,13 +859,13 @@ export default function WideBillPanel() {
                     setCustomerError('');
                   }}
                   style={styles.secondaryBtn}>
-                  <Text style={styles.secondaryBtnText}>Cancel</Text>
+                  <Text style={styles.secondaryBtnText}>{t('Cancel')}</Text>
                 </Pressable>
                 <Pressable
                   onPress={saveNewCustomer}
                   disabled={savingCustomer}
                   style={[styles.primaryBtn, styles.inlinePrimary, savingCustomer && styles.disabled]}>
-                  <Text style={styles.primaryBtnText}>{savingCustomer ? 'Saving…' : 'Save customer'}</Text>
+                  <Text style={styles.primaryBtnText}>{savingCustomer ? t('Saving…') : t('Save customer')}</Text>
                 </Pressable>
               </View>
             </View>
@@ -857,21 +876,23 @@ export default function WideBillPanel() {
                 setNewCustomerOpen(true);
               }}
               style={styles.addCustomerFab}
-              accessibilityLabel="Add customer">
+              accessibilityLabel={t('Add customer')}>
               <Icon name="plus" size={26} color={colors.textOnPrimary} />
             </Pressable>
           )}
         </View>
       ) : view === 'hold' ? (
         <View style={styles.subView}>
-          <Text style={styles.formTitle}>Hold this bill</Text>
+          <Text style={styles.formTitle}>{t('Hold this bill')}</Text>
           <Text style={styles.formHint}>
-            Save {items.length} {items.length === 1 ? 'item' : 'items'} and start a fresh bill. Resume it from Held bills.
+            {items.length === 1
+              ? t('Save {{count}} item and start a fresh bill. Resume it from Held bills.', { count: items.length })
+              : t('Save {{count}} items and start a fresh bill. Resume it from Held bills.', { count: items.length })}
           </Text>
           <TextInput
             value={holdName}
             onChangeText={setHoldName}
-            placeholder="Name, e.g. Table 3"
+            placeholder={t('Name, e.g. Table 3')}
             placeholderTextColor={colors.textMuted}
             style={styles.field}
           />
@@ -880,7 +901,7 @@ export default function WideBillPanel() {
             onPress={submitHold}
             disabled={holding || !hasItems}
             style={[styles.primaryBtn, (holding || !hasItems) && styles.disabled]}>
-            {holding ? <ActivityIndicator color={colors.textOnPrimary} /> : <Text style={styles.primaryBtnText}>Hold bill</Text>}
+            {holding ? <ActivityIndicator color={colors.textOnPrimary} /> : <Text style={styles.primaryBtnText}>{t('Hold bill')}</Text>}
           </Pressable>
         </View>
       ) : (
@@ -894,7 +915,7 @@ export default function WideBillPanel() {
                     setDiscountError('');
                   }}
                   style={[styles.modeBtn, discountMode === 'amount' && styles.modeBtnOn]}>
-                  <Text style={[styles.modeText, discountMode === 'amount' && styles.modeTextOn]}>₹ Amount</Text>
+                  <Text style={[styles.modeText, discountMode === 'amount' && styles.modeTextOn]}>{t('₹ Amount')}</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => {
@@ -902,7 +923,7 @@ export default function WideBillPanel() {
                     setDiscountError('');
                   }}
                   style={[styles.modeBtn, discountMode === 'percent' && styles.modeBtnOn]}>
-                  <Text style={[styles.modeText, discountMode === 'percent' && styles.modeTextOn]}>% Percent</Text>
+                  <Text style={[styles.modeText, discountMode === 'percent' && styles.modeTextOn]}>{t('% Percent')}</Text>
                 </Pressable>
               </View>
               <TextInput
@@ -911,7 +932,7 @@ export default function WideBillPanel() {
                   setDiscountInput(value);
                   setDiscountError('');
                 }}
-                placeholder={discountMode === 'percent' ? 'Discount %' : 'Discount ₹'}
+                placeholder={discountMode === 'percent' ? t('Discount %') : t('Discount ₹')}
                 placeholderTextColor={colors.textMuted}
                 keyboardType="decimal-pad"
                 style={styles.field}
@@ -925,14 +946,14 @@ export default function WideBillPanel() {
                     setDiscountOpen(false);
                   }}
                   disabled={!hasBillDiscount && !discountInput}>
-                  <Text style={styles.dangerText}>Remove</Text>
+                  <Text style={styles.dangerText}>{t('Remove')}</Text>
                 </Pressable>
                 <View style={styles.discountRight}>
                   <Pressable onPress={() => setDiscountOpen(false)}>
-                    <Text style={styles.linkText}>Cancel</Text>
+                    <Text style={styles.linkText}>{t('Cancel')}</Text>
                   </Pressable>
                   <Pressable onPress={applyDiscount} style={styles.smallPrimary}>
-                    <Text style={styles.smallPrimaryText}>Apply</Text>
+                    <Text style={styles.smallPrimaryText}>{t('Apply')}</Text>
                   </Pressable>
                 </View>
               </View>
@@ -942,10 +963,10 @@ export default function WideBillPanel() {
           {hasItems ? (
             <View style={styles.fill}>
               <View style={styles.tableHeader}>
-                <Text style={[styles.th, styles.colProduct]}>Product</Text>
-                <Text style={[styles.th, styles.colRateHead]}>Rate</Text>
-                <Text style={[styles.th, styles.colQtyHead]}>Qty</Text>
-                <Text style={[styles.th, styles.colAmountHead]}>Amount</Text>
+                <Text style={[styles.th, styles.colProduct]}>{t('Product')}</Text>
+                <Text style={[styles.th, styles.colRateHead]}>{t('Rate')}</Text>
+                <Text style={[styles.th, styles.colQtyHead]}>{t('Qty')}</Text>
+                <Text style={[styles.th, styles.colAmountHead]}>{t('Amount')}</Text>
                 <View style={styles.thRemove} />
               </View>
               <FlatList
@@ -960,9 +981,9 @@ export default function WideBillPanel() {
           ) : (
             <View style={styles.empty}>
               <Icon name="cart-outline" size={36} color={colors.primary} />
-              <Text style={styles.emptyTitle}>No items yet</Text>
+              <Text style={styles.emptyTitle}>{t('No items yet')}</Text>
               <Text style={styles.emptyHint}>
-                Tap a product on the left to add it here. Edit quantity in the Qty column, then take payment.
+                {t('Tap a product on the left to add it here. Edit quantity in the Qty column, then take payment.')}
               </Text>
             </View>
           )}
@@ -971,24 +992,24 @@ export default function WideBillPanel() {
             <View style={styles.footer}>
               <View style={styles.totalBlock}>
                 <View style={styles.sumRow}>
-                  <Text style={styles.sumLbl}>Subtotal</Text>
+                  <Text style={styles.sumLbl}>{t('Subtotal')}</Text>
                   <Text style={styles.sumVal}>{money(Number(preview?.subtotal) || items.reduce((s, i) => s + i.unitPrice * i.quantity, 0))}</Text>
                 </View>
                 {Number(preview?.taxAmount) > 0 ? (
                   <View style={styles.sumRow}>
-                    <Text style={styles.sumLbl}>Tax</Text>
+                    <Text style={styles.sumLbl}>{t('Tax')}</Text>
                     <Text style={styles.sumVal}>{money(Number(preview?.taxAmount))}</Text>
                   </View>
                 ) : null}
                 {discountApplied > 0 ? (
                   <View style={styles.sumRow}>
-                    <Text style={styles.sumLbl}>Discount</Text>
+                    <Text style={styles.sumLbl}>{t('Discount')}</Text>
                     <Text style={styles.discVal}>−{money(discountApplied)}</Text>
                   </View>
                 ) : null}
                 {isRounded ? (
                   <View style={styles.sumRow}>
-                    <Text style={styles.sumLbl}>Round off</Text>
+                    <Text style={styles.sumLbl}>{t('Round off')}</Text>
                     <Text style={styles.sumVal}>
                       {roundOffAmount > 0 ? '+' : '−'}{money(Math.abs(roundOffAmount))}
                     </Text>
@@ -996,11 +1017,17 @@ export default function WideBillPanel() {
                 ) : null}
                 <View style={styles.dueRow}>
                   <View>
-                    <Text style={styles.dueLbl}>Amount due</Text>
-                    {loadingPreview ? <Text style={styles.lineMeta}>Updating…</Text> : null}
+                    <Text style={styles.dueLbl}>{t('Amount due')}</Text>
+                    {loadingPreview ? <Text style={styles.lineMeta}>{t('Updating…')}</Text> : null}
                   </View>
                   <Text style={styles.dueAmt}>{money(totalDue || Number(preview?.totalAmount) || 0)}</Text>
                 </View>
+                {youSaved > 0 ? (
+                  <View style={styles.saveRow}>
+                    <Text style={styles.saveLbl}>{t('Total saving')}</Text>
+                    <Text style={styles.saveVal}>{money(youSaved)}</Text>
+                  </View>
+                ) : null}
               </View>
 
               <ScrollView
@@ -1008,7 +1035,7 @@ export default function WideBillPanel() {
                 contentContainerStyle={styles.payScrollContent}
                 keyboardShouldPersistTaps="handled"
                 nestedScrollEnabled>
-                <Text style={styles.sectionLbl}>Pay with</Text>
+                <Text style={styles.sectionLbl}>{t('Pay with')}</Text>
                 <View style={styles.payModes}>
                   {PAYMENT_MODES.map((mode) => {
                     const on = payMode === mode.id;
@@ -1023,7 +1050,7 @@ export default function WideBillPanel() {
                         }}
                         style={[styles.payMode, on && styles.payModeOn]}>
                         <Icon name={mode.icon} size={16} color={on ? colors.primary : colors.textMuted} />
-                        <Text style={[styles.payModeText, on && styles.payModeTextOn]}>{mode.label}</Text>
+                        <Text style={[styles.payModeText, on && styles.payModeTextOn]}>{t(mode.label)}</Text>
                       </Pressable>
                     );
                   })}
@@ -1046,7 +1073,7 @@ export default function WideBillPanel() {
                     disabled={!canRound && !isRounded}
                     style={[styles.roundBtn, isRounded && styles.roundBtnOn, !canRound && !isRounded && styles.disabled]}>
                     <Text style={[styles.roundText, isRounded && styles.roundTextOn]}>
-                      {isRounded ? 'Undo round' : canRound ? `Round ${money(nearestTarget)}` : 'Exact'}
+                      {isRounded ? t('Undo round') : canRound ? t('Round {{amount}}', { amount: money(nearestTarget) }) : t('Exact')}
                     </Text>
                   </Pressable>
                 </View>
@@ -1054,14 +1081,14 @@ export default function WideBillPanel() {
                 {!isSplit ? (
                   <Pressable onPress={openSplit} style={styles.linkRow}>
                     <Icon name="call-split" size={16} color={colors.primary} />
-                    <Text style={styles.linkText}>Split payment</Text>
+                    <Text style={styles.linkText}>{t('Split payment')}</Text>
                   </Pressable>
                 ) : (
                   <View style={styles.splitBox}>
                     <View style={styles.splitHead}>
-                      <Text style={styles.splitTitle}>Also paying with</Text>
+                      <Text style={styles.splitTitle}>{t('Also paying with')}</Text>
                       <Pressable onPress={clearSplit}>
-                        <Text style={styles.linkText}>Remove</Text>
+                        <Text style={styles.linkText}>{t('Remove')}</Text>
                       </Pressable>
                     </View>
                     {splitExtra.map((part, idx) => (
@@ -1074,7 +1101,7 @@ export default function WideBillPanel() {
                                 key={mode.id}
                                 onPress={() => updateSplitMode(idx, mode.id)}
                                 style={[styles.payMode, on && styles.payModeOn]}>
-                                <Text style={[styles.payModeText, on && styles.payModeTextOn]}>{mode.label}</Text>
+                                <Text style={[styles.payModeText, on && styles.payModeTextOn]}>{t(mode.label)}</Text>
                               </Pressable>
                             );
                           })}
@@ -1085,7 +1112,7 @@ export default function WideBillPanel() {
                             value={part.amount}
                             onChangeText={(value) => updateSplitAmount(idx, value)}
                             keyboardType="decimal-pad"
-                            placeholder="Split amount"
+                            placeholder={t('Split amount')}
                             placeholderTextColor={colors.textMuted}
                             style={styles.amountInput}
                           />
@@ -1097,11 +1124,11 @@ export default function WideBillPanel() {
 
               </ScrollView>
               {change > 0.01 ? (
-                <Text style={styles.changeText}>Return change {money(change)}</Text>
+                <Text style={styles.changeText}>{t('Return change {{amount}}', { amount: money(change) })}</Text>
               ) : balance > 0.01 ? (
-                <Text style={styles.errorText}>Still due {money(balance)}</Text>
+                <Text style={styles.errorText}>{t('Still due {{amount}}', { amount: money(balance) })}</Text>
               ) : (
-                <Text style={styles.readyText}>Ready to complete</Text>
+                <Text style={styles.readyText}>{t('Ready to complete')}</Text>
               )}
               {error ? <Text style={styles.errorText}>{error}</Text> : null}
               <View style={styles.payActions}>
@@ -1110,7 +1137,7 @@ export default function WideBillPanel() {
                   disabled={!preview || saving || printing}
                   style={[styles.printBtn, (!preview || saving || printing) && styles.disabled]}>
                   <Icon name="printer" size={16} color={colors.primary} />
-                  <Text style={styles.printBtnText}>{printing ? 'Printing…' : 'Print'}</Text>
+                  <Text style={styles.printBtnText}>{printing ? t('Printing…') : t('Print')}</Text>
                 </Pressable>
                 <Pressable
                   onPress={handlePay}
@@ -1119,7 +1146,7 @@ export default function WideBillPanel() {
                   {saving ? (
                     <ActivityIndicator color={colors.textOnPrimary} />
                   ) : (
-                    <Text style={styles.saveBtnText}>Complete {money(totalDue)}</Text>
+                    <Text style={styles.saveBtnText}>{t('Complete {{amount}}', { amount: money(totalDue) })}</Text>
                   )}
                 </Pressable>
               </View>
@@ -1179,27 +1206,33 @@ const styles = StyleSheet.create({
   noticeText: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.success },
   tabRow: {
     flexDirection: 'row',
-    gap: 2,
+    gap: 4,
     marginHorizontal: spacing.sm,
-    marginBottom: spacing.xs,
-    padding: 2,
-    borderRadius: radius.sm,
+    marginBottom: spacing.sm,
+    padding: 4,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
     backgroundColor: colors.surfaceVariant,
   },
   tab: {
     flex: 1,
-    minHeight: 32,
+    minHeight: 38,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingHorizontal: 4,
+    gap: 5,
+    paddingHorizontal: 6,
     borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   tabOn: {
     backgroundColor: colors.surface,
+    borderColor: colors.primary,
+    ...shadow.sm,
   },
-  tabText: { fontSize: 11, fontWeight: '700', color: colors.textMuted, flexShrink: 1 },
+  tabText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, flexShrink: 1 },
   tabTextOn: { color: colors.primary },
   actionOff: { opacity: 0.45 },
   dangerText: { color: colors.error, fontSize: 12, fontWeight: '700' },
@@ -1260,8 +1293,8 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingVertical: 8.16, // +2% vs previous 8
     paddingHorizontal: spacing.xs,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   colProduct: { flex: 1.4, minWidth: 0 },
   colRateHead: { width: 104, textAlign: 'right' },
@@ -1328,7 +1361,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   lineName: { fontSize: 13, fontWeight: '700', color: colors.text },
   lineMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
@@ -1356,7 +1389,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
+    borderTopColor: colors.border,
     backgroundColor: colors.surface,
   },
   totalBlock: {
@@ -1375,7 +1408,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
     paddingTop: spacing.xs,
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
+    borderTopColor: colors.border,
   },
   dueLbl: {
     fontSize: 10,
@@ -1385,6 +1418,26 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
   dueAmt: { fontSize: 22, fontWeight: '800', color: colors.primary, letterSpacing: -0.3 },
+  saveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    backgroundColor: colors.successLight,
+  },
+  saveLbl: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.secondaryDark,
+  },
+  saveVal: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.secondaryDark,
+  },
   payScroll: { maxHeight: 160, flexGrow: 0 },
   payScrollContent: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, paddingBottom: 2 },
   sectionLbl: {
@@ -1534,8 +1587,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   customerRowOn: { backgroundColor: colors.primaryLight, borderRadius: radius.sm, paddingHorizontal: spacing.sm },
   customerName: { fontSize: 14, fontWeight: '700', color: colors.text },
@@ -1545,10 +1598,15 @@ const styles = StyleSheet.create({
   field: {
     height: 42,
     borderRadius: radius.md,
-    backgroundColor: colors.surfaceVariant,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
     paddingHorizontal: spacing.md,
     fontSize: 15,
     color: colors.text,
+    ...(Platform.OS === 'web'
+      ? ({ outlineStyle: 'none', outlineWidth: 0, outlineColor: 'transparent' } as object)
+      : null),
   },
   primaryBtn: {
     minHeight: 44,

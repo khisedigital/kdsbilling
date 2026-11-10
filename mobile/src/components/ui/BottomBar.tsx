@@ -63,7 +63,7 @@ const styles = StyleSheet.create({
   wrap: {
     backgroundColor: colors.surface,
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
+    borderTopColor: colors.border,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
     ...shadow.lg,

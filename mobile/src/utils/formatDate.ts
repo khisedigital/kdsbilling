@@ -1,3 +1,9 @@
+import { useLanguageStore } from '../i18n';
+
+function appLocale(): string {
+  return useLanguageStore.getState().ui === 'mr' ? 'mr-IN' : 'en-IN';
+}
+
 /** Normalize API timestamps (snake_case or camelCase). */
 export function getCreatedAt(row?: {
   created_at?: string | Date | null;
@@ -16,7 +22,8 @@ export function parseApiDate(value?: string | Date | null): Date | null {
 export function formatBillListDate(value?: string | Date | null): string {
   const d = parseApiDate(value);
   if (!d) return '—';
-  return `${d.toLocaleDateString()} · ${d.toLocaleTimeString([], {
+  const locale = appLocale();
+  return `${d.toLocaleDateString(locale)} · ${d.toLocaleTimeString(locale, {
     hour: '2-digit',
     minute: '2-digit',
   })}`;
@@ -25,5 +32,5 @@ export function formatBillListDate(value?: string | Date | null): string {
 export function formatDateTime(value?: string | Date | null): string {
   const d = parseApiDate(value);
   if (!d) return '—';
-  return d.toLocaleString();
+  return d.toLocaleString(appLocale());
 }

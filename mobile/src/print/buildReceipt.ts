@@ -1,9 +1,32 @@
 import type { BillDetail } from '../services/businessService';
-import type { ShopSettings } from '../services/shopSettingsService';
+import { shopTextForBill, type ShopSettings } from '../services/shopSettingsService';
 import { APP_DISPLAY_NAME } from '../constants/branding';
+import { billT, paymentLabel } from '../i18n';
+import { useLanguageStore } from '../i18n/languageStore';
+import { totalSaving } from '../utils/billSaving';
 import type { ThermalPrintPayload } from './PrintService';
 import { receiptCharsForPaper } from './escpos';
 import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari } from './indicText';
+
+/** English bills keep their current words. Marathi bills use the bill-language dictionary. */
+function L(english: string, englishPrint = english): string {
+  return useLanguageStore.getState().bill === 'mr' ? billT(english) : englishPrint;
+}
+
+function payName(mode: string | null | undefined): string {
+  if (useLanguageStore.getState().bill !== 'mr') {
+    return ascii(mode).toUpperCase() || 'PAID';
+  }
+  return paymentLabel(mode, billT);
+}
+
+/** Uppercase Latin shop names; leave Marathi as typed (toUpperCase mangles display). */
+function shopTitleDisplay(name: string): string {
+  const body = String(name || '').trim();
+  if (!body) return body;
+  if (hasDevanagari(body)) return body;
+  return body.toUpperCase();
+}
 
 function n(v: string | number | null | undefined): number {
   const x = parseFloat(String(v ?? 0));
@@ -106,13 +129,13 @@ function colsFor(width: number): Cols {
 
 function tableHeader(width: number, cols: Cols): string {
   return (
-    pad('ITEM', cols.item) +
+    pad(L('Item', 'ITEM'), cols.item) +
     ' ' +
-    pad('QTY', cols.qty, 'right') +
+    pad(L('Qty', 'QTY'), cols.qty, 'right') +
     ' ' +
-    pad('RATE', cols.rate, 'right') +
+    pad(L('Rate', 'RATE'), cols.rate, 'right') +
     ' ' +
-    pad('AMT', cols.amt, 'right')
+    pad(L('Amount', 'AMT'), cols.amt, 'right')
   );
 }
 
@@ -159,10 +182,17 @@ function tableRows(
 
 function pickShopName(shop: ShopSettings | null | undefined): string {
   const s = shop as (ShopSettings & { shop_name?: string }) | null | undefined;
-  return ascii(s?.shopName || s?.shop_name || APP_DISPLAY_NAME);
+  const text = shopTextForBill(
+    { ...s, shopName: s?.shopName || s?.shop_name },
+    useLanguageStore.getState().bill,
+  );
+  return ascii(text.shopName || APP_DISPLAY_NAME);
 }
 
 function pickAddress(shop: ShopSettings | null | undefined): string {
+  const mr = useLanguageStore.getState().bill === 'mr';
+  const addressMr = ascii(shop?.addressMr || '');
+  if (mr && addressMr) return addressMr;
   const address = ascii(shop?.address || '');
   const city = ascii(shop?.city || '');
   if (address && city && !address.toLowerCase().includes(city.toLowerCase())) {
@@ -218,28 +248,24 @@ export function buildThermalReceipt(
   const gstin = pickGstin(shop);
 
   lines.push(rule(w, '='));
-  const shopUpper = shopName.toUpperCase();
-  // Double-size on the printer, so English wraps at half the columns.
-  const nameWidth = hasDevanagari(shopUpper) ? w : Math.max(12, Math.floor(w / 2));
-  for (const part of wrapWords(shopUpper, nameWidth)) {
-    lines.push(`<CB>${part}</CB>`);
-  }
+  // One CB block — ESC/POS raster wraps by pixels (clearer than several half titles).
+  lines.push(`<CB>${shopTitleDisplay(shopName)}</CB>`);
   lines.push(rule(w, '='));
 
   if (address) {
     for (const part of wrapWords(address, w)) lines.push(`<C>${part}</C>`);
   }
-  if (phone) lines.push(`<C>Ph: ${phone}</C>`);
+  if (phone) lines.push(`<C>${L('Ph')}: ${phone}</C>`);
   if (gstin) lines.push(`<C>GSTIN: ${gstin}</C>`);
 
   lines.push(rule(w, '-'));
-  lines.push('<C>TAX INVOICE</C>');
+  lines.push(`<C>${L('TAX INVOICE')}</C>`);
   lines.push(rule(w, '-'));
 
-  lines.push(kv(w, 'Bill', pickBillNo(bill)));
-  lines.push(kv(w, 'Date', pickBillDate(bill)));
+  lines.push(kv(w, L('Bill'), pickBillNo(bill)));
+  lines.push(kv(w, L('Date'), pickBillDate(bill)));
   lines.push(
-    kv(w, 'Customer', clipCols(ascii(bill.customer?.name || 'Walk-in'), Math.max(8, w - 10))),
+    kv(w, L('Customer'), clipCols(ascii(bill.customer?.name || L('Walk-in')), Math.max(8, w - 10))),
   );
   lines.push(rule(w, '='));
   lines.push(tableHeader(w, cols));
@@ -259,23 +285,29 @@ export function buildThermalReceipt(
   }
 
   lines.push(rule(w, '='));
-  lines.push(kv(w, 'Subtotal', money(bill.subtotal)));
+  lines.push(kv(w, L('Subtotal'), money(bill.subtotal)));
   if (n(bill.discount_amount) > 0) {
-    lines.push(kv(w, 'Discount', `-${money(bill.discount_amount)}`));
+    lines.push(kv(w, L('Discount'), `-${money(bill.discount_amount)}`));
   }
-  lines.push(kv(w, 'Tax', money(bill.tax_amount)));
+  lines.push(kv(w, L('Tax'), money(bill.tax_amount)));
   if (Math.abs(n(bill.round_off_amount)) >= 0.005) {
     const ro = n(bill.round_off_amount);
-    lines.push(kv(w, 'Round off', `${ro > 0 ? '+' : '-'}${money(Math.abs(ro))}`));
+    lines.push(kv(w, L('Round off'), `${ro > 0 ? '+' : '-'}${money(Math.abs(ro))}`));
   }
-  lines.push(kv(w, 'TOTAL', money(bill.total_amount)));
+  lines.push(kv(w, L('TOTAL'), money(bill.total_amount)));
   lines.push(rule(w, '-'));
 
   for (const p of bill.payments || []) {
-    lines.push(kv(w, ascii(p.payment_mode).toUpperCase() || 'PAID', money(p.amount)));
+    lines.push(kv(w, payName(p.payment_mode), money(p.amount)));
   }
   if (n(bill.change_amount) > 0) {
-    lines.push(kv(w, 'Change', money(bill.change_amount)));
+    lines.push(kv(w, L('Change'), money(bill.change_amount)));
+  }
+
+  const saved = totalSaving(bill.items || []);
+  if (saved > 0) {
+    lines.push(rule(w, '-'));
+    lines.push(kv(w, L('Total saving'), money(saved)));
   }
 
   lines.push(rule(w, '='));
@@ -283,7 +315,7 @@ export function buildThermalReceipt(
   if (footer && !/thank\s*you/i.test(footer)) {
     for (const part of wrapWords(footer, w)) lines.push(`<C>${part}</C>`);
   }
-  lines.push('<C>Thank you! Visit Again</C>');
+  lines.push(`<C>${L('Thank you! Visit Again')}</C>`);
   lines.push(rule(w, '='));
 
   return lines.join('\n');
@@ -312,9 +344,10 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   const payRows = (bill.payments || [])
     .map(
       (p) =>
-        `<div class="pay"><span>${escapeHtml(String(p.payment_mode || '').toUpperCase())}</span><span>Rs.${escapeHtml(money(p.amount))}</span></div>`,
+        `<div class="pay"><span>${escapeHtml(payName(p.payment_mode))}</span><span>Rs.${escapeHtml(money(p.amount))}</span></div>`,
     )
     .join('');
+  const saved = totalSaving(bill.items || []);
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>${escapeHtml(pickBillNo(bill))}</title>
@@ -324,7 +357,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b,.totals .grand{font-weight:700}
   .head{text-align:center;border:1px solid #000;padding:18px 14px;margin-bottom:18px}
-  .shop{margin:0;font-size:28px;letter-spacing:.02em;text-transform:uppercase;text-align:center}
+  .shop{margin:0;font-size:32px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:center}
   .meta{margin:4px 0 0;color:#000;font-size:13px}
   .title{margin:10px 0 0;font-size:12px;letter-spacing:.2em}
   .info{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px;font-size:13px}
@@ -337,40 +370,42 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   .totals{width:280px;margin:16px 0 0 auto;font-size:13px}
   .totals .row{display:flex;justify-content:space-between;padding:4px 0}
   .totals .grand{border-top:1px solid #000;margin-top:8px;padding-top:8px;font-size:16px}
+  .totals .save{margin-top:8px;padding-top:8px;border-top:1px dashed #000;font-weight:700}
   .pay{display:flex;justify-content:space-between;width:280px;margin:4px 0 0 auto;font-size:13px}
   .foot{text-align:center;margin-top:28px;padding-top:12px;border-top:1px dashed #000;color:#000;font-size:13px}
 </style></head><body>
   <div class="head">
     <h1 class="shop">${escapeHtml(shopName)}</h1>
     ${address ? `<p class="meta">${escapeHtml(address)}</p>` : ''}
-    ${phone ? `<p class="meta">Ph: ${escapeHtml(phone)}</p>` : ''}
+    ${phone ? `<p class="meta">${escapeHtml(L('Ph'))}: ${escapeHtml(phone)}</p>` : ''}
     ${gstin ? `<p class="meta">GSTIN: ${escapeHtml(gstin)}</p>` : ''}
-    <p class="title">TAX INVOICE</p>
+    <p class="title">${escapeHtml(L('TAX INVOICE'))}</p>
   </div>
   <div class="info">
     <div>
-      <div><strong>Bill</strong> ${escapeHtml(pickBillNo(bill))}</div>
-      <div><strong>Customer</strong> ${escapeHtml(bill.customer?.name || 'Walk-in')}</div>
+      <div><strong>${escapeHtml(L('Bill'))}</strong> ${escapeHtml(pickBillNo(bill))}</div>
+      <div><strong>${escapeHtml(L('Customer'))}</strong> ${escapeHtml(bill.customer?.name || L('Walk-in'))}</div>
     </div>
-    <div style="text-align:right"><strong>Date</strong> ${escapeHtml(pickBillDate(bill))}</div>
+    <div style="text-align:right"><strong>${escapeHtml(L('Date'))}</strong> ${escapeHtml(pickBillDate(bill))}</div>
   </div>
   <table>
     <thead>
-      <tr><th class="c">#</th><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr>
+      <tr><th class="c">#</th><th>${escapeHtml(L('Item'))}</th><th class="r">${escapeHtml(L('Qty'))}</th><th class="r">${escapeHtml(L('Rate'))}</th><th class="r">${escapeHtml(L('Amount'))}</th></tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="totals">
-    <div class="row"><span>Subtotal</span><span>Rs.${escapeHtml(money(bill.subtotal))}</span></div>
-    ${n(bill.discount_amount) > 0 ? `<div class="row"><span>Discount</span><span>-Rs.${escapeHtml(money(bill.discount_amount))}</span></div>` : ''}
-    <div class="row"><span>Tax</span><span>Rs.${escapeHtml(money(bill.tax_amount))}</span></div>
-    ${Math.abs(n(bill.round_off_amount)) >= 0.005 ? `<div class="row"><span>Round off</span><span>${n(bill.round_off_amount) > 0 ? '+' : '-'}Rs.${escapeHtml(money(Math.abs(n(bill.round_off_amount))))}</span></div>` : ''}
-    <div class="row grand"><span>TOTAL</span><span>Rs.${escapeHtml(money(bill.total_amount))}</span></div>
+    <div class="row"><span>${escapeHtml(L('Subtotal'))}</span><span>Rs.${escapeHtml(money(bill.subtotal))}</span></div>
+    ${n(bill.discount_amount) > 0 ? `<div class="row"><span>${escapeHtml(L('Discount'))}</span><span>-Rs.${escapeHtml(money(bill.discount_amount))}</span></div>` : ''}
+    <div class="row"><span>${escapeHtml(L('Tax'))}</span><span>Rs.${escapeHtml(money(bill.tax_amount))}</span></div>
+    ${Math.abs(n(bill.round_off_amount)) >= 0.005 ? `<div class="row"><span>${escapeHtml(L('Round off'))}</span><span>${n(bill.round_off_amount) > 0 ? '+' : '-'}Rs.${escapeHtml(money(Math.abs(n(bill.round_off_amount))))}</span></div>` : ''}
+    <div class="row grand"><span>${escapeHtml(L('TOTAL'))}</span><span>Rs.${escapeHtml(money(bill.total_amount))}</span></div>
+    ${saved > 0 ? `<div class="row save"><span>${escapeHtml(L('Total saving'))}</span><span>Rs.${escapeHtml(money(saved))}</span></div>` : ''}
   </div>
   ${payRows}
   <div class="foot">
     ${footer && !/^thank you!?$/i.test(footer) ? `<p>${escapeHtml(footer)}</p>` : ''}
-    <p><strong>Thank you! Visit Again</strong></p>
+    <p><strong>${escapeHtml(L('Thank you! Visit Again'))}</strong></p>
   </div>
 </body></html>`;
 }

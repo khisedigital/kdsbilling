@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import { colors } from '../theme/colors';
 
 export type StatusConfig = { label: string; color: string; bg: string; icon: string };
@@ -12,7 +13,11 @@ export const BILL_STATUS: Record<string, StatusConfig> = {
 };
 
 export function getBillStatus(status: string): StatusConfig {
-  return BILL_STATUS[status] || { label: status, color: colors.textMuted, bg: colors.surfaceVariant, icon: 'receipt' };
+  const found = BILL_STATUS[status];
+  if (!found) {
+    return { label: t(status), color: colors.textMuted, bg: colors.surfaceVariant, icon: 'receipt' };
+  }
+  return { ...found, label: t(found.label) };
 }
 
 /** Bill can accept another return — driven by remaining item qty. */

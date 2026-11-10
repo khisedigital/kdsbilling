@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Keyboard, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Chip, Dialog, HelperText, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, Chip, Dialog, HelperText, Portal, Text } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
+import { screenProductName } from '../../utils/productName';
 import type { SearchProductResult } from '../../services/catalogService';
 import { formatQuantity, getQuantityPresets, parseQuantityInput, quantityHint, type UomInfo } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { dialogCard, radius, spacing } from '../../theme/layout';
 
 function quantityPrefill(qty: number, uom: UomInfo): string {
   const code = (uom.code || '').toLowerCase();
@@ -34,6 +38,9 @@ export default function QuantityEntryDialog({
   onConfirm,
   onDismiss,
 }: Props) {
+  const t = useT();
+  useLanguageStore((s) => s.ui);
+  const productLabel = product ? screenProductName(product.productName, product.productNameMr) : '';
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const uom: UomInfo = useMemo(() => product?.uom || { code: 'pcs', type: 'count' }, [product?.uom]);
@@ -53,50 +60,50 @@ export default function QuantityEntryDialog({
 
   const confirm = () => {
     const qty = parseQuantityInput(input, uom);
-    if (qty == null || qty <= 0) { setError('Enter a valid quantity'); return; }
+    if (qty == null || qty <= 0) { setError(t('Enter a valid quantity')); return; }
     onConfirm(qty);
   };
 
   const body = product ? (
     <>
-      <Text style={styles.dialogTitle}>{editing ? 'Change quantity' : 'How much?'}</Text>
+      <Text style={styles.dialogTitle}>{editing ? t('Change quantity') : t('How much?')}</Text>
       <View style={styles.header}>
         <View style={styles.headerIcon}><Icon name="scale-balance" size={24} color={colors.primary} /></View>
         <View style={styles.headerText}>
           <Text style={styles.productName} numberOfLines={2}>
-            {product.productName}
+            {productLabel}
             {variantLabel(product.size, product.color) ? ` · ${variantLabel(product.size, product.color)}` : ''}
           </Text>
           <Text style={styles.price}>₹{product.sellingPrice} / {uom.code}</Text>
           <Text style={styles.stock}>
-            Available stock: {formatQuantity(product.stockQty ?? 0, uom)}
+            {t('Available stock: {{qty}}', { qty: formatQuantity(product.stockQty ?? 0, uom) })}
           </Text>
         </View>
       </View>
 
       <View style={styles.content}>
-        <TextInput
-          label="Quantity"
+        <AppTextInput
+          label={t('Quantity')}
           value={input}
           onChangeText={(v) => { setInput(v); setError(''); }}
           mode="outlined"
           keyboardType="decimal-pad"
           autoFocus={false}
           blurOnSubmit
-          placeholder={quantityHint(uom)}
+          placeholder={t(quantityHint(uom))}
           style={styles.input}
         />
-        <HelperText type="info" visible>{quantityHint(uom)}</HelperText>
+        <HelperText type="info" visible>{t(quantityHint(uom))}</HelperText>
         {error ? <HelperText type="error" visible>{error}</HelperText> : null}
 
         {lineTotal != null && (
           <View style={styles.totalBox}>
-            <Text style={styles.totalLbl}>You'll charge</Text>
+            <Text style={styles.totalLbl}>{t("You'll charge")}</Text>
             <Text style={styles.totalVal}>₹{lineTotal.toFixed(2)}</Text>
           </View>
         )}
 
-        <Text style={styles.presetsLbl}>Quick amounts</Text>
+        <Text style={styles.presetsLbl}>{t('Quick amounts')}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={styles.presets}>
             {presets.map((p) => (
@@ -107,9 +114,9 @@ export default function QuantityEntryDialog({
       </View>
 
       <View style={styles.actions}>
-        <Button onPress={onDismiss} textColor={colors.textMuted}>Cancel</Button>
+        <Button onPress={onDismiss} textColor={colors.textMuted}>{t('Cancel')}</Button>
         <Button mode="contained" onPress={confirm} buttonColor={colors.secondary} icon={editing ? 'check' : 'cart-plus'}>
-          {editing ? 'Update' : 'Add'}
+          {editing ? t('Update') : t('Add')}
         </Button>
       </View>
     </>
@@ -119,7 +126,7 @@ export default function QuantityEntryDialog({
     if (!product) return null;
     return (
       <View style={styles.containedRoot} pointerEvents="box-none">
-        <Pressable style={styles.containedScrim} onPress={onDismiss} accessibilityLabel="Dismiss quantity" />
+        <Pressable style={styles.containedScrim} onPress={onDismiss} accessibilityLabel={t('Dismiss quantity')} />
         <View style={styles.containedCard} accessibilityViewIsModal>
           {body}
         </View>
@@ -132,44 +139,44 @@ export default function QuantityEntryDialog({
       <Dialog visible={!!product} onDismiss={onDismiss} style={styles.dialog}>
         {product ? (
           <>
-            <Dialog.Title style={styles.paperTitle}>{editing ? 'Change quantity' : 'How much?'}</Dialog.Title>
+            <Dialog.Title style={styles.paperTitle}>{editing ? t('Change quantity') : t('How much?')}</Dialog.Title>
             <View style={styles.header}>
               <View style={styles.headerIcon}><Icon name="scale-balance" size={24} color={colors.primary} /></View>
               <View style={styles.headerText}>
                 <Text style={styles.productName} numberOfLines={2}>
-                  {product.productName}
+                  {productLabel}
                   {variantLabel(product.size, product.color) ? ` · ${variantLabel(product.size, product.color)}` : ''}
                 </Text>
                 <Text style={styles.price}>₹{product.sellingPrice} / {uom.code}</Text>
                 <Text style={styles.stock}>
-                  Available stock: {formatQuantity(product.stockQty ?? 0, uom)}
+                  {t('Available stock: {{qty}}', { qty: formatQuantity(product.stockQty ?? 0, uom) })}
                 </Text>
               </View>
             </View>
 
             <Dialog.Content>
-              <TextInput
-                label="Quantity"
+              <AppTextInput
+                label={t('Quantity')}
                 value={input}
                 onChangeText={(v) => { setInput(v); setError(''); }}
                 mode="outlined"
                 keyboardType="decimal-pad"
                 autoFocus={false}
                 blurOnSubmit
-                placeholder={quantityHint(uom)}
+                placeholder={t(quantityHint(uom))}
                 style={styles.input}
               />
-              <HelperText type="info" visible>{quantityHint(uom)}</HelperText>
+              <HelperText type="info" visible>{t(quantityHint(uom))}</HelperText>
               {error ? <HelperText type="error" visible>{error}</HelperText> : null}
 
               {lineTotal != null && (
                 <View style={styles.totalBox}>
-                  <Text style={styles.totalLbl}>You'll charge</Text>
+                  <Text style={styles.totalLbl}>{t("You'll charge")}</Text>
                   <Text style={styles.totalVal}>₹{lineTotal.toFixed(2)}</Text>
                 </View>
               )}
 
-              <Text style={styles.presetsLbl}>Quick amounts</Text>
+              <Text style={styles.presetsLbl}>{t('Quick amounts')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={styles.presets}>
                   {presets.map((p) => (
@@ -180,9 +187,9 @@ export default function QuantityEntryDialog({
             </Dialog.Content>
 
             <Dialog.Actions style={styles.actions}>
-              <Button onPress={onDismiss} textColor={colors.textMuted}>Cancel</Button>
+              <Button onPress={onDismiss} textColor={colors.textMuted}>{t('Cancel')}</Button>
               <Button mode="contained" onPress={confirm} buttonColor={colors.secondary} icon={editing ? 'check' : 'cart-plus'}>
-                {editing ? 'Update' : 'Add'}
+                {editing ? t('Update') : t('Add')}
               </Button>
             </Dialog.Actions>
           </>
@@ -193,7 +200,7 @@ export default function QuantityEntryDialog({
 }
 
 const styles = StyleSheet.create({
-  dialog: { marginHorizontal: spacing.lg, borderRadius: radius.xl, backgroundColor: colors.surface },
+  dialog: { ...dialogCard, borderRadius: radius.xl },
   paperTitle: { marginBottom: 0 },
   dialogTitle: {
     fontSize: 20,
@@ -226,7 +233,7 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
   },
-  header: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.borderLight },
+  header: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
   headerIcon: { width: 48, height: 48, borderRadius: radius.md, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center', marginRight: spacing.md },
   headerText: { flex: 1 },
   productName: { fontSize: 16, fontWeight: '700', color: colors.text },

@@ -126,6 +126,20 @@ export async function createSupplier(payload: {
   return data.data;
 }
 
+export type BulkImportSummary = {
+  success: number;
+  skipped: number;
+  failed: number;
+  errors: { row: number; message: string }[];
+};
+
+export async function bulkImportSuppliers(
+  rows: Array<{ name: string; phone?: string; email?: string; address?: string; taxNumber?: string }>,
+): Promise<BulkImportSummary> {
+  const { data } = await api.post('/suppliers/bulk-import', { rows });
+  return data.data;
+}
+
 export async function updateSupplier(
   id: string,
   payload: { name?: string; phone?: string; email?: string; address?: string; taxNumber?: string },

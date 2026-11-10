@@ -1,4 +1,5 @@
 import api from './api';
+import { apiErrorCode } from '../utils/apiError';
 import type {
   Brand,
   Category,
@@ -22,6 +23,20 @@ export async function createCategory(payload: {
   description?: string;
 }): Promise<Category> {
   const { data } = await api.post('/categories', payload);
+  return data.data;
+}
+
+export type BulkImportSummary = {
+  success: number;
+  skipped: number;
+  failed: number;
+  errors: { row: number; message: string }[];
+};
+
+export async function bulkImportCategories(
+  rows: Array<{ name: string; description?: string }>,
+): Promise<BulkImportSummary> {
+  const { data } = await api.post('/categories/bulk-import', { rows });
   return data.data;
 }
 
@@ -49,6 +64,13 @@ export async function createBrand(payload: {
   description?: string;
 }): Promise<Brand> {
   const { data } = await api.post('/brands', payload);
+  return data.data;
+}
+
+export async function bulkImportBrands(
+  rows: Array<{ name: string; description?: string }>,
+): Promise<BulkImportSummary> {
+  const { data } = await api.post('/brands/bulk-import', { rows });
   return data.data;
 }
 
@@ -129,6 +151,12 @@ export interface VariantBarcodeStatus {
   barcodeType?: 'ean13' | 'code128' | 'other' | null;
   status: VariantBarcodeStatusKind;
   stockQty?: number | null;
+  /** Extra plain barcodes for the same variant (not pack/qty codes). */
+  alternateBarcodes?: Array<{
+    barcode?: string | null;
+    barcodeType?: 'ean13' | 'code128' | 'other' | null;
+    status: VariantBarcodeStatusKind;
+  }>;
   quantityBarcodes?: QuantityBarcodeStatus[];
 }
 
@@ -170,6 +198,74 @@ export async function updateProduct(id: string, payload: UpdateProductPayload): 
   return data.data;
 }
 
+export async function deleteProduct(id: string) {
+  const { data } = await api.delete(`/products/${id}`);
+  return data.data as { deleted: boolean };
+}
+
+export async function deleteAllProducts() {
+  const { data } = await api.post('/products/delete-all');
+  return data.data as { deleted: number };
+}
+
+export type PriceBulkItem = {
+  variantId: string;
+  productId?: string;
+  name?: string;
+  sellingPrice?: number;
+  costPrice?: number;
+  mrp?: number | null;
+  barcode?: string;
+  /** All plain barcodes (first = primary). Prefer over single barcode when set. */
+  barcodes?: string[];
+  stockQty?: number;
+};
+
+/**
+ * Prefer dedicated bulk route. If production API is older (404 Route not found),
+ * fall back to per-product PUT which already exists on live servers.
+ */
+export async function bulkUpdateVariantPricing(items: PriceBulkItem[]) {
+  try {
+    const { data } = await api.post('/products/price-bulk', { items });
+    return data.data as { updated: number };
+  } catch (err) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    const code = apiErrorCode(err);
+    const missingRoute = status === 404 || code === 'NOT_FOUND';
+    if (!missingRoute) throw err;
+
+    for (const row of items) {
+      const productId = row.productId;
+      if (!productId) {
+        throw new Error('productId is required when using the price-save fallback.');
+      }
+      await updateProduct(productId, {
+        name: row.name,
+        variantId: row.variantId,
+        sellingPrice: row.sellingPrice,
+        costPrice: row.costPrice,
+        mrp: row.mrp ?? undefined,
+        barcode: row.barcode,
+        barcodes: row.barcodes,
+        variantSyncMode: 'append',
+        variants: [
+          {
+            id: row.variantId,
+            sellingPrice: row.sellingPrice ?? 0,
+            costPrice: row.costPrice,
+            mrp: row.mrp ?? undefined,
+            barcode: row.barcode,
+            barcodes: row.barcodes,
+            stockQty: row.stockQty,
+          },
+        ],
+      });
+    }
+    return { updated: items.length };
+  }
+}
+
 export async function searchProducts(q: string) {
   const { data } = await api.get('/products/search', { params: { q } });
   return (data.data || []) as SearchProductResult[];
@@ -179,6 +275,7 @@ export interface SearchProductResult {
   variantId: string;
   productId: string;
   productName: string;
+  productNameMr?: string | null;
   sku: string;
   size?: string | null;
   color?: string | null;
@@ -206,7 +303,15 @@ export function sortedBarcodes(variant: ProductVariant) {
 
 /** The variant's main barcode (never a quantity barcode). */
 export function mainBarcodeOf(variant: ProductVariant): string {
-  return sortedBarcodes(variant).find((b) => b.quantity == null)?.barcode || '';
+  return plainBarcodesOf(variant)[0] || '';
+}
+
+/** Plain (non-pack) barcodes only — primary first. */
+export function plainBarcodesOf(variant: ProductVariant): string[] {
+  return sortedBarcodes(variant)
+    .filter((b) => b.quantity == null)
+    .map((b) => b.barcode)
+    .filter(Boolean);
 }
 
 export function quantityBarcodesOf(variant: ProductVariant): { barcode: string; quantity: number }[] {
@@ -246,13 +351,14 @@ export function productVariantToSearchResult(
     variantId: variant.id,
     productId: product.id,
     productName: product.name,
+    productNameMr: product.name_mr || null,
     sku: variant.sku,
     size: variant.size,
     color: variant.color,
     sellingPrice: parseFloat(String(variant.selling_price)) || 0,
     costPrice: parseFloat(String(variant.cost_price)) || 0,
     mrp: variant.mrp != null ? parseFloat(String(variant.mrp)) || null : null,
-    barcodes: sortedBarcodes(variant).map((b) => b.barcode),
+    barcodes: plainBarcodesOf(variant),
     quantityBarcodes: quantityBarcodesOf(variant),
     uom: product.uom
       ? { code: product.uom.code, name: product.uom.name, type: product.uom.type }
@@ -284,11 +390,15 @@ export async function bulkImportProducts(rows: Record<string, unknown>[]) {
 export type MasterCatalogProduct = {
   id: string;
   name: string;
+  nameMr?: string | null;
   categoryId?: string | null;
   categoryName?: string | null;
+  brandName?: string | null;
   businessTypeId?: string;
   businessTypeName?: string | null;
   sellingPrice?: number;
+  mrp?: number | null;
+  variants?: Array<{ size?: string | null; barcodes?: string[]; sellingPrice?: number; mrp?: number | null }>;
 };
 
 export async function fetchMasterCatalogBusinessTypes() {

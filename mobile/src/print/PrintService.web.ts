@@ -157,11 +157,25 @@ function printHtmlInBrowser(html: string, paperMm = 80): Promise<void> {
   });
 }
 
-export async function listSystemPrinters(): Promise<Array<{ name: string; displayName: string; isDefault: boolean }>> {
+export async function listSystemPrinters(): Promise<
+  Array<{
+    name: string;
+    displayName: string;
+    isDefault: boolean;
+    driverName?: string;
+    rawFriendly?: boolean;
+  }>
+> {
   const bridge = getDesktopBridge();
   if (!bridge) return [];
   const printers = await bridge.listPrinters();
-  return printers.map((p) => ({ name: p.name, displayName: p.displayName || p.name, isDefault: p.isDefault }));
+  return printers.map((p) => ({
+    name: p.name,
+    displayName: p.displayName || p.name,
+    isDefault: p.isDefault,
+    driverName: p.driverName,
+    rawFriendly: p.rawFriendly,
+  }));
 }
 
 /**
@@ -226,28 +240,55 @@ export async function printViaA4(
 }
 
 /** Sends ready-made ESC/POS commands to a Wi-Fi / LAN printer. */
-export async function printBytesViaNetwork(host: string, port: number, bytes: number[]): Promise<void> {
+export async function printBytesViaNetwork(
+  host: string,
+  port: number,
+  bytes: number[],
+  copies = 1,
+  batchSize = 0,
+): Promise<void> {
   if (!host?.trim()) throw new Error('No network printer IP configured.');
   if (!bytes.length) throw new Error('Nothing to print.');
   const bridge = getDesktopBridge();
   if (!bridge) throw new Error(DESKTOP_ONLY);
-  await bridge.printRaw({ host: host.trim(), port, base64: bytesToBase64(bytes) });
+  await bridge.printRaw({
+    host: host.trim(),
+    port,
+    base64: bytesToBase64(bytes),
+    copies: Math.max(1, Math.min(999, Math.floor(copies) || 1)),
+    batchSize: batchSize > 0 ? batchSize : undefined,
+  });
 }
 
 /**
  * Desktop: after pairing in OS Bluetooth, the POS printer appears as a queue.
  * `address` is that queue name — we send raw ESC/POS (same as mobile).
  */
-/** Raw bytes (TSPL label job) to an OS printer queue. */
-export async function printBytesViaSystem(printerName: string, bytes: number[]): Promise<void> {
+/** Raw bytes (label / receipt job) to an OS printer queue. */
+export async function printBytesViaSystem(
+  printerName: string,
+  bytes: number[],
+  copies = 1,
+  batchSize = 0,
+): Promise<void> {
   if (!printerName?.trim()) throw new Error('Select a printer in Printer Settings, then print.');
   if (!bytes.length) throw new Error('Nothing to print.');
   const bridge = getDesktopBridge();
   if (!bridge?.printRawSystem) throw new Error(DESKTOP_ONLY);
-  await bridge.printRawSystem({ printerName: printerName.trim(), base64: bytesToBase64(bytes) });
+  await bridge.printRawSystem({
+    printerName: printerName.trim(),
+    base64: bytesToBase64(bytes),
+    copies: Math.max(1, Math.min(999, Math.floor(copies) || 1)),
+    batchSize: batchSize > 0 ? batchSize : undefined,
+  });
 }
 
-export async function printBytesViaBluetooth(address: string, bytes: number[]): Promise<void> {
+export async function printBytesViaBluetooth(
+  address: string,
+  bytes: number[],
+  copies = 1,
+  batchSize = 0,
+): Promise<void> {
   if (!address?.trim()) throw new Error('No Bluetooth printer selected.');
   if (!bytes.length) throw new Error('Nothing to print.');
   const bridge = getDesktopBridge();
@@ -256,7 +297,12 @@ export async function printBytesViaBluetooth(address: string, bytes: number[]): 
       'Bluetooth POS printing needs the KDSPOZ desktop app. Pair the printer in system Bluetooth, then select it under Bluetooth.',
     );
   }
-  await bridge.printRawSystem({ printerName: address.trim(), base64: bytesToBase64(bytes) });
+  await bridge.printRawSystem({
+    printerName: address.trim(),
+    base64: bytesToBase64(bytes),
+    copies: Math.max(1, Math.min(999, Math.floor(copies) || 1)),
+    batchSize: batchSize > 0 ? batchSize : undefined,
+  });
 }
 
 export async function isBluetoothAvailable(): Promise<boolean> {

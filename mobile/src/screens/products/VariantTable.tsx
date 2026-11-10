@@ -2,8 +2,11 @@ import React, { useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { Button, Portal, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
+import type { VariantProfile } from '../../utils/variantProfile';
+import { variantProfileForBusinessType } from '../../utils/variantProfile';
 
 export type VariantTableRow = {
   key: string;
@@ -14,9 +17,8 @@ export type VariantTableRow = {
   stockQty: string;
   sku: string;
   barcode: string;
+  extraBarcodes: string[];
 };
-
-const SIZE_OPTIONS = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'Free Size'];
 
 const COLOR_OPTIONS: { label: string; swatch: string }[] = [
   { label: 'Black', swatch: '#111111' },
@@ -42,6 +44,8 @@ type Props = {
   onChange: (key: string, patch: Partial<VariantTableRow>) => void;
   onRemove: (key: string) => void;
   onAdd: () => void;
+  /** Defaults to clothing-style sizes when omitted. */
+  profile?: VariantProfile;
 };
 
 function swatchFor(label: string) {
@@ -59,6 +63,7 @@ function CellSelect({
   options: { label: string; value: string; swatch?: string }[];
   onChange: (value: string) => void;
 }) {
+  const t = useT();
   const anchorRef = useRef<View>(null);
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState('');
@@ -87,7 +92,7 @@ function CellSelect({
             <View style={[styles.swatch, { backgroundColor: swatch }, swatch === '#F4F4F5' && styles.swatchBorder]} />
           ) : null}
           <Text style={[styles.selectText, !value && styles.placeholder]} numberOfLines={1}>
-            {value || placeholder}
+            {value ? (selected?.label || value) : t(placeholder)}
           </Text>
           <Icon name="chevron-down" size={16} color={colors.textMuted} />
         </Pressable>
@@ -126,7 +131,7 @@ function CellSelect({
                 <TextInput
                   value={custom}
                   onChangeText={setCustom}
-                  placeholder="Custom"
+                  placeholder={t('Custom')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.customInput}
                   onSubmitEditing={() => {
@@ -143,10 +148,39 @@ function CellSelect({
   );
 }
 
-export default function VariantTable({ rows, color, onColorChange, onChange, onRemove, onAdd }: Props) {
+export default function VariantTable({
+  rows,
+  color,
+  onColorChange,
+  onChange,
+  onRemove,
+  onAdd,
+  profile = variantProfileForBusinessType('clothing'),
+}: Props) {
+  const t = useT();
+  const sizePresets = profile.sizeOptions;
+  const showColor = profile.showColor;
+
+  const setExtraAt = (key: string, extras: string[], index: number, value: string) => {
+    const next = [...extras];
+    next[index] = value.replace(/\D/g, '').slice(0, 18);
+    onChange(key, { extraBarcodes: next });
+  };
+
+  const removeExtraAt = (key: string, extras: string[], index: number) => {
+    onChange(key, { extraBarcodes: extras.filter((_, i) => i !== index) });
+  };
+
+  const addExtra = (key: string, extras: string[]) => {
+    onChange(key, { extraBarcodes: [...extras, ''] });
+  };
+
   const sizeOptions = (current: string) => {
-    const names = !current || SIZE_OPTIONS.includes(current) ? SIZE_OPTIONS : [current, ...SIZE_OPTIONS];
-    return names.map((name) => ({ label: name, value: name }));
+    const names = !current || sizePresets.includes(current) ? sizePresets : [current, ...sizePresets];
+    return names.map((name) => ({
+      label: sizePresets.includes(name) || name === 'Default' ? t(name) : name,
+      value: name,
+    }));
   };
 
   const colorOptions = () => {
@@ -154,47 +188,49 @@ export default function VariantTable({ rows, color, onColorChange, onChange, onR
     const extra = color && !known ? [{ label: color, value: color, swatch: '#CBD5E1' }] : [];
     return [
       ...extra,
-      ...COLOR_OPTIONS.map((item) => ({ label: item.label, value: item.label, swatch: item.swatch })),
+      ...COLOR_OPTIONS.map((item) => ({ label: t(item.label), value: item.label, swatch: item.swatch })),
     ];
   };
 
   return (
     <View>
-      <Text style={styles.intro}>Manage variants by size, color, selling price, MRP and barcode.</Text>
+      <Text style={styles.intro}>{t(profile.intro)}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator keyboardShouldPersistTaps="handled">
-        <View style={styles.table}>
+        <View style={[styles.table, !showColor && styles.tableNoColor]}>
           <View style={styles.head}>
-            <Text style={[styles.headText, styles.sizeCol]}>Size *</Text>
-            <Text style={[styles.headText, styles.colorCol]}>Color *</Text>
-            <Text style={[styles.headText, styles.moneyCol]}>Selling Price (₹) *</Text>
-            <Text style={[styles.headText, styles.moneyCol]}>MRP (₹) *</Text>
-            <Text style={[styles.headText, styles.barcodeCol]}>Barcode</Text>
-            <Text style={[styles.headText, styles.smallCol]}>Cost</Text>
-            <Text style={[styles.headText, styles.smallCol]}>Stock</Text>
+            <Text style={[styles.headText, styles.sizeCol]}>{t(profile.sizeLabel)} *</Text>
+            {showColor ? <Text style={[styles.headText, styles.colorCol]}>{t('Color *')}</Text> : null}
+            <Text style={[styles.headText, styles.moneyCol]}>{t('Selling Price (₹) *')}</Text>
+            <Text style={[styles.headText, styles.moneyCol]}>{t('MRP (₹) *')}</Text>
+            <Text style={[styles.headText, styles.barcodeCol]}>{t('Barcode')}</Text>
+            <Text style={[styles.headText, styles.smallCol]}>{t('Cost')}</Text>
+            <Text style={[styles.headText, styles.smallCol]}>{t('Stock')}</Text>
             <Text style={[styles.headText, styles.skuCol]}>SKU</Text>
-            <Text style={[styles.headText, styles.actionCol]}>Action</Text>
+            <Text style={[styles.headText, styles.actionCol]}>{t('Action')}</Text>
           </View>
           {rows.length === 0 ? (
-            <Text style={styles.empty}>No variants yet. Add a size to sell this product.</Text>
+            <Text style={styles.empty}>{t(profile.emptyRowsHint)}</Text>
           ) : (
             rows.map((row) => (
               <View key={row.key} style={styles.bodyRow}>
                 <View style={styles.sizeCol}>
                   <CellSelect
                     value={row.size}
-                    placeholder="Size"
+                    placeholder={profile.sizeLabel}
                     options={sizeOptions(row.size)}
                     onChange={(size) => onChange(row.key, { size })}
                   />
                 </View>
-                <View style={styles.colorCol}>
-                  <CellSelect
-                    value={color}
-                    placeholder="Color"
-                    options={colorOptions()}
-                    onChange={onColorChange}
-                  />
-                </View>
+                {showColor ? (
+                  <View style={styles.colorCol}>
+                    <CellSelect
+                      value={color}
+                      placeholder={t('Color')}
+                      options={colorOptions()}
+                      onChange={onColorChange}
+                    />
+                  </View>
+                ) : null}
                 <View style={styles.moneyCol}>
                   <TextInput
                     value={row.sellingPrice}
@@ -220,10 +256,31 @@ export default function VariantTable({ rows, color, onColorChange, onChange, onR
                     value={row.barcode}
                     onChangeText={(barcode) => onChange(row.key, { barcode: barcode.replace(/\D/g, '').slice(0, 18) })}
                     keyboardType="number-pad"
-                    placeholder="Auto number"
+                    placeholder={t('Auto number')}
                     placeholderTextColor={colors.textMuted}
                     style={styles.input}
                   />
+                  {(row.extraBarcodes || []).map((code, index) => (
+                    <View key={`${row.key}-extra-${index}`} style={styles.extraBarcodeRow}>
+                      <TextInput
+                        value={code}
+                        onChangeText={(value) => setExtraAt(row.key, row.extraBarcodes || [], index, value)}
+                        keyboardType="number-pad"
+                        placeholder={t('Barcode {{n}}', { n: index + 2 })}
+                        placeholderTextColor={colors.textMuted}
+                        style={[styles.input, styles.extraBarcodeInput]}
+                      />
+                      <Pressable
+                        onPress={() => removeExtraAt(row.key, row.extraBarcodes || [], index)}
+                        hitSlop={6}
+                        style={styles.extraRemove}>
+                        <Icon name="close" size={14} color={colors.textMuted} />
+                      </Pressable>
+                    </View>
+                  ))}
+                  <Pressable onPress={() => addExtra(row.key, row.extraBarcodes || [])} hitSlop={6} style={styles.moreBarcodes}>
+                    <Text style={styles.moreBarcodesText}>{t('+ Add barcode')}</Text>
+                  </Pressable>
                 </View>
                 <View style={styles.smallCol}>
                   <TextInput
@@ -258,7 +315,7 @@ export default function VariantTable({ rows, color, onColorChange, onChange, onR
                   <Pressable
                     onPress={() => onRemove(row.key)}
                     hitSlop={8}
-                    accessibilityLabel={`Remove ${row.size || 'variant'}`}
+                    accessibilityLabel={t('Remove {{name}}', { name: row.size || t('variant') })}
                     style={styles.deleteBtn}>
                     <Icon name="trash-can-outline" size={18} color={colors.textSecondary} />
                   </Pressable>
@@ -270,9 +327,9 @@ export default function VariantTable({ rows, color, onColorChange, onChange, onR
       </ScrollView>
       <View style={styles.footer}>
         <Button mode="outlined" icon="plus" onPress={onAdd} textColor={colors.primary} style={styles.addBtn}>
-          Add Variant
+          {t(profile.addButtonLabel)}
         </Button>
-        <Text style={styles.total}>Total Variants: {rows.length}</Text>
+        <Text style={styles.total}>{t('Total: {{count}}', { count: rows.length })}</Text>
       </View>
     </View>
   );
@@ -287,6 +344,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   table: { minWidth: 1180 },
+  tableNoColor: { minWidth: 1032 },
   head: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -302,7 +360,7 @@ const styles = StyleSheet.create({
   headText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
   bodyRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: COL_GAP,
     paddingVertical: 8,
     paddingHorizontal: spacing.sm,
@@ -316,6 +374,21 @@ const styles = StyleSheet.create({
   colorCol: { width: 140 },
   moneyCol: { width: 140 },
   barcodeCol: { width: 160 },
+  extraBarcodeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  extraBarcodeInput: { flex: 1 },
+  extraRemove: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  moreBarcodes: { marginTop: 4 },
+  moreBarcodesText: { fontSize: 11, fontWeight: '600', color: colors.primary },
   smallCol: { width: 90 },
   skuCol: { width: 120 },
   actionCol: { width: 64, alignItems: 'center' },
@@ -391,7 +464,7 @@ const styles = StyleSheet.create({
   menuLabel: { flex: 1, fontSize: 14, color: colors.text },
   menuLabelOn: { color: colors.primary, fontWeight: '700' },
   customRow: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
     padding: 8,
   },

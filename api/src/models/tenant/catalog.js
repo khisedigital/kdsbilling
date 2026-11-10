@@ -63,6 +63,7 @@ function defineProduct(sequelize) {
   return sequelize.define('Product', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     name: { type: DataTypes.STRING(200), allowNull: false },
+    name_mr: DataTypes.STRING(200),
     description: DataTypes.TEXT,
     category_id: DataTypes.UUID,
     brand_id: DataTypes.UUID,

@@ -1,28 +1,37 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, HelperText, Portal, TextInput } from 'react-native-paper';
+import { Button, Dialog, FAB, HelperText, Portal } from 'react-native-paper';
+import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
+import BulkImportDialog from '../../components/ui/BulkImportDialog';
 import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
-import { createSupplier, deleteSupplier, fetchSuppliers, updateSupplier } from '../../services/inventoryService';
-import type { Supplier } from '../../services/inventoryService';
+import {
+  bulkImportSuppliers,
+  createSupplier,
+  deleteSupplier,
+  fetchSuppliers,
+  updateSupplier,
+  type Supplier,
+} from '../../services/inventoryService';
+import { useT } from '../../i18n';
+import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
-import { common, radius, spacing } from '../../theme/layout';
+import { common, dialogCard, spacing } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'SupplierList'>;
 
 type DialogMode = 'add' | 'edit';
 
-function apiError(err: unknown, fallback: string) {
-  return (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message || fallback;
-}
-
 export default function SupplierListScreen({ navigation }: Props) {
+  const t = useT();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [search, setSearch] = useState('');
   const [visible, setVisible] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [fabOpen, setFabOpen] = useState(false);
   const [mode, setMode] = useState<DialogMode>('add');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -37,11 +46,13 @@ export default function SupplierListScreen({ navigation }: Props) {
       setSuppliers(await fetchSuppliers());
     } catch (err) {
       setSuppliers([]);
-      Alert.alert('Load failed', apiError(err, 'Could not load suppliers'));
+      Alert.alert(t('Load failed'), apiError(err, 'Could not load suppliers'));
     }
-  }, []);
+  }, [t]);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   const filtered = suppliers.filter((s) => {
     const q = search.trim().toLowerCase();
@@ -54,6 +65,7 @@ export default function SupplierListScreen({ navigation }: Props) {
   });
 
   const openAdd = () => {
+    setFabOpen(false);
     setMode('add');
     setEditingId(null);
     setName('');
@@ -61,6 +73,11 @@ export default function SupplierListScreen({ navigation }: Props) {
     setEmail('');
     setError('');
     setVisible(true);
+  };
+
+  const openImport = () => {
+    setFabOpen(false);
+    setImportOpen(true);
   };
 
   const openEdit = (supplier: Supplier) => {
@@ -81,7 +98,7 @@ export default function SupplierListScreen({ navigation }: Props) {
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setError('Name is required');
+      setError(t('Name is required'));
       return;
     }
     setLoading(true);
@@ -111,29 +128,25 @@ export default function SupplierListScreen({ navigation }: Props) {
     const supplier = suppliers.find((s) => s.id === editingId);
     if (!supplier) return;
 
-    Alert.alert(
-      'Delete supplier?',
-      `Remove "${supplier.name}" from your supplier list?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            setLoading(true);
-            try {
-              await deleteSupplier(editingId);
-              setVisible(false);
-              await load();
-            } catch (err) {
-              setError(apiError(err, 'Could not delete supplier'));
-            } finally {
-              setLoading(false);
-            }
-          },
+    Alert.alert(t('Delete supplier?'), t('Remove "{{name}}" from your supplier list?', { name: supplier.name }), [
+      { text: t('Cancel'), style: 'cancel' },
+      {
+        text: t('Delete'),
+        style: 'destructive',
+        onPress: async () => {
+          setLoading(true);
+          try {
+            await deleteSupplier(editingId);
+            setVisible(false);
+            await load();
+          } catch (err) {
+            setError(apiError(err, 'Could not delete supplier'));
+          } finally {
+            setLoading(false);
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const handleNewPurchase = () => {
@@ -144,7 +157,7 @@ export default function SupplierListScreen({ navigation }: Props) {
 
   return (
     <View style={common.screen}>
-      <ScreenSearch value={search} onChangeText={setSearch} placeholder="Search suppliers..." />
+      <ScreenSearch value={search} onChangeText={setSearch} placeholder={t('Search suppliers...')} />
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
@@ -152,17 +165,25 @@ export default function SupplierListScreen({ navigation }: Props) {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await load();
+              setRefreshing(false);
+            }}
             colors={[colors.primary]}
           />
         }
         ListEmptyComponent={
-          <EmptyState icon="truck-outline" title="No suppliers yet" subtitle="Tap + to add your first supplier" />
+          <EmptyState
+            icon="truck-outline"
+            title={t('No suppliers yet')}
+            subtitle={t('Add one supplier or import many at once')}
+          />
         }
         renderItem={({ item }) => (
           <ListRow
             title={item.name}
-            subtitle={[item.phone, item.email].filter(Boolean).join(' · ') || 'No contact'}
+            subtitle={[item.phone, item.email].filter(Boolean).join(' · ') || t('No contact')}
             icon="truck"
             iconColor={colors.secondary}
             iconBg={colors.secondaryLight}
@@ -172,30 +193,49 @@ export default function SupplierListScreen({ navigation }: Props) {
         )}
       />
 
-      <FAB icon="plus" style={common.fab} color={colors.textOnPrimary} onPress={openAdd} />
+      <FAB.Group
+        open={fabOpen}
+        visible
+        icon={fabOpen ? 'close' : 'plus'}
+        fabStyle={styles.fabMain}
+        color={colors.textOnPrimary}
+        onStateChange={({ open }) => setFabOpen(open)}
+        actions={[
+          {
+            icon: 'plus',
+            label: t('Add one'),
+            onPress: openAdd,
+          },
+          {
+            icon: 'file-upload-outline',
+            label: t('Import multiple'),
+            onPress: openImport,
+          },
+        ]}
+      />
 
       <Portal>
         <Dialog visible={visible} onDismiss={closeDialog} style={styles.dialog}>
-          <Dialog.Title>{mode === 'add' ? 'Add Supplier' : 'Edit Supplier'}</Dialog.Title>
+          <Dialog.Title>{mode === 'add' ? t('Add Supplier') : t('Edit Supplier')}</Dialog.Title>
           <Dialog.Content>
-            <TextInput
-              label="Name *"
+            <AppTextInput
+              label={t('Name *')}
               value={name}
               onChangeText={setName}
               mode="outlined"
               style={styles.input}
               autoFocus={mode === 'add'}
             />
-            <TextInput
-              label="Phone"
+            <AppTextInput
+              label={t('Phone')}
               value={phone}
               onChangeText={setPhone}
               mode="outlined"
               keyboardType="phone-pad"
               style={styles.input}
             />
-            <TextInput
-              label="Email"
+            <AppTextInput
+              label={t('Email')}
               value={email}
               onChangeText={setEmail}
               mode="outlined"
@@ -211,36 +251,59 @@ export default function SupplierListScreen({ navigation }: Props) {
                 onPress={handleNewPurchase}
                 style={styles.purchaseBtn}
                 textColor={colors.secondary}>
-                New purchase entry
+                {t('New purchase entry')}
               </Button>
             ) : null}
           </Dialog.Content>
           <Dialog.Actions style={styles.dialogActions}>
             {mode === 'edit' ? (
               <Button textColor={colors.error} onPress={confirmDelete} disabled={loading}>
-                Delete
+                {t('Delete')}
               </Button>
             ) : (
               <View />
             )}
             <View style={styles.dialogRight}>
-              <Button onPress={closeDialog} disabled={loading}>Cancel</Button>
+              <Button onPress={closeDialog} disabled={loading}>
+                {t('Cancel')}
+              </Button>
               <Button onPress={handleSave} loading={loading} disabled={!name.trim()}>
-                {mode === 'add' ? 'Add' : 'Save'}
+                {mode === 'add' ? t('Add') : t('Save')}
               </Button>
             </View>
           </Dialog.Actions>
         </Dialog>
       </Portal>
+
+      <BulkImportDialog
+        visible={importOpen}
+        title={t('Import suppliers')}
+        entityLabel={t('Supplier')}
+        mode="supplier"
+        onDismiss={async () => {
+          setImportOpen(false);
+          await load();
+        }}
+        onImport={async (rows) =>
+          bulkImportSuppliers(
+            rows.map((row) => ({
+              name: row.name,
+              phone: row.phone || undefined,
+              email: row.email || undefined,
+            })),
+          )
+        }
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   emptyList: { flexGrow: 1 },
-  dialog: { borderRadius: radius.lg },
+  dialog: { ...dialogCard },
   input: { marginBottom: spacing.sm, backgroundColor: colors.surface },
   purchaseBtn: { marginTop: spacing.sm, borderColor: colors.secondary },
   dialogActions: { justifyContent: 'space-between', paddingHorizontal: spacing.md },
   dialogRight: { flexDirection: 'row', alignItems: 'center' },
+  fabMain: { backgroundColor: colors.primary },
 });
