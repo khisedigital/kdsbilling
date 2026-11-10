@@ -19,6 +19,7 @@ export async function fetchCategories(search?: string): Promise<Category[]> {
 
 export async function createCategory(payload: {
   name: string;
+  nameMr?: string | null;
   parentId?: string;
   description?: string;
 }): Promise<Category> {
@@ -42,6 +43,7 @@ export async function bulkImportCategories(
 
 export async function updateCategory(id: string, payload: {
   name?: string;
+  nameMr?: string | null;
   parentId?: string | null;
   description?: string;
 }): Promise<Category> {
@@ -61,6 +63,7 @@ export async function fetchBrands(search?: string): Promise<Brand[]> {
 
 export async function createBrand(payload: {
   name: string;
+  nameMr?: string | null;
   description?: string;
 }): Promise<Brand> {
   const { data } = await api.post('/brands', payload);
@@ -76,6 +79,7 @@ export async function bulkImportBrands(
 
 export async function updateBrand(id: string, payload: {
   name?: string;
+  nameMr?: string | null;
   description?: string;
 }): Promise<Brand> {
   const { data } = await api.put(`/brands/${id}`, payload);
@@ -212,6 +216,7 @@ export type PriceBulkItem = {
   variantId: string;
   productId?: string;
   name?: string;
+  nameMr?: string | null;
   sellingPrice?: number;
   costPrice?: number;
   mrp?: number | null;
@@ -242,6 +247,7 @@ export async function bulkUpdateVariantPricing(items: PriceBulkItem[]) {
       }
       await updateProduct(productId, {
         name: row.name,
+        nameMr: row.nameMr,
         variantId: row.variantId,
         sellingPrice: row.sellingPrice,
         costPrice: row.costPrice,

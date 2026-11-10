@@ -18,7 +18,7 @@ async function ensureIndicFont(text: string): Promise<void> {
   if (typeof document === 'undefined' || typeof FontFace === 'undefined') return;
   if (!indicFontTask) {
     const face = new FontFace('KdsDevanagari', `url(${JSON.stringify(indicFontUrl)})`, {
-      weight: '700',
+      weight: '400',
       style: 'normal',
     });
     indicFontTask = face

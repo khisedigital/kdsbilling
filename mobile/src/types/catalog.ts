@@ -1,6 +1,7 @@
 export interface Category {
   id: string;
   name: string;
+  name_mr?: string | null;
   parent_id?: string | null;
   description?: string;
   status: string;
@@ -10,6 +11,7 @@ export interface Category {
 export interface Brand {
   id: string;
   name: string;
+  name_mr?: string | null;
   description?: string;
   status: string;
 }

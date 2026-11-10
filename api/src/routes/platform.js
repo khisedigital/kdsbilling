@@ -44,6 +44,7 @@ router.delete('/master-brands/:id', asyncHandler(platform.deleteMasterBrand));
 
 router.get('/open-food-facts', asyncHandler(platform.searchOpenFoodFacts));
 router.get('/master-products', asyncHandler(platform.listMasterProducts));
+router.get('/master-products/import-resume', asyncHandler(platform.latestSavedMasterBarcodes));
 router.post('/master-products', asyncHandler(platform.createMasterProduct));
 router.post('/master-products/import', asyncHandler(platform.importMasterProducts));
 router.post('/master-products/import-from-open-food', asyncHandler(platform.importOpenFoodMaster));

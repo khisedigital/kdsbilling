@@ -41,6 +41,7 @@ type PriceRow = {
   productId: string;
   variantId: string;
   name: string;
+  nameMr: string;
   variantLabel: string;
   categoryId: string | null;
   categoryName: string;
@@ -54,6 +55,7 @@ type PriceRow = {
   stockQty: string;
   original: {
     name: string;
+    nameMr: string;
     costPrice: string;
     mrp: string;
     sellingPrice: string;
@@ -67,11 +69,12 @@ type StockFilter = 'all' | 'in_stock' | 'low' | 'out';
 type IssueFilter = 'all' | 'missing_mrp' | 'below_cost' | 'no_barcode';
 type ViewMode = 'products' | 'variants';
 type PickerKind = 'category' | 'brand' | null;
-type FocusField = 'name' | 'cost' | 'mrp' | 'selling' | 'barcode' | 'stock' | null;
+type FocusField = 'name' | 'nameMr' | 'cost' | 'mrp' | 'selling' | 'barcode' | 'stock' | null;
 
 type ProductGroup = {
   productId: string;
   name: string;
+  nameMr: string;
   categoryName: string;
   brandName: string;
   variants: PriceRow[];
@@ -96,12 +99,14 @@ function toRows(products: Product[]): PriceRow[] {
       const extraBarcodes = plains.slice(1);
       const stockQty = moneyStr(variant.stockQty ?? 0) || '0';
       const name = product.name || '';
+      const nameMr = product.name_mr || '';
       const label = variantLabel(variant.size, variant.color) || 'Default';
       rows.push({
         key: variant.id,
         productId: product.id,
         variantId: variant.id,
         name,
+        nameMr,
         variantLabel: label,
         categoryId: product.category_id || product.category?.id || null,
         categoryName: product.category?.name || '',
@@ -113,7 +118,7 @@ function toRows(products: Product[]): PriceRow[] {
         barcode,
         extraBarcodes,
         stockQty,
-        original: { name, costPrice, mrp, sellingPrice, barcode, extraBarcodes: [...extraBarcodes], stockQty },
+        original: { name, nameMr, costPrice, mrp, sellingPrice, barcode, extraBarcodes: [...extraBarcodes], stockQty },
       });
     }
   }
@@ -129,6 +134,7 @@ function isDirty(row: PriceRow): boolean {
   const o = row.original;
   return (
     row.name !== o.name
+    || row.nameMr !== o.nameMr
     || row.costPrice !== o.costPrice
     || row.mrp !== o.mrp
     || row.sellingPrice !== o.sellingPrice
@@ -158,6 +164,7 @@ function groupByProduct(rows: PriceRow[]): ProductGroup[] {
       group = {
         productId: row.productId,
         name: row.name,
+        nameMr: row.nameMr,
         categoryName: row.categoryName,
         brandName: row.brandName,
         variants: [],
@@ -167,6 +174,7 @@ function groupByProduct(rows: PriceRow[]): ProductGroup[] {
     }
     group.variants.push(row);
     group.name = row.name;
+    group.nameMr = row.nameMr;
   }
   return order.map((id) => map.get(id)!);
 }
@@ -381,6 +389,7 @@ export default function PriceManagementScreen(_props: Props) {
       if (!q) return true;
       return (
         row.name.toLowerCase().includes(q)
+        || row.nameMr.toLowerCase().includes(q)
         || row.variantLabel.toLowerCase().includes(q)
         || row.barcode.toLowerCase().includes(q)
         || row.categoryName.toLowerCase().includes(q)
@@ -438,6 +447,9 @@ export default function PriceManagementScreen(_props: Props) {
         if (patch.name !== undefined && row.productId === target.productId) {
           return { ...row, name: patch.name };
         }
+        if (patch.nameMr !== undefined && row.productId === target.productId) {
+          return { ...row, nameMr: patch.nameMr };
+        }
         return row;
       });
     });
@@ -447,6 +459,7 @@ export default function PriceManagementScreen(_props: Props) {
     setRows((prev) => prev.map((row) => ({
       ...row,
       name: row.original.name,
+      nameMr: row.original.nameMr,
       costPrice: row.original.costPrice,
       mrp: row.original.mrp,
       sellingPrice: row.original.sellingPrice,
@@ -480,6 +493,7 @@ export default function PriceManagementScreen(_props: Props) {
         variantId: row.variantId,
         productId: row.productId,
         name: row.name.trim(),
+        nameMr: row.nameMr.trim() || null,
         sellingPrice: selling,
         costPrice: parseFloat(row.costPrice) || 0,
         mrp: row.mrp.trim() === '' ? null : (parseFloat(row.mrp) || 0),
@@ -606,6 +620,19 @@ export default function PriceManagementScreen(_props: Props) {
                 </Text>
               </View>
             </>
+          )}
+        </View>
+
+        <View style={styles.colNameMr}>
+          {hideProductName ? null : (
+            <Field
+              value={item.nameMr}
+              onChangeText={(nameMr) => patchRow(item.key, { nameMr })}
+              placeholder={t('Marathi name')}
+              focused={focused && focusField === 'nameMr'}
+              onFocus={() => focus(item.key, 'nameMr')}
+              onBlur={blur}
+            />
           )}
         </View>
 
@@ -876,6 +903,7 @@ export default function PriceManagementScreen(_props: Props) {
       <View style={styles.tableCard}>
         <View style={styles.head}>
           <Text style={[styles.headCell, styles.colProduct]}>{t('PRODUCTS')}</Text>
+          <Text style={[styles.headCell, styles.colNameMr]}>{t('Marathi name')}</Text>
           <Text style={[styles.headCell, styles.colMoney, styles.headRight]}>{t('COST')}</Text>
           <Text style={[styles.headCell, styles.colMoney, styles.headRight]}>{t('MRP')}</Text>
           <Text style={[styles.headCell, styles.colMoney, styles.headRight]}>{t('SELLING')}</Text>
@@ -977,6 +1005,17 @@ export default function PriceManagementScreen(_props: Props) {
                           </Pressable>
                         </View>
                       </View>
+                    </View>
+
+                    <View style={styles.colNameMr}>
+                      <Field
+                        value={group.nameMr}
+                        onChangeText={(nameMr) => patchRow(first.key, { nameMr })}
+                        placeholder={t('Marathi name')}
+                        focused={focused && focusField === 'nameMr'}
+                        onFocus={() => focus(`product:${group.productId}`, 'nameMr')}
+                        onBlur={blur}
+                      />
                     </View>
 
                     <Pressable
@@ -1233,7 +1272,7 @@ const styles = StyleSheet.create({
     ...Platform.select({
       web: {
         display: 'grid' as unknown as 'flex',
-        gridTemplateColumns: 'minmax(0, 2.6fr) repeat(3, minmax(96px, 1fr)) minmax(140px, 1.5fr) minmax(88px, 0.9fr)',
+        gridTemplateColumns: 'minmax(0, 2.2fr) minmax(120px, 1.4fr) repeat(3, minmax(96px, 1fr)) minmax(140px, 1.5fr) minmax(88px, 0.9fr)',
         gap: 12,
       } as object,
       default: {},
@@ -1259,7 +1298,7 @@ const styles = StyleSheet.create({
     ...Platform.select({
       web: {
         display: 'grid' as unknown as 'flex',
-        gridTemplateColumns: 'minmax(0, 2.6fr) repeat(3, minmax(96px, 1fr)) minmax(140px, 1.5fr) minmax(88px, 0.9fr)',
+        gridTemplateColumns: 'minmax(0, 2.2fr) minmax(120px, 1.4fr) repeat(3, minmax(96px, 1fr)) minmax(140px, 1.5fr) minmax(88px, 0.9fr)',
         gap: 12,
       } as object,
       default: {},
@@ -1326,6 +1365,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   alignRight: { textAlign: 'right' },
+  colNameMr: {
+    flexGrow: 1.4,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    overflow: 'hidden',
+    ...Platform.select({ web: { width: 'auto', minWidth: 0, maxWidth: '100%' } as object, default: {} }),
+  },
   colProduct: {
     flexGrow: 2.6,
     flexShrink: 1,

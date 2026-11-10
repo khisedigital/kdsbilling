@@ -45,7 +45,11 @@ import ShopifyIntegrationScreen from '../screens/settings/ShopifyIntegrationScre
 export type MainStackParamList = {
   Dashboard: undefined;
   Billing: { fresh?: boolean } | undefined;
-  BarcodeScanner: undefined;
+  BarcodeScanner: {
+    purpose?: 'bill' | 'capture';
+    scanTarget?: string;
+    productId?: string;
+  } | undefined;
   Profile: undefined;
   ShopSettings: undefined;
   PrinterSettings: undefined;
@@ -63,7 +67,12 @@ export type MainStackParamList = {
   ProductList: undefined;
   ImportMasterProducts: undefined;
   ProductDetail: { productId: string };
-  ProductForm: { productId?: string } | undefined;
+  ProductForm: {
+    productId?: string;
+    scannedBarcode?: string;
+    scanTarget?: string;
+    scanNonce?: number;
+  } | undefined;
   PriceManagement: undefined;
   CategoryList: undefined;
   BrandList: undefined;

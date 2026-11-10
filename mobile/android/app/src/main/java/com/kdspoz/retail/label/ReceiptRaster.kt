@@ -70,23 +70,22 @@ object ReceiptRaster {
   }
 
   private fun renderLine(text: String, width: Int): Bitmap {
-    val fontSize = 22f
+    val fontSize = 20f
     val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       color = Color.BLACK
       textSize = fontSize
-      typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+      typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
       isSubpixelText = false
     }
     val digitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       color = Color.BLACK
       textSize = fontSize
-      typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+      typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
     }
 
     val trimmed = text.trim()
     val lead = text.length - text.trimStart().length
-    val trail = text.length - text.trimEnd().length
-    val centered = trimmed.isNotEmpty() && trimmed != text && lead >= 1 && trail >= 1 && kotlin.math.abs(lead - trail) <= 2
+    val centered = trimmed.isNotEmpty() && trimmed != text && lead >= 2
     val amount = if (centered) null else AMOUNT_TAIL.find(text)
     val name = when {
       centered -> trimmed
@@ -99,14 +98,15 @@ object ReceiptRaster {
     val rows = wrapByPixels(textPaint, name, if (centered) width - 8f else nameMax)
 
     val metrics = textPaint.fontMetrics
-    val rowH = kotlin.math.ceil((metrics.descent - metrics.ascent + 6f).toDouble()).toInt().coerceAtLeast(1)
+    val topGap = 6f
+    val rowH = kotlin.math.ceil((metrics.descent - metrics.top + topGap).toDouble()).toInt().coerceAtLeast(1)
     val height = rowH * rows.size
     val bitmap = Bitmap.createBitmap(width.coerceAtLeast(8), height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     canvas.drawColor(Color.WHITE)
 
     rows.forEachIndexed { index, row ->
-      val baseline = -metrics.ascent + 2f + index * rowH
+      val baseline = -metrics.top + topGap + index * rowH
       if (centered) {
         textPaint.textAlign = Paint.Align.CENTER
         canvas.drawText(row, width / 2f, baseline, textPaint)
@@ -153,7 +153,7 @@ object ReceiptRaster {
     for (i in pixels.indices) {
       val color = pixels[i]
       val lum = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
-      pixels[i] = if (lum < 170) Color.BLACK else Color.WHITE
+      pixels[i] = if (lum < 112) Color.BLACK else Color.WHITE
     }
     source.setPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
     return source
@@ -169,7 +169,7 @@ object ReceiptRaster {
       if (x !in 0 until width || y !in 0 until height) return false
       val color = pixels[y * width + x]
       val lum = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
-      return lum < 170
+      return lum < 112
     }
     out.addAll(listOf(0x1B, 0x33, 24))
     var band = 0

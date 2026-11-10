@@ -1,11 +1,27 @@
 const { Op } = require('sequelize');
 const AppError = require('../utils/AppError');
 
+function cleanNameMr(value) {
+  if (value === undefined) return undefined;
+  const name = String(value || '').trim();
+  if (name.length > 150) throw new AppError('Marathi name is too long', 400, 'VALIDATION_ERROR');
+  return name || null;
+}
+
+function requireNameMr(value) {
+  const name = cleanNameMr(value === undefined ? '' : value);
+  if (!name) throw new AppError('Marathi name is required', 400, 'VALIDATION_ERROR');
+  return name;
+}
+
 async function listBrands(db, query) {
   const { Brand } = db;
   const where = { deleted_at: null };
   if (query.status) where.status = query.status;
-  if (query.search) where.name = { [Op.like]: `%${query.search}%` };
+  if (query.search) {
+    const like = { [Op.like]: `%${query.search}%` };
+    where[Op.or] = [{ name: like }, { name_mr: like }];
+  }
 
   return Brand.findAll({ where, order: [['name', 'ASC']] });
 }
@@ -15,6 +31,7 @@ async function createBrand(db, data) {
   if (!data.name?.trim()) throw new AppError('Brand name is required', 400, 'VALIDATION_ERROR');
   return Brand.create({
     name: data.name.trim(),
+    name_mr: requireNameMr(data.nameMr),
     description: data.description || null,
     status: data.status || 'active',
   });
@@ -25,8 +42,10 @@ async function updateBrand(db, id, data) {
   const brand = await Brand.findOne({ where: { id, deleted_at: null } });
   if (!brand) throw new AppError('Brand not found', 404, 'NOT_FOUND');
 
+  const nameMr = data.nameMr !== undefined ? requireNameMr(data.nameMr) : undefined;
   await brand.update({
     name: data.name?.trim() ?? brand.name,
+    ...(nameMr !== undefined ? { name_mr: nameMr } : {}),
     description: data.description !== undefined ? data.description : brand.description,
     status: data.status ?? brand.status,
   });
@@ -88,6 +107,7 @@ async function bulkImportBrands(db, rows) {
       }
       await Brand.create({
         name,
+        name_mr: cleanNameMr(row.nameMr ?? row.name_mr),
         description: row.description ? String(row.description).trim() : null,
         status: 'active',
       });

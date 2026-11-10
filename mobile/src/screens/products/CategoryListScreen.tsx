@@ -8,6 +8,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
 import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
 import {
   createCategory,
   deleteCategory,
@@ -16,6 +17,7 @@ import {
 } from '../../services/catalogService';
 import type { Category } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
+import { stackedNames } from '../../utils/productName';
 import { colors } from '../../theme/colors';
 import { common, dialogCard } from '../../theme/layout';
 
@@ -25,6 +27,7 @@ type DialogMode = 'add' | 'edit';
 
 export default function CategoryListScreen({}: Props) {
   const t = useT();
+  const ui = useLanguageStore((s) => s.ui);
   const tRef = useRef(t);
   tRef.current = t;
   const [categories, setCategories] = useState<Category[]>([]);
@@ -33,6 +36,7 @@ export default function CategoryListScreen({}: Props) {
   const [mode, setMode] = useState<DialogMode>('add');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [nameMr, setNameMr] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -52,13 +56,16 @@ export default function CategoryListScreen({}: Props) {
   const filtered = categories.filter((c) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
-    return c.name.toLowerCase().includes(q) || (c.parent?.name || '').toLowerCase().includes(q);
+    return c.name.toLowerCase().includes(q)
+      || (c.name_mr || '').toLowerCase().includes(q)
+      || (c.parent?.name || '').toLowerCase().includes(q);
   });
 
   const openAdd = () => {
     setMode('add');
     setEditingId(null);
     setName('');
+    setNameMr('');
     setError('');
     setVisible(true);
   };
@@ -67,6 +74,7 @@ export default function CategoryListScreen({}: Props) {
     setMode('edit');
     setEditingId(category.id);
     setName(category.name);
+    setNameMr(category.name_mr || '');
     setError('');
     setVisible(true);
   };
@@ -76,13 +84,17 @@ export default function CategoryListScreen({}: Props) {
       setError(t('Name is required'));
       return;
     }
+    if (!nameMr.trim()) {
+      setError(t('Marathi name is required'));
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       if (mode === 'add') {
-        await createCategory({ name: name.trim() });
+        await createCategory({ name: name.trim(), nameMr: nameMr.trim() });
       } else if (editingId) {
-        await updateCategory(editingId, { name: name.trim() });
+        await updateCategory(editingId, { name: name.trim(), nameMr: nameMr.trim() });
       }
       setVisible(false);
       await load();
@@ -147,17 +159,21 @@ export default function CategoryListScreen({}: Props) {
             }
           />
         }
-        renderItem={({ item }) => (
-          <ListRow
-            title={item.name}
-            subtitle={item.parent?.name ? t('Parent: {{name}}', { name: item.parent.name }) : undefined}
-            icon="folder"
-            iconColor={colors.accent}
-            iconBg={colors.accentLight}
-            onPress={() => openEdit(item)}
-            onLongPress={() => confirmDelete(item)}
-          />
-        )}
+        renderItem={({ item }) => {
+          const { title, other } = stackedNames(item.name, item.name_mr, ui);
+          const parent = item.parent?.name ? t('Parent: {{name}}', { name: item.parent.name }) : '';
+          return (
+            <ListRow
+              title={title}
+              subtitle={[other, parent].filter(Boolean).join(' · ') || undefined}
+              icon="folder"
+              iconColor={colors.accent}
+              iconBg={colors.accentLight}
+              onPress={() => openEdit(item)}
+              onLongPress={() => confirmDelete(item)}
+            />
+          );
+        }}
       />
 
       <FAB icon="plus" style={styles.fabMain} color={colors.textOnPrimary} onPress={openAdd} />
@@ -167,6 +183,15 @@ export default function CategoryListScreen({}: Props) {
           <Dialog.Title>{mode === 'add' ? t('Add Category') : t('Edit Category')}</Dialog.Title>
           <Dialog.Content>
             <AppTextInput label={t('Name')} value={name} onChangeText={setName} mode="outlined" />
+            <AppTextInput
+              label={`${t('Marathi name')} *`}
+              value={nameMr}
+              onChangeText={setNameMr}
+              mode="outlined"
+              placeholder={t('मराठी नाव')}
+              maxLength={150}
+              style={styles.nameMr}
+            />
             {error ? (
               <HelperText type="error" visible>
                 {error}
@@ -187,7 +212,7 @@ export default function CategoryListScreen({}: Props) {
             <Button onPress={() => setVisible(false)} disabled={loading}>
               {t('Cancel')}
             </Button>
-            <Button loading={loading} onPress={handleSave} disabled={!name.trim()}>
+            <Button loading={loading} onPress={handleSave} disabled={!name.trim() || !nameMr.trim()}>
               {t('Save')}
             </Button>
           </Dialog.Actions>
@@ -200,5 +225,6 @@ export default function CategoryListScreen({}: Props) {
 const styles = StyleSheet.create({
   emptyList: { flexGrow: 1 },
   dialog: { ...dialogCard },
+  nameMr: { marginTop: 12 },
   fabMain: { ...common.fab, backgroundColor: colors.primary },
 });

@@ -262,11 +262,12 @@ export function buildThermalReceipt(
   lines.push(`<C>${L('TAX INVOICE')}</C>`);
   lines.push(rule(w, '-'));
 
-  lines.push(kv(w, L('Bill'), pickBillNo(bill)));
-  lines.push(kv(w, L('Date'), pickBillDate(bill)));
-  lines.push(
-    kv(w, L('Customer'), clipCols(ascii(bill.customer?.name || L('Walk-in')), Math.max(8, w - 10))),
-  );
+  const pushCenter = (text: string) => {
+    for (const part of wrapWords(text, w)) lines.push(`<C>${part}</C>`);
+  };
+  pushCenter(`${L('Bill')}: ${pickBillNo(bill)}`);
+  pushCenter(`${L('Date')}: ${pickBillDate(bill)}`);
+  pushCenter(`${L('Customer')}: ${ascii(bill.customer?.name || L('Walk-in'))}`);
   lines.push(rule(w, '='));
   lines.push(tableHeader(w, cols));
   lines.push(rule(w, '-'));
@@ -357,10 +358,11 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b,.totals .grand{font-weight:700}
   .head{text-align:center;border:1px solid #000;padding:18px 14px;margin-bottom:18px}
-  .shop{margin:0;font-size:32px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:center}
+  .shop{margin:0;font-size:32px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:center;line-height:1.45}
   .meta{margin:4px 0 0;color:#000;font-size:13px}
   .title{margin:10px 0 0;font-size:12px;letter-spacing:.2em}
-  .info{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px;font-size:13px}
+  .meta{line-height:1.5}
+  .info{text-align:center;margin-bottom:14px;font-size:13px;line-height:1.5}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{color:#000;padding:10px 8px;text-align:left;letter-spacing:.04em;font-size:11px;border-top:1px solid #000;border-bottom:1px solid #000}
   td{padding:9px 8px;border-bottom:0.5px solid #000}
@@ -382,11 +384,9 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     <p class="title">${escapeHtml(L('TAX INVOICE'))}</p>
   </div>
   <div class="info">
-    <div>
-      <div><strong>${escapeHtml(L('Bill'))}</strong> ${escapeHtml(pickBillNo(bill))}</div>
-      <div><strong>${escapeHtml(L('Customer'))}</strong> ${escapeHtml(bill.customer?.name || L('Walk-in'))}</div>
-    </div>
-    <div style="text-align:right"><strong>${escapeHtml(L('Date'))}</strong> ${escapeHtml(pickBillDate(bill))}</div>
+    <div><strong>${escapeHtml(L('Bill'))}</strong> ${escapeHtml(pickBillNo(bill))}</div>
+    <div><strong>${escapeHtml(L('Date'))}</strong> ${escapeHtml(pickBillDate(bill))}</div>
+    <div><strong>${escapeHtml(L('Customer'))}</strong> ${escapeHtml(bill.customer?.name || L('Walk-in'))}</div>
   </div>
   <table>
     <thead>

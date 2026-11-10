@@ -187,6 +187,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   const twoColumn = windowWidth >= 860;
   const productId = route.params?.productId;
   const isEdit = !!productId;
+  const canScanBarcode = Platform.OS !== 'web';
   const tenant = useAuthStore((s) => s.tenant);
   const updateTenant = useAuthStore((s) => s.updateTenant);
   const variantProfile = useMemo(
@@ -368,6 +369,34 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
     return () => { cancelled = true; };
   }, [productId]);
+
+  const scanNonce = route.params?.scanNonce;
+  const scannedBarcode = route.params?.scannedBarcode;
+  const scanTarget = route.params?.scanTarget;
+
+  useEffect(() => {
+    if (!scanNonce || scannedBarcode == null) return;
+    const code = digitsOnly(scannedBarcode);
+    const target = scanTarget || 'primary';
+    if (target.startsWith('qty:')) {
+      const key = target.slice(4);
+      setQtyRows((rows) => rows.map((row) => (row.key === key ? { ...row, barcode: code } : row)));
+    } else if (target.startsWith('size:')) {
+      const key = target.slice(5);
+      setSizeRows((rows) => rows.map((row) => (row.key === key ? { ...row, barcode: code } : row)));
+    } else {
+      setBarcode(code);
+    }
+    navigation.setParams({ scannedBarcode: undefined, scanTarget: undefined, scanNonce: undefined });
+  }, [navigation, scanNonce, scanTarget, scannedBarcode]);
+
+  const openBarcodeScanner = (target: string) => {
+    navigation.navigate('BarcodeScanner', {
+      purpose: 'capture',
+      scanTarget: target,
+      ...(productId ? { productId } : {}),
+    });
+  };
 
   const addSize = (rawSize: string) => {
     const size = rawSize.trim();
@@ -884,6 +913,13 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               mode="outlined"
               placeholder={t('Auto number')}
               style={[styles.input, styles.halfInput]}
+              right={canScanBarcode ? (
+                <TextInput.Icon
+                  icon="barcode-scan"
+                  forceTextInputFocus={false}
+                  onPress={() => openBarcodeScanner('primary')}
+                />
+              ) : undefined}
             />
           </View>
 
@@ -929,6 +965,13 @@ export default function ProductFormScreen({ navigation, route }: Props) {
                       dense
                       placeholder={t('Auto number')}
                       style={[styles.qtyInput, styles.halfInput]}
+                      right={canScanBarcode ? (
+                        <TextInput.Icon
+                          icon="barcode-scan"
+                          forceTextInputFocus={false}
+                          onPress={() => openBarcodeScanner(`qty:${row.key}`)}
+                        />
+                      ) : undefined}
                     />
                   </View>
                   {hint ? (
@@ -1029,6 +1072,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               color={color}
               onColorChange={setColor}
               profile={variantProfile}
+              onScanBarcode={canScanBarcode ? (key) => openBarcodeScanner(`size:${key}`) : undefined}
               onChange={(key, patch) => {
                 if (patch.size && selectedSizes.has(patch.size.toUpperCase())) {
                   const own = sizeRows.find((row) => row.key === key);

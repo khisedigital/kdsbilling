@@ -8,6 +8,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import ListRow from '../../components/ui/ListRow';
 import ScreenSearch from '../../components/ui/ScreenSearch';
 import { useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
 import {
   createBrand,
   deleteBrand,
@@ -16,6 +17,7 @@ import {
 } from '../../services/catalogService';
 import type { Brand } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
+import { stackedNames } from '../../utils/productName';
 import { colors } from '../../theme/colors';
 import { common, dialogCard } from '../../theme/layout';
 
@@ -25,6 +27,7 @@ type DialogMode = 'add' | 'edit';
 
 export default function BrandListScreen({}: Props) {
   const t = useT();
+  const ui = useLanguageStore((s) => s.ui);
   const tRef = useRef(t);
   tRef.current = t;
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -33,6 +36,7 @@ export default function BrandListScreen({}: Props) {
   const [mode, setMode] = useState<DialogMode>('add');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [nameMr, setNameMr] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -52,13 +56,14 @@ export default function BrandListScreen({}: Props) {
   const filtered = brands.filter((b) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
-    return b.name.toLowerCase().includes(q);
+    return b.name.toLowerCase().includes(q) || (b.name_mr || '').toLowerCase().includes(q);
   });
 
   const openAdd = () => {
     setMode('add');
     setEditingId(null);
     setName('');
+    setNameMr('');
     setError('');
     setVisible(true);
   };
@@ -67,6 +72,7 @@ export default function BrandListScreen({}: Props) {
     setMode('edit');
     setEditingId(brand.id);
     setName(brand.name);
+    setNameMr(brand.name_mr || '');
     setError('');
     setVisible(true);
   };
@@ -76,13 +82,17 @@ export default function BrandListScreen({}: Props) {
       setError(t('Name is required'));
       return;
     }
+    if (!nameMr.trim()) {
+      setError(t('Marathi name is required'));
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       if (mode === 'add') {
-        await createBrand({ name: name.trim() });
+        await createBrand({ name: name.trim(), nameMr: nameMr.trim() });
       } else if (editingId) {
-        await updateBrand(editingId, { name: name.trim() });
+        await updateBrand(editingId, { name: name.trim(), nameMr: nameMr.trim() });
       }
       setVisible(false);
       await load();
@@ -137,16 +147,20 @@ export default function BrandListScreen({}: Props) {
             subtitle={search.trim() ? t('Try a different search') : t('Add brands for your products')}
           />
         }
-        renderItem={({ item }) => (
-          <ListRow
-            title={item.name}
-            icon="tag"
-            iconColor={colors.secondary}
-            iconBg={colors.secondaryLight}
-            onPress={() => openEdit(item)}
-            onLongPress={() => confirmDelete(item)}
-          />
-        )}
+        renderItem={({ item }) => {
+          const { title, other } = stackedNames(item.name, item.name_mr, ui);
+          return (
+            <ListRow
+              title={title}
+              subtitle={other || undefined}
+              icon="tag"
+              iconColor={colors.secondary}
+              iconBg={colors.secondaryLight}
+              onPress={() => openEdit(item)}
+              onLongPress={() => confirmDelete(item)}
+            />
+          );
+        }}
       />
 
       <FAB icon="plus" style={styles.fabMain} color={colors.textOnPrimary} onPress={openAdd} />
@@ -156,6 +170,15 @@ export default function BrandListScreen({}: Props) {
           <Dialog.Title>{mode === 'add' ? t('Add Brand') : t('Edit Brand')}</Dialog.Title>
           <Dialog.Content>
             <AppTextInput label={t('Name')} value={name} onChangeText={setName} mode="outlined" />
+            <AppTextInput
+              label={`${t('Marathi name')} *`}
+              value={nameMr}
+              onChangeText={setNameMr}
+              mode="outlined"
+              placeholder={t('मराठी नाव')}
+              maxLength={150}
+              style={styles.nameMr}
+            />
             {error ? (
               <HelperText type="error" visible>
                 {error}
@@ -176,7 +199,7 @@ export default function BrandListScreen({}: Props) {
             <Button onPress={() => setVisible(false)} disabled={loading}>
               {t('Cancel')}
             </Button>
-            <Button loading={loading} onPress={handleSave} disabled={!name.trim()}>
+            <Button loading={loading} onPress={handleSave} disabled={!name.trim() || !nameMr.trim()}>
               {t('Save')}
             </Button>
           </Dialog.Actions>
@@ -189,5 +212,6 @@ export default function BrandListScreen({}: Props) {
 const styles = StyleSheet.create({
   emptyList: { flexGrow: 1 },
   dialog: { ...dialogCard },
+  nameMr: { marginTop: 12 },
   fabMain: { ...common.fab, backgroundColor: colors.primary },
 });

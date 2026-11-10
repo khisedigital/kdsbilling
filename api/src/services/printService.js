@@ -396,10 +396,10 @@ function renderA4(payload, language = 'en') {
       body{font-family:Georgia,'Times New Roman','Nirmala UI','Noto Sans Devanagari',Mangal,serif;padding:36px 40px;color:#111;max-width:720px;margin:0 auto}
       .banner{text-align:center;border-top:3px double #111;border-bottom:3px double #111;padding:18px 12px 16px;margin-bottom:22px}
       .logo{max-height:64px;max-width:200px;object-fit:contain;margin-bottom:10px}
-      .shop{font-size:26px;font-weight:700;letter-spacing:0.04em;margin:0 0 8px;text-transform:uppercase;line-height:1.2}
-      .meta{color:#374151;font-size:13px;margin:3px 0;line-height:1.4;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
+      .shop{font-size:26px;font-weight:700;letter-spacing:0.04em;margin:0 0 8px;text-transform:uppercase;line-height:1.5}
+      .meta{color:#374151;font-size:13px;margin:3px 0;line-height:1.55;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
       .doc-title{margin-top:12px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
-      .bill-meta{display:flex;justify-content:space-between;gap:16px;margin:0 0 18px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;color:#374151}
+      .bill-meta{text-align:center;margin:0 0 18px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;color:#374151;line-height:1.55}
       .bill-meta strong{color:#111}
       table{width:100%;border-collapse:collapse;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       th,td{border-bottom:1px solid #e5e7eb;padding:10px 8px;text-align:left}
@@ -419,8 +419,9 @@ function renderA4(payload, language = 'en') {
       <p class="doc-title">${escapeHtml(copy.taxInvoice)}</p>
     </div>
     <div class="bill-meta">
-      <div><strong>${escapeHtml(copy.bill)}</strong> ${escapeHtml(payload.billNumber)}<br/><strong>${escapeHtml(copy.customer)}</strong> ${escapeHtml(payload.customer)}</div>
-      <div style="text-align:right"><strong>${escapeHtml(copy.date)}</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
+      <div><strong>${escapeHtml(copy.bill)}</strong> ${escapeHtml(payload.billNumber)}</div>
+      <div><strong>${escapeHtml(copy.date)}</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
+      <div><strong>${escapeHtml(copy.customer)}</strong> ${escapeHtml(payload.customer)}</div>
     </div>
     <table><thead><tr><th>${escapeHtml(copy.itemWord)}</th><th style="text-align:center">${escapeHtml(copy.qtyWord)}</th><th style="text-align:right">${escapeHtml(copy.rateWord)}</th><th style="text-align:right">${escapeHtml(copy.amount)}</th></tr></thead>
     <tbody>${itemsHtml}</tbody></table>

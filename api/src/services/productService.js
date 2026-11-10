@@ -1501,7 +1501,7 @@ async function ensureQuantityBarcodes(db, items) {
 
 /**
  * Bulk edit from Price Management: update name / prices / barcode / absolute stock.
- * `items`: [{ productId?, variantId, name?, sellingPrice?, costPrice?, mrp?, barcode?, stockQty? }]
+ * `items`: [{ productId?, variantId, name?, nameMr?, sellingPrice?, costPrice?, mrp?, barcode?, stockQty? }]
  */
 async function bulkUpdateVariantPricing(db, branchId, userId, items) {
   if (!Array.isArray(items) || !items.length) {
@@ -1541,6 +1541,13 @@ async function bulkUpdateVariantPricing(db, branchId, userId, items) {
         if (!nextName) throw new AppError('Product name cannot be empty', 400, 'VALIDATION_ERROR');
         if (nextName !== product.name) {
           await product.update({ name: nextName }, { transaction });
+        }
+      }
+
+      if (raw.nameMr !== undefined) {
+        const nextMr = cleanNameMr(raw.nameMr);
+        if ((nextMr || null) !== (product.name_mr || null)) {
+          await product.update({ name_mr: nextMr }, { transaction });
         }
       }
 

@@ -301,6 +301,11 @@ async function listMasterProducts(req, res) {
   res.json({ success: true, data });
 }
 
+async function latestSavedMasterBarcodes(req, res) {
+  const data = await platformService.latestSavedMasterBarcodes(req.query.businessTypeId);
+  res.json({ success: true, data });
+}
+
 async function createMasterProduct(req, res) {
   const data = await platformService.createMasterProduct(req.body);
   res.status(201).json({ success: true, data });
@@ -399,6 +404,7 @@ module.exports = {
   updateMasterBrand,
   deleteMasterBrand,
   listMasterProducts,
+  latestSavedMasterBarcodes,
   createMasterProduct,
   updateMasterProduct,
   deleteMasterProduct,

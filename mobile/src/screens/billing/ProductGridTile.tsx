@@ -7,7 +7,6 @@ import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
 import { useT } from '../../i18n';
 import { useLanguageStore } from '../../i18n/languageStore';
-import { screenProductName } from '../../utils/productName';
 import { formatQuantity, needsQuantityPrompt } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
 
@@ -37,8 +36,12 @@ function ProductGridTile({
   onEditProduct,
 }: Props) {
   const t = useT();
-  useLanguageStore((s) => s.ui);
-  const name = screenProductName(product.productName, product.productNameMr);
+  const ui = useLanguageStore((s) => s.ui);
+  const english = product.productName?.trim() || '';
+  const marathi = product.productNameMr?.trim() || '';
+  const sameName = !!marathi && english.localeCompare(marathi, undefined, { sensitivity: 'accent' }) === 0;
+  const primary = ui === 'mr' && marathi ? marathi : english;
+  const secondary = !marathi || sameName ? '' : ui === 'mr' ? english : marathi;
   const size = variantLabel(product.size, product.color);
   const outOfStock = (product.stockQty ?? 0) <= 0;
   const inCart = qtyInCart > 0;
@@ -68,7 +71,7 @@ function ProductGridTile({
           onPress={() => onEditProduct?.(product)}
           style={styles.editBtn}
           hitSlop={6}
-          accessibilityLabel={t('Edit {{name}}', { name })}>
+          accessibilityLabel={t('Edit {{name}}', { name: secondary ? `${primary} ${secondary}` : primary })}>
           <Icon name="pencil" size={14} color={colors.primary} />
         </Pressable>
       ) : null}
@@ -77,12 +80,19 @@ function ProductGridTile({
         style={styles.body}
         accessibilityLabel={
           inCart
-            ? t('Add more {{name}}', { name })
-            : t('Add {{name}}', { name })
+            ? t('Add more {{name}}', { name: primary })
+            : t('Add {{name}}', { name: primary })
         }>
-        <Text style={[styles.name, canEditProduct && styles.nameWithEdit]} numberOfLines={2}>
-          {name}
+        <Text
+          style={[styles.name, !secondary && styles.nameSolo, canEditProduct && styles.nameWithEdit]}
+          numberOfLines={secondary ? 1 : 2}>
+          {primary}
         </Text>
+        {secondary ? (
+          <Text style={[styles.nameSecondary, canEditProduct && styles.nameWithEdit]} numberOfLines={1}>
+            {secondary}
+          </Text>
+        ) : null}
         {size ? (
           <Text style={styles.variant} numberOfLines={1}>
             {size}
@@ -126,7 +136,7 @@ function ProductGridTile({
         <Pressable
           onPress={() => onAdd(product)}
           style={styles.addBtn}
-          accessibilityLabel={t('Add {{name}}', { name })}>
+          accessibilityLabel={t('Add {{name}}', { name: primary })}>
           <Icon name="plus" size={16} color={colors.textOnPrimary} />
           <Text style={styles.addText}>{t('Add')}</Text>
         </Pressable>
@@ -173,7 +183,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
     lineHeight: 16,
+  },
+  nameSolo: {
     minHeight: 32,
+  },
+  nameSecondary: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: colors.textMuted,
+    lineHeight: 14,
+    marginTop: 1,
   },
   nameWithEdit: {
     paddingRight: 22,

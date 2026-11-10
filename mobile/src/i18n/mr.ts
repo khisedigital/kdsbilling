@@ -162,6 +162,8 @@ export const mr: Record<string, string> = {
   Sauces: 'सॉस',
   Juices: 'फळांचे रस',
   'Select at least one product to import': 'आयात करण्यासाठी किमान एक उत्पादन निवडा',
+  'Marathi name is required': 'मराठी नाव आवश्यक आहे',
+  'Marathi name is too long': 'मराठी नाव खूप मोठे आहे',
   'Marathi product name is too long': 'मराठी उत्पादनाचे नाव खूप मोठे आहे',
   'Product Details': 'उत्पादनाची माहिती',
   'Add Product': 'नवीन उत्पादन जोडा',

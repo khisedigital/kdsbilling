@@ -921,6 +921,41 @@ async function bulkImportMasterProducts({ businessTypeId, rows, options = {} }) 
   return results;
 }
 
+/** Newest saved barcodes for this catalog, so an API import can continue after them. */
+async function latestSavedMasterBarcodes(businessTypeId, limit = 20) {
+  if (!businessTypeId) return [];
+  const { MasterProduct, MasterProductVariant, MasterVariantBarcode } = getMasterModels();
+  const rows = await MasterProduct.findAll({
+    where: { business_type_id: businessTypeId },
+    order: [['createdAt', 'DESC']],
+    limit: 40,
+    attributes: ['id', 'barcode'],
+    include: [{
+      model: MasterProductVariant,
+      as: 'variants',
+      required: false,
+      attributes: ['id'],
+      include: [{
+        model: MasterVariantBarcode,
+        as: 'barcodes',
+        required: false,
+        attributes: ['barcode'],
+      }],
+    }],
+  });
+  const codes = [];
+  for (const row of rows) {
+    const fromVariants = (row.variants || []).flatMap((variant) =>
+      (variant.barcodes || []).map((item) => String(item.barcode || '').replace(/\D/g, '')),
+    );
+    const own = String(row.barcode || '').replace(/\D/g, '');
+    const code = [own, ...fromVariants].find((item) => /^\d{4,18}$/.test(item));
+    if (code && !codes.includes(code)) codes.push(code);
+    if (codes.length >= limit) break;
+  }
+  return codes;
+}
+
 module.exports = {
   listBusinessTypes,
   getBusinessType,
@@ -943,4 +978,5 @@ module.exports = {
   bulkImportMasterCategories,
   bulkImportMasterBrands,
   upsertImportedMasterProduct,
+  latestSavedMasterBarcodes,
 };

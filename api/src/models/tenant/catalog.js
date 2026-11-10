@@ -42,6 +42,7 @@ function defineCategory(sequelize) {
   return sequelize.define('Category', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     name: { type: DataTypes.STRING(150), allowNull: false },
+    name_mr: DataTypes.STRING(150),
     parent_id: DataTypes.UUID,
     description: DataTypes.TEXT,
     status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
@@ -53,6 +54,7 @@ function defineBrand(sequelize) {
   return sequelize.define('Brand', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     name: { type: DataTypes.STRING(150), allowNull: false, unique: true },
+    name_mr: DataTypes.STRING(150),
     description: DataTypes.TEXT,
     status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
     deleted_at: DataTypes.DATE,

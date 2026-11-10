@@ -273,16 +273,18 @@ async function getDashboard(db, branchId) {
     week.push(weekMap.get(key) || { day: key, revenue: 0, orders: 0 });
   }
 
-  const salesDeltaPct = yesterdaySalesOnly > 0
-    ? ((todaySales - yesterdaySalesOnly) / yesterdaySalesOnly) * 100
-    : (todaySales > 0 ? 100 : 0);
+  const todayRevenue = Number.isFinite(Number(todaySales)) ? Number(todaySales) : 0;
+  const yesterdayRevenue = Number.isFinite(Number(yesterdaySalesOnly)) ? Number(yesterdaySalesOnly) : 0;
+  const salesDeltaPct = yesterdayRevenue > 0
+    ? ((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100
+    : (todayRevenue > 0 ? 100 : 0);
 
-  const avgTicket = ordersCount > 0 ? todaySales / ordersCount : 0;
+  const avgTicket = ordersCount > 0 ? todayRevenue / ordersCount : 0;
 
   return {
-    todaySales,
-    yesterdaySales: yesterdaySalesOnly,
-    salesDeltaPct: Math.round(salesDeltaPct * 10) / 10,
+    todaySales: todayRevenue,
+    yesterdaySales: yesterdayRevenue,
+    salesDeltaPct: Number.isFinite(salesDeltaPct) ? Math.round(salesDeltaPct * 10) / 10 : 0,
     monthSales,
     ordersCount,
     yesterdayOrdersCount,

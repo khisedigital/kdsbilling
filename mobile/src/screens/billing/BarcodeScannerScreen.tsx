@@ -15,8 +15,13 @@ import { radius, spacing, typography } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'BarcodeScanner'>;
 
-export default function BarcodeScannerScreen({ navigation }: Props) {
+function numericScan(value: string) {
+  return value.replace(/\D/g, '').slice(0, 18);
+}
+
+export default function BarcodeScannerScreen({ navigation, route }: Props) {
   const t = useT();
+  const capture = route.params?.purpose === 'capture';
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
   const [active, setActive] = useState(true);
@@ -33,6 +38,23 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
     if (busyRef.current) return;
     busyRef.current = true;
     setActive(false);
+
+    if (capture) {
+      const digits = numericScan(code);
+      if (!digits) {
+        Alert.alert(t('Barcode'), t('Scan a number barcode'), [
+          { text: t('Retry'), onPress: () => { busyRef.current = false; setActive(true); } },
+        ]);
+        return;
+      }
+      navigation.navigate('ProductForm', {
+        ...(route.params?.productId ? { productId: route.params.productId } : {}),
+        scannedBarcode: digits,
+        scanTarget: route.params?.scanTarget || 'primary',
+        scanNonce: Date.now(),
+      }, { merge: true, pop: true });
+      return;
+    }
 
     try {
       const results = await searchProducts(code);
@@ -55,7 +77,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
         { text: t('OK'), onPress: () => { busyRef.current = false; setActive(true); } },
       ]);
     }
-  }, [navigation, requestScanAdd, t]);
+  }, [capture, navigation, requestScanAdd, route.params?.productId, route.params?.scanTarget, t]);
 
   const codeScanner = useCodeScanner({
     codeTypes: ['ean-13', 'ean-8', 'code-128', 'code-39', 'qr', 'upc-a', 'upc-e'],
@@ -117,7 +139,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
         <View style={styles.hintBox}>
           <Icon name="barcode-scan" size={20} color="#fff" />
           <Text style={styles.hint} numberOfLines={2}>
-            {notice || t('Scan adds the item to the bill')}
+            {notice || (capture ? t('Point the camera at the product barcode') : t('Scan adds the item to the bill'))}
           </Text>
         </View>
         <Button mode="contained" onPress={() => navigation.goBack()} style={styles.btn} buttonColor={colors.primary}>

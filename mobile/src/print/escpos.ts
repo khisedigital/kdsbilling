@@ -90,7 +90,8 @@ export type ThermalHtmlPaper = '58' | '80';
  *   58 mm → 30 cols, larger left padding (80→58 converter offset)
  *   80 mm → 48 cols, equal side padding
  *
- * Font is sized to fill the content band (large + bold for thermal clarity).
+ * Font is sized to fill the content band. Regular weight stays readable on thermal;
+ * heavy bold fills in the letters and prints as a dark smear.
  * Never uses `100vw` (that ignored paper size and clipped the right edge).
  */
 export function buildThermalHtml(
@@ -103,7 +104,6 @@ export function buildThermalHtml(
   const shopTitles = [...source.matchAll(/<CB>(.*?)<\/CB>/g)].map((m) => m[1].trim()).filter(Boolean);
   // Drop CB lines from body — they render as a large heading above the monospace strip.
   const withoutShop = source.replace(/^.*<CB>.*?<\/CB>.*$/gm, '');
-  const plain = toPlainReceipt(withoutShop, cols);
   const paperMm = paper === '58' ? 58 : 80;
   // 58 mm: extra left padding for converter offset; 80 mm: equal sides.
   const sideLeftMm = paper === '58' ? 4 : 2.5;
@@ -112,11 +112,24 @@ export function buildThermalHtml(
   const glyphEm = paper === '58' ? 0.62 : 0.55;
   const fontMm = Number((Math.max(8, printableMm) / cols / glyphEm).toFixed(4));
   const shopFontMm = Number((fontMm * 1.55).toFixed(4));
-  const lineMm = fontMm * 1.28;
-  const lineCount = Math.max(1, plain.split('\n').length + shopTitles.length * 2);
+  const lineMm = fontMm * 1.55;
+  const bodyLines = withoutShop.split('\n');
+  const lineCount = Math.max(1, bodyLines.filter((line) => line.trim()).length + shopTitles.length * 2);
   const heightMm = Math.max(80, Math.ceil(lineCount * lineMm + 20));
   const shopHtml = shopTitles
     .map((title) => `<div class="shop">${escapeHtml(title)}</div>`)
+    .join('');
+  const bodyHtml = bodyLines
+    .map((line) => {
+      const centered = line.match(/^<C>(.*)<\/C>\s*$/);
+      if (centered) {
+        const body = centered[1].replace(/<\/?[A-Z]+>/g, '').trim();
+        return body ? `<div class="center">${escapeHtml(body)}</div>` : '';
+      }
+      const plainLine = toPlainReceipt(line, cols);
+      if (!plainLine) return '';
+      return `<div class="line">${escapeHtml(plainLine)}</div>`;
+    })
     .join('');
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
@@ -138,56 +151,66 @@ html, body {
   width: ${paperMm}mm;
   max-width: ${paperMm}mm;
   padding: 2mm ${sideRightMm}mm 1mm ${sideLeftMm}mm;
-  font-family: Arial Black, Arial, Helvetica, ${DEVANAGARI_FONTS}, sans-serif;
-  font-weight: 800;
+  font-family: Arial, Helvetica, ${DEVANAGARI_FONTS}, sans-serif;
+  font-weight: 600;
   font-size: ${shopFontMm}mm;
-  line-height: 1.15;
+  line-height: 1.5;
   text-align: center;
   color: #000;
   -webkit-font-smoothing: none;
   font-smooth: never;
   text-rendering: geometricPrecision;
 }
-pre {
+.body {
   box-sizing: border-box;
-  margin: 0;
   width: ${paperMm}mm;
   max-width: ${paperMm}mm;
   /* 58 mm: larger left padding for converter; 80 mm: equal sides */
   padding: 1mm ${sideRightMm}mm 8mm ${sideLeftMm}mm;
-  font-family: "Courier New", Courier, ${DEVANAGARI_FONTS}, ui-monospace, monospace;
-  font-weight: 700;
+}
+.center, .line {
+  box-sizing: border-box;
+  margin: 0;
+  font-weight: 500;
   font-size: ${fontMm}mm;
-  line-height: 1.22;
+  line-height: 1.55;
+  padding-top: 0.4mm;
+  color: #000;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  text-rendering: geometricPrecision;
+}
+.center {
+  text-align: center;
+  font-family: Arial, Helvetica, ${DEVANAGARI_FONTS}, sans-serif;
+}
+.line {
+  font-family: "Courier New", Courier, ${DEVANAGARI_FONTS}, ui-monospace, monospace;
   letter-spacing: 0;
   font-kerning: none;
   font-variant-ligatures: none;
-  -webkit-font-smoothing: none;
-  -moz-osx-font-smoothing: unset;
-  font-smooth: never;
-  color: #000;
   white-space: pre;
   overflow: hidden;
-  text-rendering: geometricPrecision;
 }
 @media print {
-  html, body, pre, .shop {
+  html, body, .body, .shop {
     width: ${paperMm}mm !important;
     max-width: ${paperMm}mm !important;
   }
   .shop {
     font-size: ${shopFontMm}mm !important;
-    font-weight: 800 !important;
+    font-weight: 600 !important;
+    line-height: 1.5 !important;
   }
-  pre {
-    padding: 1mm ${sideRightMm}mm 6mm ${sideLeftMm}mm !important;
+  .center, .line {
     font-size: ${fontMm}mm !important;
-    font-weight: 700 !important;
+    font-weight: 500 !important;
+    line-height: 1.55 !important;
     -webkit-font-smoothing: none !important;
     font-smooth: never !important;
   }
 }
-</style></head><body>${shopHtml}<pre>${escapeHtml(plain)}</pre></body></html>`;
+</style></head><body>${shopHtml}<div class="body">${bodyHtml}</div></body></html>`;
 
   return {
     html,
@@ -289,15 +312,15 @@ function canvasIndicFont(px: number): string {
   const loaded =
     typeof document !== 'undefined' &&
     ((globalThis as { __kdsIndicFont?: boolean }).__kdsIndicFont ||
-      document.fonts?.check?.(`700 ${px}px KdsDevanagari`));
+      document.fonts?.check?.(`400 ${px}px KdsDevanagari`));
   const family = loaded ? 'KdsDevanagari' : '"Nirmala UI", "Noto Sans Devanagari", Mangal';
-  return `700 ${px}px ${family}, sans-serif`;
+  return `400 ${px}px ${family}, sans-serif`;
 }
 
-/** Extra-bold Latin face for a large, sharp shop name on thermal. */
+/** Shop name: medium weight so the counters stay open on a thermal head. */
 function canvasShopFont(px: number, indic: boolean): string {
   if (indic) return canvasIndicFont(px);
-  return `800 ${px}px "Arial Black", Impact, Arial, Helvetica, sans-serif`;
+  return `600 ${px}px Arial, Helvetica, sans-serif`;
 }
 
 /** Qty / rate / amount sitting on the same row as a Marathi item name. */
@@ -310,10 +333,26 @@ function splitAmountTail(line: string): { name: string; tail: string } | null {
 function centeredBody(line: string): string | null {
   const body = line.trim();
   if (!body || body === line) return null;
+  // Centered receipt lines are left-padded only, so a trailing pad is not required.
   const lead = line.length - line.trimStart().length;
-  const trail = line.length - line.trimEnd().length;
-  if (lead >= 1 && trail >= 1 && Math.abs(lead - trail) <= 2) return body;
+  if (lead >= 2) return body;
   return null;
+}
+
+/** Room above Devanagari so vowel signs are not sliced off the raster. */
+function textBox(measure: CanvasRenderingContext2D, sample: string, fontSize: number) {
+  const probe = measure.measureText(sample) as TextMetrics & {
+    fontBoundingBoxAscent?: number;
+    fontBoundingBoxDescent?: number;
+  };
+  const ascent = Math.ceil(
+    Math.max(probe.fontBoundingBoxAscent || 0, probe.actualBoundingBoxAscent || 0, fontSize * 1.05),
+  );
+  const descent = Math.ceil(
+    Math.max(probe.fontBoundingBoxDescent || 0, probe.actualBoundingBoxDescent || 0, fontSize * 0.45),
+  );
+  const padTop = Math.ceil(fontSize * 0.32);
+  return { ascent, descent, padTop };
 }
 
 function wrapByPixels(
@@ -345,31 +384,19 @@ function hardenRasterPixels(
   px: Uint8ClampedArray,
   width: number,
   height: number,
-  threshold = 148,
+  threshold = 108,
 ) {
+  void width;
+  void height;
   for (let i = 0; i < px.length; i += 4) {
     const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    // Keep only the dark core. Gray edges and a thicker stroke print as a dark blur.
     const on = lum < threshold;
     const v = on ? 0 : 255;
     px[i] = v;
     px[i + 1] = v;
     px[i + 2] = v;
     px[i + 3] = 255;
-  }
-  // 1px horizontal thicken — keeps thin Devanagari matras readable without softening.
-  const copy = new Uint8ClampedArray(px);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = (y * width + x) * 4;
-      if (copy[i] === 0) continue;
-      const left = x > 0 && copy[i - 4] === 0;
-      const right = x + 1 < width && copy[i + 4] === 0;
-      if (left || right) {
-        px[i] = 0;
-        px[i + 1] = 0;
-        px[i + 2] = 0;
-      }
-    }
   }
 }
 
@@ -380,7 +407,7 @@ function renderIndicRaster(
   opts?: { fontSize?: number; center?: boolean; padTop?: number },
 ): { width: number; widthBytes: number; height: number; data: Uint8Array } {
   const width = Math.max(8, widthPx);
-  const fontSize = opts?.fontSize ?? 22;
+  const fontSize = opts?.fontSize ?? 20;
   const canvas = document.createElement('canvas');
   const measure = canvas.getContext('2d');
   if (!measure) throw new Error('Could not draw the Marathi receipt line.');
@@ -397,11 +424,11 @@ function renderIndicRaster(
   const nameMax = Math.max(40, width - tailWidth - 4);
   const rows = wrapByPixels(measure, nameSource, centered ? width - 8 : nameMax);
 
-  const padTop = opts?.padTop ?? 2;
-  const probe = measure.measureText('म');
-  const ascent = probe.actualBoundingBoxAscent || fontSize * 0.85;
-  const descent = probe.actualBoundingBoxDescent || fontSize * 0.35;
-  const rowH = Math.ceil(ascent + descent + padTop + 4);
+  const box = textBox(measure, 'ईंशिाी्ॐ', fontSize);
+  const padTop = opts?.padTop ?? box.padTop;
+  const ascent = box.ascent;
+  const descent = box.descent;
+  const rowH = Math.ceil(ascent + descent + padTop);
   const height = Math.max(rowH, rowH * rows.length);
 
   canvas.width = width;
@@ -434,7 +461,7 @@ function renderIndicRaster(
   });
 
   const image = ctx.getImageData(0, 0, width, height);
-  hardenRasterPixels(image.data, width, height, 148);
+  hardenRasterPixels(image.data, width, height);
   ctx.putImageData(image, 0, 0);
 
   const widthBytes = Math.ceil(width / 8);
@@ -490,8 +517,8 @@ function renderShopTitleRaster(
 ): { width: number; widthBytes: number; height: number; data: Uint8Array } {
   const width = Math.max(8, widthPx);
   const indic = hasDevanagari(text);
-  // Scale with paper: ~32px on 58mm (384), ~40px on 80mm (576).
-  const fontSize = Math.max(28, Math.min(42, Math.round(width * (indic ? 0.072 : 0.078))));
+  // Scale with paper, but stay light enough that letters do not fill in.
+  const fontSize = Math.max(22, Math.min(32, Math.round(width * (indic ? 0.055 : 0.058))));
   const canvas = document.createElement('canvas');
   const measure = canvas.getContext('2d');
   if (!measure) throw new Error('Could not draw the shop name.');
@@ -500,10 +527,10 @@ function renderShopTitleRaster(
   // Latin → uppercase for punch; Devanagari stays as typed.
   const body = indic ? text.trim() : text.trim().toUpperCase();
   const rows = wrapByPixels(measure, body, width - 16);
-  const probe = measure.measureText(indic ? 'म' : 'Hg');
-  const ascent = probe.actualBoundingBoxAscent || fontSize * 0.82;
-  const descent = probe.actualBoundingBoxDescent || fontSize * 0.28;
-  const padTop = 8;
+  const box = textBox(measure, indic ? 'ईंशिाी्ॐ' : 'Hg', fontSize);
+  const ascent = box.ascent;
+  const descent = box.descent;
+  const padTop = Math.max(8, box.padTop);
   const padBottom = 6;
   const rowH = Math.ceil(ascent + descent + 6);
   const height = Math.max(rowH + padTop + padBottom, rowH * rows.length + padTop + padBottom);
@@ -527,7 +554,7 @@ function renderShopTitleRaster(
   });
 
   const image = ctx.getImageData(0, 0, width, height);
-  hardenRasterPixels(image.data, width, height, 140);
+  hardenRasterPixels(image.data, width, height);
   ctx.putImageData(image, 0, 0);
 
   const widthBytes = Math.ceil(width / 8);
@@ -571,10 +598,35 @@ function appendShopTitle(out: number[], title: string, widthPx: number) {
   out.push(0x0a, 0x1d, 0x21, 0x00, 0x1b, 0x45, 0x00, 0x1b, 0x21, 0x00, 0x1b, 0x61, 0x00);
 }
 
+function appendPlainChars(out: number[], text: string) {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x20 && code <= 0x7e) out.push(code);
+  }
+  out.push(0x0a);
+}
+
 function appendReceiptLine(out: number[], line: string, charsPerLine: number, widthPx: number) {
   const title = line.match(/^<CB>(.*)<\/CB>\s*$/);
   if (title) {
     appendShopTitle(out, title[1], widthPx);
+    return;
+  }
+  const centeredTag = line.match(/^<C>(.*)<\/C>\s*$/);
+  if (centeredTag) {
+    const body = centeredTag[1].replace(/<\/?[A-Z]+>/g, '').trim();
+    if (!body) {
+      out.push(0x0a);
+      return;
+    }
+    if (hasDevanagari(body) && canDrawCanvas()) {
+      out.push(0x1b, 0x61, 0x00);
+      appendBitImage(out, renderIndicRaster(body, widthPx, { center: true }));
+      return;
+    }
+    out.push(0x1b, 0x61, 0x01);
+    appendPlainChars(out, body);
+    out.push(0x1b, 0x61, 0x00);
     return;
   }
   const plain = toPlainReceipt(line, charsPerLine);
@@ -583,14 +635,11 @@ function appendReceiptLine(out: number[], line: string, charsPerLine: number, wi
     return;
   }
   if (hasDevanagari(plain) && canDrawCanvas()) {
-    appendBitImage(out, renderIndicRaster(plain, widthPx));
+    const centered = centeredBody(plain);
+    appendBitImage(out, renderIndicRaster(centered || plain, widthPx, { center: Boolean(centered) }));
     return;
   }
-  for (let i = 0; i < plain.length; i += 1) {
-    const code = plain.charCodeAt(i);
-    if (code >= 0x20 && code <= 0x7e) out.push(code);
-  }
-  out.push(0x0a);
+  appendPlainChars(out, plain);
 }
 
 /**

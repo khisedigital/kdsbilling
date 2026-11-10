@@ -44,6 +44,8 @@ type Props = {
   onChange: (key: string, patch: Partial<VariantTableRow>) => void;
   onRemove: (key: string) => void;
   onAdd: () => void;
+  /** Phone camera fill for a size's barcode. */
+  onScanBarcode?: (key: string) => void;
   /** Defaults to clothing-style sizes when omitted. */
   profile?: VariantProfile;
 };
@@ -155,6 +157,7 @@ export default function VariantTable({
   onChange,
   onRemove,
   onAdd,
+  onScanBarcode,
   profile = variantProfileForBusinessType('clothing'),
 }: Props) {
   const t = useT();
@@ -252,14 +255,25 @@ export default function VariantTable({
                   />
                 </View>
                 <View style={styles.barcodeCol}>
-                  <TextInput
-                    value={row.barcode}
-                    onChangeText={(barcode) => onChange(row.key, { barcode: barcode.replace(/\D/g, '').slice(0, 18) })}
-                    keyboardType="number-pad"
-                    placeholder={t('Auto number')}
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                  />
+                  <View style={styles.barcodeField}>
+                    <TextInput
+                      value={row.barcode}
+                      onChangeText={(barcode) => onChange(row.key, { barcode: barcode.replace(/\D/g, '').slice(0, 18) })}
+                      keyboardType="number-pad"
+                      placeholder={t('Auto number')}
+                      placeholderTextColor={colors.textMuted}
+                      style={[styles.input, onScanBarcode ? styles.barcodeInput : null]}
+                    />
+                    {onScanBarcode ? (
+                      <Pressable
+                        onPress={() => onScanBarcode(row.key)}
+                        hitSlop={6}
+                        style={styles.scanBtn}
+                        accessibilityLabel={t('Scan barcode')}>
+                        <Icon name="barcode-scan" size={18} color={colors.primary} />
+                      </Pressable>
+                    ) : null}
+                  </View>
                   {(row.extraBarcodes || []).map((code, index) => (
                     <View key={`${row.key}-extra-${index}`} style={styles.extraBarcodeRow}>
                       <TextInput
@@ -373,7 +387,17 @@ const styles = StyleSheet.create({
   sizeCol: { width: 120 },
   colorCol: { width: 140 },
   moneyCol: { width: 140 },
-  barcodeCol: { width: 160 },
+  barcodeCol: { width: 196 },
+  barcodeField: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  barcodeInput: { flex: 1 },
+  scanBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.primaryLight,
+  },
   extraBarcodeRow: {
     flexDirection: 'row',
     alignItems: 'center',

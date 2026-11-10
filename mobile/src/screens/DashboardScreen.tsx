@@ -52,8 +52,14 @@ interface DashboardData {
   }>;
 }
 
+function finiteOrNull(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function money(n: number, compact = false): string {
-  const v = Number(n) || 0;
+  const v = finiteOrNull(n) ?? 0;
   if (compact && Math.abs(v) >= 100000) return `₹${(v / 100000).toFixed(1)}L`;
   if (compact && Math.abs(v) >= 1000) return `₹${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
   return `₹${v.toFixed(0)}`;
@@ -183,7 +189,15 @@ export default function DashboardScreen({ navigation }: Props) {
   }, [data?.hourlySales]);
 
   const payTotal = data?.paymentBreakdown?.reduce((s, p) => s + (p.amount || 0), 0) || 0;
-  const deltaUp = (data?.salesDeltaPct || 0) >= 0;
+  const todaySales = finiteOrNull(data?.todaySales) ?? 0;
+  const yesterdaySales = finiteOrNull(data?.yesterdaySales) ?? 0;
+  const reportedDelta = finiteOrNull(data?.salesDeltaPct);
+  const salesDeltaPct = reportedDelta ?? (
+    yesterdaySales > 0
+      ? ((todaySales - yesterdaySales) / yesterdaySales) * 100
+      : todaySales > 0 ? 100 : 0
+  );
+  const deltaUp = salesDeltaPct >= 0;
   const deltaColor = deltaUp ? colors.success : colors.error;
 
   return (
@@ -206,16 +220,16 @@ export default function DashboardScreen({ navigation }: Props) {
           <View style={styles.welcomeTop}>
             <View style={styles.welcomeBody}>
               <Text style={styles.heroLabel}>{t("Today's sales")}</Text>
-              <Text style={styles.heroValue}>{money(data.todaySales)}</Text>
+              <Text style={styles.heroValue}>{money(todaySales)}</Text>
               <View style={styles.deltaRow}>
                 <View style={[styles.deltaBadge, { backgroundColor: `${deltaColor}22` }]}>
                   <Icon name={deltaUp ? 'trending-up' : 'trending-down'} size={14} color={deltaColor} />
                   <Text style={[styles.deltaText, { color: deltaColor }]}>
-                    {Math.abs(data.salesDeltaPct).toFixed(1)}%
+                    {Math.abs(salesDeltaPct).toFixed(1)}%
                   </Text>
                 </View>
                 <Text style={styles.deltaHint}>
-                  {t('vs yesterday')} · {money(data.yesterdaySales, true)}
+                  {t('vs yesterday')} · {money(yesterdaySales, true)}
                 </Text>
               </View>
             </View>

@@ -21,7 +21,7 @@ describe('receipt paper width balance', () => {
     expect(html).toMatch(/size:\s*80mm\s+\d+mm/);
     expect(html).toContain('Receipt 80mm');
     expect(html).not.toContain('100vw');
-    expect(html).toContain('font-weight: 700');
+    expect(html).toContain('font-weight: 500');
     expect(html).toContain('='.repeat(48));
   });
 
@@ -32,7 +32,7 @@ describe('receipt paper width balance', () => {
     expect(sideLeftMm).toBeGreaterThan(sideRightMm!);
     expect(html).toMatch(/size:\s*58mm\s+\d+mm/);
     expect(html).toContain('Receipt 58mm');
-    expect(html).toContain(`padding: 2mm ${sideRightMm}mm 8mm ${sideLeftMm}mm`);
+    expect(html).toContain(`padding: 1mm ${sideRightMm}mm 8mm ${sideLeftMm}mm`);
     expect(html).not.toContain('100vw');
   });
 

@@ -619,6 +619,11 @@ async function listMasterProducts(query) {
   return catalogMasterService.listMasterProducts(query);
 }
 
+async function latestSavedMasterBarcodes(businessTypeId) {
+  const barcodes = await catalogMasterService.latestSavedMasterBarcodes(businessTypeId);
+  return { barcodes };
+}
+
 async function createMasterProduct(data) {
   return catalogMasterService.createMasterProduct(data);
 }
@@ -688,6 +693,7 @@ module.exports = {
   updateMasterBrand,
   deleteMasterBrand,
   listMasterProducts,
+  latestSavedMasterBarcodes,
   createMasterProduct,
   updateMasterProduct,
   deleteMasterProduct,

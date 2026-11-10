@@ -54,7 +54,7 @@ import { useLanguageStore, useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { dialogCard, radius, spacing } from '../../theme/layout';
 import { formatQuantity, getQuantityPresets, parseQuantityForUom, quantityHint, type UomInfo } from '../../utils/quantity';
-import { productDisplayName, variantLabel } from '../../utils/variantLabel';
+import { variantLabel } from '../../utils/variantLabel';
 
 type ListedPrinter = {
   name: string;
@@ -182,9 +182,28 @@ function rowTitle(
   return variantLabel(row.size, row.color) || tr('Default');
 }
 
+/** Name and size on one line, without the middle dot that prints as a period. */
+function labelProductName(name: string, size?: string | null, color?: string | null): string {
+  const label = [size, color].map((part) => (part || '').trim()).filter(Boolean).join(' ');
+  return label ? `${name.trim()} ${label}` : name.trim();
+}
+
+function sameSizeText(size: string | null | undefined, qtyText: string): boolean {
+  const left = (size || '').replace(/\s+/g, '').toLowerCase();
+  const right = qtyText.replace(/\s+/g, '').toLowerCase();
+  if (!left || !right) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+}
+
+/**
+ * Pack quantity on the sticker. A plain product already shows its size on the name,
+ * so "1 pcs" is left off. A 500 ml pack is not repeated when that size is already in the name.
+ */
 function itemQtyLabel(row: VariantRow, uom?: UomInfo | null): string {
-  const qty = row.packQuantity && row.packQuantity > 0 ? row.packQuantity : 1;
-  return formatQuantity(qty, uom);
+  if (!row.packQuantity || row.packQuantity <= 0) return '';
+  const text = formatQuantity(row.packQuantity, uom);
+  if (sameSizeText(row.size, text)) return '';
+  return text;
 }
 
 /** 1 kg at ₹70 prints ₹35 on a 500 g label. Unit price is for one full unit. */
@@ -564,7 +583,7 @@ export default function BarcodeLabelScreen() {
 
   const previewName = useMemo(() => {
     if (!productMeta || !previewRow) return t('Product');
-    return productDisplayName(productMeta.productName, previewRow.size, previewRow.color);
+    return labelProductName(productMeta.productName, previewRow.size, previewRow.color);
   }, [productMeta, previewRow, t]);
 
   const previewQty = useMemo(() => {
@@ -774,7 +793,7 @@ export default function BarcodeLabelScreen() {
     const sell = priceForQty(row.sellingPrice, row);
     return {
       shopName,
-      productName: productDisplayName(productMeta.productName, row.size, row.color),
+      productName: labelProductName(productMeta.productName, row.size, row.color),
       detail: itemQtyLabel(row, productMeta.uom),
       barcode,
       mrp: '',

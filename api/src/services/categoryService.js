@@ -1,11 +1,27 @@
 const { Op } = require('sequelize');
 const AppError = require('../utils/AppError');
 
+function cleanNameMr(value) {
+  if (value === undefined) return undefined;
+  const name = String(value || '').trim();
+  if (name.length > 150) throw new AppError('Marathi name is too long', 400, 'VALIDATION_ERROR');
+  return name || null;
+}
+
+function requireNameMr(value) {
+  const name = cleanNameMr(value === undefined ? '' : value);
+  if (!name) throw new AppError('Marathi name is required', 400, 'VALIDATION_ERROR');
+  return name;
+}
+
 async function listCategories(db, query) {
   const { Category } = db;
   const where = { deleted_at: null };
   if (query.status) where.status = query.status;
-  if (query.search) where.name = { [Op.like]: `%${query.search}%` };
+  if (query.search) {
+    const like = { [Op.like]: `%${query.search}%` };
+    where[Op.or] = [{ name: like }, { name_mr: like }];
+  }
 
   const categories = await Category.findAll({
     where,
@@ -21,6 +37,7 @@ async function createCategory(db, data) {
   if (!data.name?.trim()) throw new AppError('Category name is required', 400, 'VALIDATION_ERROR');
   return Category.create({
     name: data.name.trim(),
+    name_mr: requireNameMr(data.nameMr),
     parent_id: data.parentId || null,
     description: data.description || null,
     status: data.status || 'active',
@@ -32,8 +49,10 @@ async function updateCategory(db, id, data) {
   const category = await Category.findOne({ where: { id, deleted_at: null } });
   if (!category) throw new AppError('Category not found', 404, 'NOT_FOUND');
 
+  const nameMr = data.nameMr !== undefined ? requireNameMr(data.nameMr) : undefined;
   await category.update({
     name: data.name?.trim() ?? category.name,
+    ...(nameMr !== undefined ? { name_mr: nameMr } : {}),
     parent_id: data.parentId !== undefined ? data.parentId : category.parent_id,
     description: data.description !== undefined ? data.description : category.description,
     status: data.status ?? category.status,
@@ -97,6 +116,7 @@ async function bulkImportCategories(db, rows) {
       }
       await Category.create({
         name,
+        name_mr: cleanNameMr(row.nameMr ?? row.name_mr),
         description: row.description ? String(row.description).trim() : null,
         status: 'active',
       });

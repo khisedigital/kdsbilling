@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Keyboard,
@@ -308,6 +309,17 @@ export default function ProductListScreen({ navigation }: Props) {
             </Pressable>
           ) : null}
           <Pressable
+            onPress={onRefresh}
+            disabled={refreshing}
+            style={[styles.reloadBtn, refreshing && styles.deleteAllBtnBusy]}
+            accessibilityLabel={t('Refresh')}>
+            {refreshing ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Icon name="refresh" size={20} color={colors.primary} />
+            )}
+          </Pressable>
+          <Pressable
             onPress={confirmDeleteAll}
             disabled={deletingAll}
             style={[styles.deleteAllBtn, deletingAll && styles.deleteAllBtnBusy]}
@@ -587,6 +599,16 @@ const styles = StyleSheet.create({
   },
   categoryBtnTextOn: {
     color: colors.textOnPrimary,
+  },
+  reloadBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
   },
   deleteAllBtn: {
     height: 44,

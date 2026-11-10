@@ -1255,6 +1255,21 @@ async function fillCatalogProductCategorySelect(businessTypeId, keepValue = true
   enhanceSearchableSelect(sel);
 }
 
+function masterProductBarcodes(product) {
+  const parts = [];
+  for (const variant of product?.variants || []) {
+    const codes = (variant.barcodes || [])
+      .map((code) => (typeof code === 'string' ? code : code?.barcode))
+      .filter(Boolean);
+    if (!codes.length) continue;
+    const shown = codes.slice(0, 2).join(', ');
+    const extra = codes.length > 2 ? ` +${codes.length - 2}` : '';
+    parts.push(variant.size ? `${variant.size}: ${shown}${extra}` : `${shown}${extra}`);
+  }
+  if (parts.length) return parts.join(' · ');
+  return product?.barcode || '';
+}
+
 async function loadCatalogProducts() {
   const tbody = $('catalogProductsTable');
   if (!tbody) return;
@@ -1265,9 +1280,9 @@ async function loadCatalogProducts() {
     renderPagedTable('catalogProducts', {
       tbodyId: 'catalogProductsTable',
       rows: [],
-      colspan: 9,
+      colspan: 10,
       resetPage: true,
-      emptyHtml: '<tr><td colspan="9" class="empty">Select a shop type on the left to browse product templates.</td></tr>',
+      emptyHtml: '<tr><td colspan="10" class="empty">Select a shop type on the left to browse product templates.</td></tr>',
       renderRow: () => '',
     });
     return;
@@ -1276,8 +1291,8 @@ async function loadCatalogProducts() {
   renderPagedTable('catalogProducts', {
     tbodyId: 'catalogProductsTable',
     rows: [],
-    colspan: 9,
-    emptyHtml: `<tr><td colspan="9" class="empty">${inlineLoadingHtml('Loading products…', true)}</td></tr>`,
+    colspan: 10,
+    emptyHtml: `<tr><td colspan="10" class="empty">${inlineLoadingHtml('Loading products…', true)}</td></tr>`,
     renderRow: () => '',
   });
 
@@ -1295,8 +1310,8 @@ async function loadCatalogProducts() {
     renderPagedTable('catalogProducts', {
       tbodyId: 'catalogProductsTable',
       rows: [],
-      colspan: 9,
-      emptyHtml: `<tr><td colspan="9" class="empty">${esc(e.message || 'Could not load products')}</td></tr>`,
+      colspan: 10,
+      emptyHtml: `<tr><td colspan="10" class="empty">${esc(e.message || 'Could not load products')}</td></tr>`,
       renderRow: () => '',
     });
     return;
@@ -1315,9 +1330,9 @@ async function loadCatalogProducts() {
   renderPagedTable('catalogProducts', {
     tbodyId: 'catalogProductsTable',
     rows: masterProducts,
-    colspan: 9,
+    colspan: 10,
     resetPage: true,
-    emptyHtml: `<tr><td colspan="9" class="empty">No product templates${filterName || catLabel ? ` for ${esc([filterName, catLabel].filter(Boolean).join(' · '))}` : ''} yet. Add one or import from Excel.</td></tr>`,
+    emptyHtml: `<tr><td colspan="10" class="empty">No product templates${filterName || catLabel ? ` for ${esc([filterName, catLabel].filter(Boolean).join(' · '))}` : ''} yet. Add one or import from Excel.</td></tr>`,
     renderRow: (p) => `
     <tr>
       <td>
@@ -1329,6 +1344,7 @@ async function loadCatalogProducts() {
       <td>${esc(p.category?.name || '—')}</td>
       <td>${esc(p.brand?.name || '—')}</td>
       <td><span class="type-code">${esc(p.sku || '—')}</span></td>
+      <td><span class="type-code">${esc(masterProductBarcodes(p) || '—')}</span></td>
       <td><span class="type-code">${esc(p.uomCode)}</span></td>
       <td><strong>${Number(p.sellingPrice).toFixed(2)}</strong></td>
       <td>${badge(p.status)}</td>
@@ -1824,7 +1840,7 @@ async function createMasterProductModal() {
 
 let openFoodRows = [];
 
-const OFF_FIELDS = 'code,product_name,product_name_en,product_name_mr,generic_name,generic_name_en,brands,quantity,categories_tags,countries_tags';
+const OFF_FIELDS = 'code,product_name,product_name_en,product_name_mr,generic_name,generic_name_en,brands,quantity,categories_tags,countries_tags,created_t';
 const OFF_FOOD_HOSTS = ['https://world.openfoodfacts.org', 'https://in.openfoodfacts.org'];
 const OFF_CATEGORY_HOSTS = [
   OFF_FOOD_HOSTS,
@@ -2162,22 +2178,96 @@ async function importOpenFoodBatches(businessTypeId, products, status, progress)
   return totals;
 }
 
-async function importOpenFoodPages(businessTypeId, status, progress, totals, extra, first) {
+function offUtcDay(createdT) {
+  const date = new Date(Number(createdT) * 1000);
+  if (Number.isNaN(date.getTime())) return '';
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${month}-${day}`;
+}
+
+function tagIsBeforeCursor(tag, day) {
+  if (!day || !tag) return false;
+  if (tag === day || day.startsWith(`${tag}-`)) return false;
+  return tag < day.slice(0, tag.length);
+}
+
+function takeHitsAfterCursor(hits, cursor, state) {
+  if (!cursor || state.passed) return hits || [];
+  const out = [];
+  for (const hit of hits || []) {
+    const code = offBarcode(hit.code);
+    const created = Number(hit.created_t) || 0;
+    if (!state.passed) {
+      if (code && code === cursor.barcode) {
+        state.passed = true;
+        continue;
+      }
+      if (cursor.createdT && created && created < cursor.createdT) {
+        state.passed = true;
+        out.push(hit);
+      }
+      continue;
+    }
+    out.push(hit);
+  }
+  return out;
+}
+
+async function resolveImportCursor(businessTypeId, status) {
+  let barcodes = [];
+  try {
+    const data = await api(`/master-products/import-resume?businessTypeId=${encodeURIComponent(businessTypeId)}`);
+    barcodes = data?.barcodes || [];
+  } catch (err) {
+    return null;
+  }
+  if (!barcodes.length) return null;
+  if (status) status.textContent = 'Finding the last product saved in the catalog…';
+  const hosts = [...new Set(OFF_CATEGORY_HOSTS.flat())];
+  for (const barcode of barcodes) {
+    try {
+      const body = await fetchOpenFoodJson(hosts.map((host) => `${host}/api/v2/product/${barcode}.json?fields=code,created_t`));
+      const product = body.product || body;
+      const createdT = Number(product.created_t);
+      const code = offBarcode(product.code || barcode);
+      const day = offUtcDay(createdT);
+      if (!createdT || !code || !day) continue;
+      return { barcode: code, createdT, day };
+    } catch (err) {
+      /* This saved barcode is not in the API catalog. Try the previous one. */
+    }
+  }
+  return null;
+}
+
+async function importOpenFoodPages(businessTypeId, status, progress, totals, extra, first, cursor) {
   const count = first.count || (first.hits || []).length;
   const pages = Math.min(10, Math.max(1, Math.ceil(count / 100)));
+  const state = { passed: !cursor };
   const add = (part) => {
     totals.imported += part.imported;
     totals.created += part.created;
     totals.updated += part.updated;
     totals.failed += part.failed;
   };
-  add(await importOpenFoodBatches(businessTypeId, offGroup(first.hits || []), status, progress));
+  const consume = async (hits) => {
+    const kept = takeHitsAfterCursor(hits, cursor, state);
+    if (!kept.length) return;
+    const products = offGroup(kept);
+    if (!products.length) return;
+    add(await importOpenFoodBatches(businessTypeId, products, status, progress));
+  };
+  if (cursor && !state.passed && status) {
+    status.textContent = `Continuing after ${cursor.barcode}, the last product saved in the catalog.`;
+  }
+  await consume(first.hits || []);
   for (let page = 2; page <= pages; page += 1) {
     try {
       const data = await fetchOpenFoodCatalogRetry(page, extra);
       const hits = data.hits || [];
       if (!hits.length) break;
-      add(await importOpenFoodBatches(businessTypeId, offGroup(hits), status, progress));
+      await consume(hits);
     } catch (err) {
       totals.missedPages += 1;
       if (status) status.textContent = `Imported ${progress.done} of ${progress.total} products. One page was skipped.`;
@@ -2187,7 +2277,9 @@ async function importOpenFoodPages(businessTypeId, status, progress, totals, ext
   }
 }
 
-async function importOpenFoodDateSlice(tag, businessTypeId, status, progress, totals) {
+async function importOpenFoodDateSlice(tag, businessTypeId, status, progress, totals, cursor) {
+  if (cursor && tagIsBeforeCursor(tag, cursor.day)) return;
+  const activeCursor = cursor && (tag === cursor.day || cursor.day.startsWith(`${tag}-`)) ? cursor : null;
   const extra = { entry_dates_tags: tag };
   let first;
   try {
@@ -2203,27 +2295,39 @@ async function importOpenFoodDateSlice(tag, businessTypeId, status, progress, to
     const children = offDateChildren(tag);
     if (children.length) {
       for (const child of children) {
-        await importOpenFoodDateSlice(child, businessTypeId, status, progress, totals);
+        await importOpenFoodDateSlice(child, businessTypeId, status, progress, totals, activeCursor);
       }
       return;
     }
   }
   if (status) status.textContent = `Importing ${tag}, ${progress.done} of ${progress.total} products`;
-  await importOpenFoodPages(businessTypeId, status, progress, totals, extra, first);
+  await importOpenFoodPages(businessTypeId, status, progress, totals, extra, first, activeCursor);
 }
 
 async function importAllAvailableOpenFood(businessTypeId, status) {
+  const cursor = await resolveImportCursor(businessTypeId, status);
   const first = await fetchOpenFoodCatalogRetry(1);
   const total = first.count || (first.hits || []).length;
   const progress = { done: 0, total };
   const totals = { imported: 0, created: 0, updated: 0, failed: 0, missedPages: 0 };
+  if (cursor && status) {
+    status.textContent = `Continuing after ${cursor.barcode}, the last product saved in the catalog.`;
+  }
   if (total <= 1000) {
-    await importOpenFoodPages(businessTypeId, status, progress, totals, {}, first);
+    await importOpenFoodPages(businessTypeId, status, progress, totals, {}, first, cursor);
     return totals;
   }
   const newestYear = new Date().getFullYear();
-  for (let year = 2012; year <= newestYear; year += 1) {
-    await importOpenFoodDateSlice(String(year), businessTypeId, status, progress, totals);
+  const startYear = cursor ? Number(cursor.day.slice(0, 4)) : 2012;
+  for (let year = Math.max(2012, startYear); year <= newestYear; year += 1) {
+    await importOpenFoodDateSlice(
+      String(year),
+      businessTypeId,
+      status,
+      progress,
+      totals,
+      cursor && year === startYear ? cursor : null,
+    );
   }
   return totals;
 }
@@ -2237,7 +2341,7 @@ async function importOpenFoodMasterModal() {
   const typeName = getBusinessTypeById(businessTypeId)?.name || 'this catalog';
   openFoodRows = [];
   openModal('Import from API', `
-    <p class="hint">Products are saved into <strong>${esc(typeName)}</strong>. Set a category tag such as <strong>soap</strong> to load that whole category. Leave it blank to list Indian products. Pack sizes stay one product, each size with its own barcode and MRP.</p>
+    <p class="hint">Products are saved into <strong>${esc(typeName)}</strong>. Select all continues after the last product already saved in this catalog. Set a category tag such as <strong>soap</strong> to load that whole category. Leave it blank to list Indian products. Pack sizes stay one product, each size with its own barcode and MRP.</p>
     <div class="field-row">
       <input id="offCategory" placeholder="categories_tags, e.g. soap" />
       <input id="offSearch" placeholder="Search name or barcode" />
@@ -2844,10 +2948,15 @@ function wireProductFormExtras() {
     categoryBtn.onclick = async () => {
       const name = prompt('New category name for this client:');
       if (!name?.trim()) return;
+      const nameMr = prompt('Marathi category name (required):');
+      if (!nameMr?.trim()) {
+        showAlert('Marathi name is required', 'error');
+        return;
+      }
       try {
         const created = await api(`/tenants/${selectedTenantId}/categories`, {
           method: 'POST',
-          body: JSON.stringify({ name: name.trim() }),
+          body: JSON.stringify({ name: name.trim(), nameMr: nameMr.trim() }),
         });
         appendSelectOption($('p_category'), created, true);
         if (catalogMeta) {
@@ -2863,10 +2972,15 @@ function wireProductFormExtras() {
     brandBtn.onclick = async () => {
       const name = prompt('New brand name for this client:');
       if (!name?.trim()) return;
+      const nameMr = prompt('Marathi brand name (required):');
+      if (!nameMr?.trim()) {
+        showAlert('Marathi name is required', 'error');
+        return;
+      }
       try {
         const created = await api(`/tenants/${selectedTenantId}/brands`, {
           method: 'POST',
-          body: JSON.stringify({ name: name.trim() }),
+          body: JSON.stringify({ name: name.trim(), nameMr: nameMr.trim() }),
         });
         appendSelectOption($('p_brand'), created, true);
         if (catalogMeta) {

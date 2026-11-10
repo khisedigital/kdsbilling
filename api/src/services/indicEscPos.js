@@ -50,7 +50,7 @@ function bitImage(width, height, px) {
     if (x >= width || y >= height) return false;
     const i = (y * width + x) * 4;
     const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-    return lum < 170;
+    return lum < 112;
   };
   for (let band = 0; band < height; band += 24) {
     out.push(0x1b, 0x2a, 33, width & 0xff, (width >> 8) & 0xff);
@@ -77,10 +77,10 @@ function renderIndicLine(text, widthPx, align = 'left') {
   const { createCanvas, GlobalFonts } = loadCanvas();
   ensureFont(GlobalFonts);
   const width = Math.max(8, Number(widthPx) || 384);
-  const fontSize = 22;
+  const fontSize = 20;
   const probe = createCanvas(width, 4);
   const measure = probe.getContext('2d');
-  measure.font = `700 ${fontSize}px KdsDevanagari`;
+  measure.font = `400 ${fontSize}px KdsDevanagari`;
 
   const trimmed = String(text || '').trim();
   const amounts = align === 'center' ? null : trimmed.match(AMOUNT_TAIL);
@@ -90,10 +90,19 @@ function renderIndicLine(text, widthPx, align = 'left') {
   const nameMax = Math.max(40, width - tailWidth - 4);
   const center = align === 'center' || align === 'right';
   const rows = wrapByPixels(measure, nameSource || ' ', center ? width - 8 : nameMax);
-  const sample = measure.measureText('म');
-  const ascent = sample.actualBoundingBoxAscent || fontSize * 0.85;
-  const descent = sample.actualBoundingBoxDescent || fontSize * 0.35;
-  const rowH = Math.ceil(ascent + descent + 6);
+  const sample = measure.measureText('ईंशिाी्ॐ');
+  const ascent = Math.ceil(Math.max(
+    sample.fontBoundingBoxAscent || 0,
+    sample.actualBoundingBoxAscent || 0,
+    fontSize * 1.05,
+  ));
+  const descent = Math.ceil(Math.max(
+    sample.fontBoundingBoxDescent || 0,
+    sample.actualBoundingBoxDescent || 0,
+    fontSize * 0.45,
+  ));
+  const padTop = Math.ceil(fontSize * 0.32);
+  const rowH = Math.ceil(ascent + descent + padTop);
   const height = Math.max(rowH, rowH * rows.length);
 
   const canvas = createCanvas(width, height);
@@ -101,11 +110,11 @@ function renderIndicLine(text, widthPx, align = 'left') {
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, width, height);
   ctx.fillStyle = '#000';
-  ctx.font = `700 ${fontSize}px KdsDevanagari`;
+  ctx.font = `400 ${fontSize}px KdsDevanagari`;
   ctx.textBaseline = 'alphabetic';
 
   rows.forEach((row, index) => {
-    const baseline = Math.round(ascent + 2 + index * rowH);
+    const baseline = Math.round(padTop + ascent + index * rowH);
     if (center && !tail) {
       ctx.textAlign = align === 'right' ? 'right' : 'center';
       ctx.fillText(row, align === 'right' ? width - 2 : width / 2, baseline);
