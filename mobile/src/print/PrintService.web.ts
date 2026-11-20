@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import indicFontUrl from '../assets/NotoSansDevanagari-Bold.ttf';
+import indicFontUrl from '../assets/NotoSansDevanagari-Regular.ttf';
 import { getDesktopBridge } from '../desktop/bridge';
 import {
   buildEscPosBytes,
@@ -15,7 +15,14 @@ let indicFontTask: Promise<void> | null = null;
 /** Load the bundled Devanagari face before the receipt canvas draws a name. */
 async function ensureIndicFont(text: string): Promise<void> {
   if (!hasDevanagari(text)) return;
-  if (typeof document === 'undefined' || typeof FontFace === 'undefined') return;
+  await prewarmIndicFont();
+}
+
+/** Start loading Devanagari early so the first MR print is not stalled on FontFace. */
+export function prewarmIndicFont(): Promise<void> {
+  if (typeof document === 'undefined' || typeof FontFace === 'undefined') {
+    return Promise.resolve();
+  }
   if (!indicFontTask) {
     const face = new FontFace('KdsDevanagari', `url(${JSON.stringify(indicFontUrl)})`, {
       weight: '400',
@@ -29,12 +36,17 @@ async function ensureIndicFont(text: string): Promise<void> {
       })
       .catch(() => undefined);
   }
-  await indicFontTask;
+  return indicFontTask ?? Promise.resolve();
 }
 
-async function thermalBytes(text: string, charsPerLine: number): Promise<number[]> {
+async function thermalBytes(
+  text: string,
+  charsPerLine: number,
+  paper?: ThermalHtmlPaper,
+): Promise<number[]> {
   await ensureIndicFont(text);
-  return buildEscPosBytes(text, charsPerLine);
+  // Prefer explicit paper from Settings so 58mm cannot encode as 80mm page width.
+  return buildEscPosBytes(text, charsPerLine, paper);
 }
 
 export { buildEscPosBytes, sanitizeEscPosText, toPlainReceipt } from './escpos';
@@ -179,6 +191,18 @@ export async function listSystemPrinters(): Promise<
 }
 
 /**
+ * Wake CUPS/Win queue on Print click — runs while receipt text is still building.
+ * Fire-and-forget; never blocks the UI path.
+ */
+export function primeSystemPrinter(printerName?: string | null): void {
+  const name = String(printerName || '').trim();
+  if (!name) return;
+  const bridge = getDesktopBridge();
+  if (!bridge?.primePrinter) return;
+  void bridge.primePrinter({ printerName: name }).catch(() => undefined);
+}
+
+/**
  * 58/80 mm POS receipts.
  * Desktop app → raw ESC/POS to the OS printer (same as mobile — correct paper width).
  * Browser-only → HTML fallback (drivers often ignore roll size; prefer desktop or Wi‑Fi IP).
@@ -195,7 +219,9 @@ export async function printViaSystem(
   const bridge = getDesktopBridge();
 
   if (bridge?.printRawSystem) {
-    const bytes = await thermalBytes(sanitizeEscPosText(source), charsPerLine);
+    // Do not cupsenable/prime between slips — that was cancelling the *next*
+    // job in the OS queue after each success (1 ok, 2 skipped, 3 ok…).
+    const bytes = await thermalBytes(sanitizeEscPosText(source), charsPerLine, paperSize);
     await bridge.printRawSystem({
       printerName: printerName || '',
       base64: bytesToBase64(bytes),
@@ -203,8 +229,20 @@ export async function printViaSystem(
     return;
   }
 
-  // Browser: no raw queue access — last-resort HTML strip.
-  const { html, paperMm } = buildThermalHtml(source, charsPerLine, paperSize);
+  // No raw queue: print HTML at the exact roll width from Paper size.
+  const { html, paperMm, heightMm } = buildThermalHtml(source, charsPerLine, paperSize);
+  if (bridge?.printHtml) {
+    await bridge.printHtml({
+      html,
+      printerName: printerName || undefined,
+      silent: Boolean(printerName),
+      pageWidthMm: paperMm,
+      pageHeightMm: Math.max(heightMm || 0, 60),
+      noMargins: true,
+      preferCssPageSize: true,
+    });
+    return;
+  }
   await printHtmlInBrowser(html, paperMm);
 }
 
@@ -213,6 +251,7 @@ export async function printViaNetwork(
   port: number,
   text: string,
   charsPerLine = 32,
+  paper?: ThermalHtmlPaper,
 ): Promise<void> {
   if (!host?.trim()) throw new Error('No network printer IP configured.');
   const payload = sanitizeEscPosText(String(text || '').trim());
@@ -220,7 +259,8 @@ export async function printViaNetwork(
 
   const bridge = getDesktopBridge();
   if (!bridge) throw new Error(DESKTOP_ONLY);
-  const bytes = await thermalBytes(payload, charsPerLine);
+  const roll: ThermalHtmlPaper = paper ?? (charsPerLine <= 32 ? '58' : '80');
+  const bytes = await thermalBytes(payload, charsPerLine, roll);
   await bridge.printRaw({ host: host.trim(), port, base64: bytesToBase64(bytes) });
 }
 
@@ -246,6 +286,7 @@ export async function printBytesViaNetwork(
   bytes: number[],
   copies = 1,
   batchSize = 0,
+  jobKind?: 'label' | 'receipt',
 ): Promise<void> {
   if (!host?.trim()) throw new Error('No network printer IP configured.');
   if (!bytes.length) throw new Error('Nothing to print.');
@@ -257,6 +298,7 @@ export async function printBytesViaNetwork(
     base64: bytesToBase64(bytes),
     copies: Math.max(1, Math.min(999, Math.floor(copies) || 1)),
     batchSize: batchSize > 0 ? batchSize : undefined,
+    jobKind,
   });
 }
 
@@ -270,6 +312,7 @@ export async function printBytesViaSystem(
   bytes: number[],
   copies = 1,
   batchSize = 0,
+  jobKind?: 'label' | 'receipt',
 ): Promise<void> {
   if (!printerName?.trim()) throw new Error('Select a printer in Printer Settings, then print.');
   if (!bytes.length) throw new Error('Nothing to print.');
@@ -280,6 +323,7 @@ export async function printBytesViaSystem(
     base64: bytesToBase64(bytes),
     copies: Math.max(1, Math.min(999, Math.floor(copies) || 1)),
     batchSize: batchSize > 0 ? batchSize : undefined,
+    jobKind,
   });
 }
 
@@ -288,6 +332,7 @@ export async function printBytesViaBluetooth(
   bytes: number[],
   copies = 1,
   batchSize = 0,
+  jobKind?: 'label' | 'receipt',
 ): Promise<void> {
   if (!address?.trim()) throw new Error('No Bluetooth printer selected.');
   if (!bytes.length) throw new Error('Nothing to print.');
@@ -302,6 +347,7 @@ export async function printBytesViaBluetooth(
     base64: bytesToBase64(bytes),
     copies: Math.max(1, Math.min(999, Math.floor(copies) || 1)),
     batchSize: batchSize > 0 ? batchSize : undefined,
+    jobKind,
   });
 }
 
@@ -328,10 +374,12 @@ export async function printViaBluetooth(
   address: string,
   text: string,
   charsPerLine = 32,
+  paper?: ThermalHtmlPaper,
 ): Promise<void> {
   if (!address?.trim()) throw new Error('No Bluetooth printer selected.');
   const payload = sanitizeEscPosText(String(text || '').trim());
   if (!payload.trim()) throw new Error('Nothing to print.');
-  const bytes = await thermalBytes(payload, charsPerLine);
+  const roll: ThermalHtmlPaper = paper ?? (charsPerLine <= 32 ? '58' : '80');
+  const bytes = await thermalBytes(payload, charsPerLine, roll);
   await printBytesViaBluetooth(address, bytes);
 }

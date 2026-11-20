@@ -45,8 +45,8 @@ android {
         applicationId "com.kdspoz.retail"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 7
-        versionName "1.2.1"
+        versionCode 8
+        versionName "1.2.2"
     }
     signingConfigs {
         debug {

@@ -1,0 +1,1243 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { DatabaseSync } = require('node:sqlite');
+const { SCHEMA_SQL } = require('./schema');
+const extra = require('./extra');
+
+/** @type {Map<string, DatabaseSync>} */
+const openDbs = new Map();
+
+function safeShop(shopCode) {
+  return String(shopCode || 'default').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+}
+
+function dbPathFor(userDataPath, shopCode) {
+  const dir = path.join(userDataPath, 'offline', safeShop(shopCode));
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'kdspoz.sqlite');
+}
+
+function migrate(db) {
+  db.exec(SCHEMA_SQL);
+  // Ensure newer columns exist on DBs created before schema v2.
+  try {
+    db.exec(`ALTER TABLE customers ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'`);
+  } catch {
+    /* already exists */
+  }
+  db.prepare(
+    'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).run('schema_version', '2');
+}
+
+/**
+ * Open (or reuse) the per-shop SQLite DB.
+ * Uses Electron/Node built-in `node:sqlite` — no native addon.
+ */
+function openShopDb(userDataPath, shopCode) {
+  const key = safeShop(shopCode);
+  const existing = openDbs.get(key);
+  if (existing) return existing;
+
+  const filePath = dbPathFor(userDataPath, key);
+  const db = new DatabaseSync(filePath);
+  db.exec('PRAGMA foreign_keys = ON;');
+  migrate(db);
+  openDbs.set(key, db);
+  return db;
+}
+
+function closeAll() {
+  for (const [key, db] of openDbs) {
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+    openDbs.delete(key);
+  }
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function getMeta(db, key, fallback = null) {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
+  return row ? row.value : fallback;
+}
+
+function setMeta(db, key, value) {
+  db.prepare(
+    'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).run(key, String(value));
+}
+
+function saveShopSettings(db, settings) {
+  db.prepare(
+    `INSERT INTO shop_settings (id, json, updated_at) VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+  ).run(JSON.stringify(settings ?? null), nowIso());
+}
+
+function readShopSettings(db) {
+  const row = db.prepare('SELECT json FROM shop_settings WHERE id = 1').get();
+  if (!row?.json) return null;
+  try {
+    return JSON.parse(row.json);
+  } catch {
+    return null;
+  }
+}
+
+/** Upsert catalog snapshot. Pass clearProducts:true on a full replace sync. */
+function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false } = {}) {
+  const ts = nowIso();
+  const upsertCat = db.prepare(
+    `INSERT INTO categories (id, name, name_mr, sort_order, status, json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, name_mr = excluded.name_mr, sort_order = excluded.sort_order,
+       status = excluded.status, json = excluded.json, updated_at = excluded.updated_at`,
+  );
+  const upsertBrand = db.prepare(
+    `INSERT INTO brands (id, name, name_mr, status, json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, name_mr = excluded.name_mr, status = excluded.status,
+       json = excluded.json, updated_at = excluded.updated_at`,
+  );
+  const upsertProduct = db.prepare(
+    `INSERT INTO products (id, name, name_mr, category_id, brand_id, is_favorite, status, json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, name_mr = excluded.name_mr, category_id = excluded.category_id,
+       brand_id = excluded.brand_id, is_favorite = excluded.is_favorite, status = excluded.status,
+       json = excluded.json, updated_at = excluded.updated_at`,
+  );
+  const upsertVariant = db.prepare(
+    `INSERT INTO product_variants
+      (id, product_id, sku, barcode, selling_price, cost_price, mrp, stock_qty, unit, json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       product_id = excluded.product_id,
+       sku = excluded.sku,
+       barcode = excluded.barcode,
+       selling_price = excluded.selling_price,
+       cost_price = excluded.cost_price,
+       mrp = excluded.mrp,
+       -- Keep local stock. Catalog pull from live must not wipe offline adds/sales.
+       stock_qty = product_variants.stock_qty,
+       unit = excluded.unit,
+       json = excluded.json,
+       updated_at = excluded.updated_at`,
+  );
+
+  db.exec('BEGIN');
+  try {
+    // Default: upsert only (update existing + insert new). Never wipe the whole catalog
+    // unless an explicit clearProducts flag is passed.
+    if (clearProducts === true && Array.isArray(products)) {
+      db.exec('DELETE FROM product_variants;');
+      db.exec('DELETE FROM products;');
+    }
+    for (const c of categories) {
+      if (!c?.id) continue;
+      upsertCat.run(
+        String(c.id),
+        String(c.name || ''),
+        c.nameMr ?? c.name_mr ?? null,
+        Number(c.sortOrder ?? c.sort_order) || 0,
+        String(c.status || 'active'),
+        JSON.stringify(c),
+        ts,
+      );
+    }
+    for (const b of brands) {
+      if (!b?.id) continue;
+      upsertBrand.run(
+        String(b.id),
+        String(b.name || ''),
+        b.nameMr ?? b.name_mr ?? null,
+        String(b.status || 'active'),
+        JSON.stringify(b),
+        ts,
+      );
+    }
+    for (const p of products) {
+      if (!p?.id) continue;
+      // Preserve local stock on catalog pull — write those qtys into the JSON blob too.
+      const variantsIn = Array.isArray(p.variants) ? p.variants : [];
+      const variantsOut = variantsIn.map((v) => {
+        if (!v?.id) return v;
+        const local = db
+          .prepare(`SELECT stock_qty FROM product_variants WHERE id = ?`)
+          .get(String(v.id));
+        if (!local || clearProducts === true) return v;
+        const qty = Number(local.stock_qty) || 0;
+        return { ...v, stockQty: qty, stock_qty: qty };
+      });
+      const productStock = variantsOut.reduce(
+        (s, v) => s + (Number(v?.stockQty ?? v?.stock_qty) || 0),
+        0,
+      );
+      const productRow = {
+        ...p,
+        variants: variantsOut,
+        stockQty: productStock,
+        stock_qty: productStock,
+      };
+      upsertProduct.run(
+        String(p.id),
+        String(p.name || ''),
+        p.nameMr ?? p.name_mr ?? null,
+        p.categoryId ?? p.category_id ?? null,
+        p.brandId ?? p.brand_id ?? null,
+        p.isFavorite || p.is_favorite ? 1 : 0,
+        String(p.status || 'active'),
+        JSON.stringify(productRow),
+        ts,
+      );
+      for (const v of variantsOut) {
+        if (!v?.id) continue;
+        const barcode =
+          v.barcode ||
+          (Array.isArray(v.barcodes) && v.barcodes[0] && (v.barcodes[0].code || v.barcodes[0])) ||
+          null;
+        upsertVariant.run(
+          String(v.id),
+          String(p.id),
+          String(v.sku || ''),
+          barcode != null ? String(barcode) : null,
+          Number(v.sellingPrice ?? v.selling_price) || 0,
+          Number(v.costPrice ?? v.cost_price) || 0,
+          v.mrp != null ? Number(v.mrp) : null,
+          Number(v.stockQty ?? v.stock_qty) || 0,
+          v.unit || null,
+          JSON.stringify(v),
+          ts,
+        );
+      }
+    }
+    setMeta(db, 'catalog_updated_at', ts);
+    setMeta(db, 'catalog_product_count', String(countProducts(db)));
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+  return { products: products.length, categories: categories.length, brands: brands.length };
+}
+
+/** Overlay live product_variants.stock_qty onto the denormalized products.json blob. */
+function hydrateProductStock(db, product) {
+  if (!product?.id) return product;
+  const rows = db
+    .prepare(`SELECT id, stock_qty FROM product_variants WHERE product_id = ?`)
+    .all(String(product.id));
+  if (!rows.length) return product;
+  const byId = new Map(rows.map((r) => [String(r.id), Number(r.stock_qty) || 0]));
+  const variants = (product.variants || []).map((v) => {
+    if (!v?.id || !byId.has(String(v.id))) return v;
+    const qty = byId.get(String(v.id));
+    return { ...v, stockQty: qty, stock_qty: qty };
+  });
+  const total = variants.reduce((s, v) => s + (Number(v.stockQty ?? v.stock_qty) || 0), 0);
+  return { ...product, variants, stockQty: total, stock_qty: total };
+}
+
+/** Keep products.json variants[].stockQty aligned after column updates. */
+function syncVariantStockIntoProductJson(db, variantId, stockQty) {
+  const id = String(variantId || '').trim();
+  if (!id) return;
+  const row = db.prepare(`SELECT product_id FROM product_variants WHERE id = ?`).get(id);
+  if (!row?.product_id) return;
+  const prod = db.prepare(`SELECT json FROM products WHERE id = ?`).get(String(row.product_id));
+  if (!prod?.json) return;
+  try {
+    const parsed = JSON.parse(prod.json);
+    const qty = Number(stockQty) || 0;
+    if (!Array.isArray(parsed.variants)) return;
+    let touched = false;
+    parsed.variants = parsed.variants.map((v) => {
+      if (String(v?.id) !== id) return v;
+      touched = true;
+      return { ...v, stockQty: qty, stock_qty: qty };
+    });
+    if (!touched) return;
+    const total = parsed.variants.reduce(
+      (s, v) => s + (Number(v.stockQty ?? v.stock_qty) || 0),
+      0,
+    );
+    parsed.stockQty = total;
+    parsed.stock_qty = total;
+    db.prepare(`UPDATE products SET json = ?, updated_at = ? WHERE id = ?`).run(
+      JSON.stringify(parsed),
+      nowIso(),
+      String(row.product_id),
+    );
+  } catch {
+    /* ignore corrupt json */
+  }
+}
+
+function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = null } = {}) {
+  const q = String(search || '').trim();
+  const lim = Math.max(1, Math.min(50000, Math.floor(Number(limit) || 100)));
+  const off = Math.max(0, Math.floor(Number(offset) || 0));
+  const cat = categoryId != null && String(categoryId).trim() ? String(categoryId).trim() : null;
+  let rows;
+  if (q) {
+    const safe = q.replace(/[%_]/g, '');
+    const like = `%${safe}%`;
+    const prefix = `${safe}%`;
+    // Exact / prefix matches first so "Sugar" beats "… sugar free …" in long catalogs.
+    const orderSql = `ORDER BY
+           CASE
+             WHEN name = ? COLLATE NOCASE THEN 0
+             WHEN IFNULL(name_mr,'') = ? COLLATE NOCASE THEN 0
+             WHEN name LIKE ? COLLATE NOCASE THEN 1
+             WHEN IFNULL(name_mr,'') LIKE ? COLLATE NOCASE THEN 1
+             ELSE 2
+           END,
+           is_favorite DESC,
+           name COLLATE NOCASE`;
+    if (cat) {
+      rows = db
+        .prepare(
+          `SELECT json FROM products
+           WHERE status = 'active' AND category_id = ? AND (
+             name LIKE ? COLLATE NOCASE
+             OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
+             OR id IN (SELECT product_id FROM product_variants WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE)
+           )
+           ${orderSql}
+           LIMIT ? OFFSET ?`,
+        )
+        .all(cat, like, like, like, like, safe, safe, prefix, prefix, lim, off);
+    } else {
+      rows = db
+        .prepare(
+          `SELECT json FROM products
+           WHERE status = 'active' AND (
+             name LIKE ? COLLATE NOCASE
+             OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
+             OR id IN (SELECT product_id FROM product_variants WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE)
+           )
+           ${orderSql}
+           LIMIT ? OFFSET ?`,
+        )
+        .all(like, like, like, like, safe, safe, prefix, prefix, lim, off);
+    }
+  } else if (cat) {
+    rows = db
+      .prepare(
+        `SELECT json FROM products
+         WHERE status = 'active' AND category_id = ?
+         ORDER BY is_favorite DESC, name COLLATE NOCASE
+         LIMIT ? OFFSET ?`,
+      )
+      .all(cat, lim, off);
+  } else {
+    rows = db
+      .prepare(
+        `SELECT json FROM products
+         WHERE status = 'active'
+         ORDER BY is_favorite DESC, name COLLATE NOCASE
+         LIMIT ? OFFSET ?`,
+      )
+      .all(lim, off);
+  }
+  return rows
+    .map((r) => {
+      try {
+        return JSON.parse(r.json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .map((p) => hydrateProductStock(db, p));
+}
+
+function getProduct(db, id) {
+  const pid = String(id || '').trim();
+  if (!pid) return null;
+  const row = db.prepare(`SELECT json FROM products WHERE id = ?`).get(pid);
+  if (!row?.json) return null;
+  try {
+    return hydrateProductStock(db, JSON.parse(row.json));
+  } catch {
+    return null;
+  }
+}
+
+function countProducts(db) {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM products WHERE status = 'active'`).get();
+  return Number(row?.n) || 0;
+}
+
+function listCategories(db) {
+  return db
+    .prepare(`SELECT json FROM categories ORDER BY sort_order ASC, name COLLATE NOCASE`)
+    .all()
+    .map((r) => {
+      try {
+        return JSON.parse(r.json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function listBrands(db) {
+  return db
+    .prepare(`SELECT json FROM brands ORDER BY name COLLATE NOCASE`)
+    .all()
+    .map((r) => {
+      try {
+        return JSON.parse(r.json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function replaceCustomers(db, customers = []) {
+  const ts = nowIso();
+  const upsert = db.prepare(
+    `INSERT INTO customers (id, name, phone, json, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, phone = excluded.phone, json = excluded.json, updated_at = excluded.updated_at`,
+  );
+  db.exec('BEGIN');
+  try {
+    // Upsert only: update existing customers, insert new ones. Never wipe local rows.
+    for (const c of customers) {
+      if (!c?.id) continue;
+      upsert.run(
+        String(c.id),
+        String(c.name || ''),
+        c.phone != null ? String(c.phone) : null,
+        JSON.stringify(c),
+        ts,
+      );
+    }
+    setMeta(db, 'customers_updated_at', ts);
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+  return { customers: customers.length };
+}
+
+function listCustomers(db, { search = '', limit = 200 } = {}) {
+  const q = String(search || '').trim();
+  const lim = Math.max(1, Math.min(5000, Math.floor(Number(limit) || 200)));
+  let rows;
+  if (q) {
+    const like = `%${q.replace(/[%_]/g, '')}%`;
+    rows = db
+      .prepare(
+        `SELECT json FROM customers
+         WHERE name LIKE ? COLLATE NOCASE OR IFNULL(phone,'') LIKE ?
+         ORDER BY name COLLATE NOCASE
+         LIMIT ?`,
+      )
+      .all(like, like, lim);
+  } else {
+    rows = db
+      .prepare(`SELECT json FROM customers ORDER BY name COLLATE NOCASE LIMIT ?`)
+      .all(lim);
+  }
+  return rows
+    .map((r) => {
+      try {
+        return JSON.parse(r.json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function upsertCustomer(db, customer) {
+  if (!customer?.id) throw new Error('customer.id required');
+  const ts = nowIso();
+  db.prepare(
+    `INSERT INTO customers (id, name, phone, json, updated_at, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, phone = excluded.phone, json = excluded.json,
+       updated_at = excluded.updated_at, sync_status = excluded.sync_status`,
+  ).run(
+    String(customer.id),
+    String(customer.name || ''),
+    customer.phone != null ? String(customer.phone) : null,
+    JSON.stringify(customer),
+    ts,
+    customer.sync_status || customer.syncStatus || 'pending',
+  );
+  return { id: String(customer.id) };
+}
+
+function adjustVariantStock(db, variantId, deltaQty) {
+  const id = String(variantId || '').trim();
+  if (!id) return;
+  db.prepare(
+    `UPDATE product_variants
+     SET stock_qty = MAX(0, stock_qty + ?), updated_at = ?
+     WHERE id = ?`,
+  ).run(Number(deltaQty) || 0, nowIso(), id);
+  const row = db.prepare(`SELECT stock_qty FROM product_variants WHERE id = ?`).get(id);
+  if (row) syncVariantStockIntoProductJson(db, id, row.stock_qty);
+}
+
+function saveSale(db, sale) {
+  const clientBillId = String(sale.clientBillId || '').trim();
+  if (!clientBillId) throw new Error('clientBillId required');
+  const bill = sale.bill || {};
+  const payload = sale.payload || {};
+  const ts = sale.createdAt || nowIso();
+
+  const insertSale = db.prepare(
+    `INSERT INTO sales (
+      client_bill_id, server_bill_id, bill_number, status, customer_id, customer_name,
+      subtotal, discount_amount, tax_amount, round_off_amount, total_amount, paid_amount, change_amount,
+      payload_json, bill_json, sync_status, sync_attempts, last_error, created_at, synced_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(client_bill_id) DO UPDATE SET
+      server_bill_id = COALESCE(excluded.server_bill_id, sales.server_bill_id),
+      bill_number = excluded.bill_number,
+      status = excluded.status,
+      customer_id = excluded.customer_id,
+      customer_name = excluded.customer_name,
+      subtotal = excluded.subtotal,
+      discount_amount = excluded.discount_amount,
+      tax_amount = excluded.tax_amount,
+      round_off_amount = excluded.round_off_amount,
+      total_amount = excluded.total_amount,
+      paid_amount = excluded.paid_amount,
+      change_amount = excluded.change_amount,
+      payload_json = excluded.payload_json,
+      bill_json = excluded.bill_json,
+      sync_status = excluded.sync_status,
+      sync_attempts = excluded.sync_attempts,
+      last_error = excluded.last_error,
+      synced_at = COALESCE(excluded.synced_at, sales.synced_at)`,
+  );
+  const deleteItems = db.prepare('DELETE FROM sale_items WHERE client_bill_id = ?');
+  const deletePays = db.prepare('DELETE FROM sale_payments WHERE client_bill_id = ?');
+  const insertItem = db.prepare(
+    `INSERT INTO sale_items (
+      id, client_bill_id, line_no, variant_id, product_name, product_name_mr, sku,
+      quantity, unit_price, mrp, discount_amount, line_total, is_custom
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const insertPay = db.prepare(
+    `INSERT INTO sale_payments (id, client_bill_id, mode, amount, reference_number)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+
+  db.exec('BEGIN');
+  try {
+    insertSale.run(
+      clientBillId,
+      sale.serverBillId || null,
+      String(bill.bill_number || sale.billNumber || `OFF-${clientBillId.slice(0, 8)}`),
+      String(bill.status || 'completed'),
+      bill.customer?.id || payload.customerId || null,
+      bill.customer?.name || payload.customerName || null,
+      Number(bill.subtotal) || 0,
+      Number(bill.discount_amount) || 0,
+      Number(bill.tax_amount) || 0,
+      Number(bill.round_off_amount) || 0,
+      Number(bill.total_amount) || 0,
+      Number(bill.paid_amount) || 0,
+      Number(bill.change_amount) || 0,
+      JSON.stringify(payload),
+      JSON.stringify(bill),
+      sale.syncStatus || 'pending',
+      Number(sale.syncAttempts) || 0,
+      sale.lastError || null,
+      ts,
+      sale.syncedAt || null,
+    );
+    deleteItems.run(clientBillId);
+    deletePays.run(clientBillId);
+    (bill.items || []).forEach((item, idx) => {
+      // Always scope line ids to this bill — server/local payloads often reuse
+      // short ids like "local-item-0" which collide across sales (global PK).
+      const lineId = `${clientBillId}-i${idx}`;
+      insertItem.run(
+        lineId,
+        clientBillId,
+        idx,
+        item.variant_id || item.variantId || null,
+        String(item.product_name || item.productName || ''),
+        item.product_name_mr ?? item.productNameMr ?? null,
+        item.sku || '',
+        Number(item.quantity) || 0,
+        Number(item.unit_price ?? item.unitPrice) || 0,
+        item.mrp != null ? Number(item.mrp) : null,
+        Number(item.discount_amount ?? item.discountAmount) || 0,
+        Number(item.line_total ?? item.lineTotal) || 0,
+        item.isCustom || item.is_custom ? 1 : 0,
+      );
+    });
+    (bill.payments || payload.payments || []).forEach((p, idx) => {
+      insertPay.run(
+        `${clientBillId}-p${idx}`,
+        clientBillId,
+        String(p.payment_mode || p.mode || 'cash'),
+        Number(p.amount) || 0,
+        p.reference_number || p.referenceNumber || null,
+      );
+    });
+
+    // Reduce local stock for completed pending sales (once on insert).
+    if ((sale.syncStatus || 'pending') === 'pending' && !sale.skipStock) {
+      for (const item of bill.items || []) {
+        const vid = item.variant_id || item.variantId;
+        if (!vid || String(vid).startsWith('custom-')) continue;
+        adjustVariantStock(db, vid, -(Number(item.quantity) || 0));
+      }
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+  return { clientBillId };
+}
+
+function listPendingSales(db) {
+  const rows = db
+    .prepare(
+      `SELECT client_bill_id, payload_json, bill_json, sync_attempts, last_error, created_at
+       FROM sales
+       WHERE sync_status = 'pending'
+       ORDER BY created_at ASC`,
+    )
+    .all();
+  return rows.map((r) => ({
+    clientBillId: r.client_bill_id,
+    createdAt: r.created_at,
+    payload: JSON.parse(r.payload_json),
+    bill: JSON.parse(r.bill_json),
+    syncAttempts: Number(r.sync_attempts) || 0,
+    lastError: r.last_error || undefined,
+  }));
+}
+
+function markSaleSynced(db, clientBillId, serverBillId) {
+  db.prepare(
+    `UPDATE sales
+     SET sync_status = 'synced', server_bill_id = ?, synced_at = ?, last_error = NULL
+     WHERE client_bill_id = ?`,
+  ).run(serverBillId || null, nowIso(), String(clientBillId));
+}
+
+function markSaleSyncError(db, clientBillId, message, attempts) {
+  db.prepare(
+    `UPDATE sales
+     SET sync_attempts = ?, last_error = ?
+     WHERE client_bill_id = ?`,
+  ).run(Number(attempts) || 0, String(message || ''), String(clientBillId));
+}
+
+function pendingSaleCount(db) {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM sales WHERE sync_status = 'pending'`).get();
+  return Number(row?.n) || 0;
+}
+
+function getStatus(db) {
+  const pendingQueue = db
+    .prepare(`SELECT COUNT(*) AS n FROM sync_queue WHERE sync_status = 'pending'`)
+    .get();
+  const held = db.prepare(`SELECT COUNT(*) AS n FROM held_bills`).get();
+  return {
+    schemaVersion: Number(getMeta(db, 'schema_version', '0')) || 0,
+    catalogUpdatedAt: getMeta(db, 'catalog_updated_at'),
+    catalogProductCount: Number(getMeta(db, 'catalog_product_count', '0')) || countProducts(db),
+    pendingSales: pendingSaleCount(db),
+    pendingQueue: Number(pendingQueue?.n) || 0,
+    heldCount: Number(held?.n) || 0,
+  };
+}
+
+function saveAuthSession(db, session) {
+  db.prepare(
+    `INSERT INTO auth_session (
+      id, shop_code, mobile, password_hash, salt, access_token, refresh_token, user_json, tenant_json, updated_at
+    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      shop_code = excluded.shop_code,
+      mobile = excluded.mobile,
+      password_hash = excluded.password_hash,
+      salt = excluded.salt,
+      access_token = excluded.access_token,
+      refresh_token = excluded.refresh_token,
+      user_json = excluded.user_json,
+      tenant_json = excluded.tenant_json,
+      updated_at = excluded.updated_at`,
+  ).run(
+    String(session.shopCode || ''),
+    String(session.mobile || ''),
+    String(session.passwordHash || ''),
+    String(session.salt || ''),
+    session.accessToken || null,
+    session.refreshToken || null,
+    JSON.stringify(session.user || {}),
+    JSON.stringify(session.tenant || {}),
+    nowIso(),
+  );
+}
+
+function readAuthSession(db) {
+  const row = db.prepare('SELECT * FROM auth_session WHERE id = 1').get();
+  if (!row) return null;
+  return {
+    shopCode: row.shop_code,
+    mobile: row.mobile,
+    passwordHash: row.password_hash,
+    salt: row.salt,
+    accessToken: row.access_token,
+    refreshToken: row.refresh_token,
+    user: JSON.parse(row.user_json || '{}'),
+    tenant: JSON.parse(row.tenant_json || '{}'),
+    updatedAt: row.updated_at,
+  };
+}
+
+/** UI sends YYYY-MM-DD; sales store full ISO times — expand so the whole day is included. */
+function dayBoundStart(value) {
+  const s = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
+  return s;
+}
+function dayBoundEnd(value) {
+  const s = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T23:59:59.999Z`;
+  return s;
+}
+
+function listSales(db, { search = '', status, from, to, limit = 500, offset = 0 } = {}) {
+  const lim = Math.max(1, Math.min(5000, Math.floor(Number(limit) || 500)));
+  const off = Math.max(0, Math.floor(Number(offset) || 0));
+  const where = [];
+  const params = [];
+  if (status) {
+    where.push('status = ?');
+    params.push(String(status));
+  }
+  if (from) {
+    where.push('created_at >= ?');
+    params.push(dayBoundStart(from));
+  }
+  if (to) {
+    where.push('created_at <= ?');
+    params.push(dayBoundEnd(to));
+  }
+  if (search && String(search).trim()) {
+    const like = `%${String(search).trim().replace(/[%_]/g, '')}%`;
+    where.push('(bill_number LIKE ? COLLATE NOCASE OR IFNULL(customer_name,\'\') LIKE ? COLLATE NOCASE)');
+    params.push(like, like);
+  }
+  const sql = `
+    SELECT client_bill_id, server_bill_id, bill_number, status, total_amount, paid_amount,
+           customer_name, created_at, bill_json, sync_status
+    FROM sales
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?`;
+  params.push(lim, off);
+  const rows = db.prepare(sql).all(...params);
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) AS n FROM sales ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`)
+    .get(...params.slice(0, -2));
+  return {
+    items: rows.map((r) => {
+      let bill = {};
+      try {
+        bill = JSON.parse(r.bill_json || '{}');
+      } catch {
+        bill = {};
+      }
+      return {
+        ...bill,
+        id: r.server_bill_id || r.client_bill_id,
+        client_bill_id: r.client_bill_id,
+        bill_number: r.bill_number,
+        status: r.status,
+        total_amount: r.total_amount,
+        paid_amount: r.paid_amount,
+        created_at: r.created_at,
+        customerName: r.customer_name,
+        sync_status: r.sync_status,
+        is_returnable: r.status === 'completed',
+      };
+    }),
+    pagination: {
+      page: Math.floor(off / lim) + 1,
+      limit: lim,
+      total: Number(totalRow?.n) || 0,
+      totalPages: Math.max(1, Math.ceil((Number(totalRow?.n) || 0) / lim)),
+    },
+  };
+}
+
+function getSale(db, id) {
+  const key = String(id || '').trim();
+  if (!key) return null;
+  const row = db
+    .prepare(
+      `SELECT * FROM sales WHERE client_bill_id = ? OR server_bill_id = ? OR bill_number = ? LIMIT 1`,
+    )
+    .get(key, key, key);
+  if (!row) return null;
+  try {
+    const bill = JSON.parse(row.bill_json || '{}');
+    return {
+      ...bill,
+      id: row.server_bill_id || row.client_bill_id,
+      client_bill_id: row.client_bill_id,
+      bill_number: row.bill_number,
+      status: row.status,
+      sync_status: row.sync_status,
+      created_at: row.created_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveHeldBill(db, held) {
+  const id = String(held.id || '').trim();
+  if (!id) throw new Error('held.id required');
+  const ts = nowIso();
+  db.prepare(
+    `INSERT INTO held_bills (id, name, customer_id, cart_json, sync_status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       customer_id = excluded.customer_id,
+       cart_json = excluded.cart_json,
+       updated_at = excluded.updated_at`,
+  ).run(
+    id,
+    String(held.name || 'Held'),
+    held.customerId || null,
+    JSON.stringify(held.cartData || held.cart_json || {}),
+    held.syncStatus || 'pending',
+    held.createdAt || ts,
+    ts,
+  );
+  return { id };
+}
+
+function listHeldBills(db) {
+  return db
+    .prepare(`SELECT * FROM held_bills ORDER BY updated_at DESC`)
+    .all()
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      customerId: r.customer_id,
+      cartData: JSON.parse(r.cart_json || '{}'),
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      sync_status: r.sync_status,
+    }));
+}
+
+function deleteHeldBill(db, id) {
+  db.prepare(`DELETE FROM held_bills WHERE id = ?`).run(String(id));
+}
+
+function enqueueSync(db, { entityType, entityId, op, payload }) {
+  const id = `${entityType}:${entityId}:${op}:${Date.now()}`;
+  db.prepare(
+    `INSERT INTO sync_queue (id, entity_type, entity_id, op, payload_json, sync_status, sync_attempts, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
+  ).run(id, String(entityType), String(entityId), String(op), JSON.stringify(payload || {}), nowIso());
+  return { id };
+}
+
+function listPendingSyncQueue(db) {
+  return db
+    .prepare(`SELECT * FROM sync_queue WHERE sync_status = 'pending' ORDER BY created_at ASC`)
+    .all()
+    .map((r) => ({
+      id: r.id,
+      entityType: r.entity_type,
+      entityId: r.entity_id,
+      op: r.op,
+      payload: JSON.parse(r.payload_json || '{}'),
+      syncAttempts: r.sync_attempts,
+      lastError: r.last_error,
+      createdAt: r.created_at,
+    }));
+}
+
+function markSyncQueueDone(db, id) {
+  db.prepare(`UPDATE sync_queue SET sync_status = 'synced' WHERE id = ?`).run(String(id));
+}
+
+function markSyncQueueError(db, id, message, attempts) {
+  db.prepare(
+    `UPDATE sync_queue SET sync_attempts = ?, last_error = ? WHERE id = ?`,
+  ).run(Number(attempts) || 0, String(message || ''), String(id));
+}
+
+function replaceJsonTable(db, table, rows, idKey = 'id') {
+  const ts = nowIso();
+  db.exec('BEGIN');
+  try {
+    // Upsert only — keep local rows that are not in this batch.
+    const stmt = db.prepare(
+      `INSERT INTO ${table} (id, json, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+    );
+    for (const row of rows || []) {
+      const id = row?.[idKey] || row?.id;
+      if (!id) continue;
+      stmt.run(String(id), JSON.stringify(row), ts);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+  return { count: (rows || []).length };
+}
+
+function listJsonTable(db, table) {
+  return db
+    .prepare(`SELECT json FROM ${table}`)
+    .all()
+    .map((r) => {
+      try {
+        return JSON.parse(r.json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function saveExpense(db, expense) {
+  const id = String(expense.id || '').trim();
+  if (!id) throw new Error('expense.id required');
+  db.prepare(
+    `INSERT INTO expenses (id, category_id, amount, note, expense_date, json, sync_status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       category_id = excluded.category_id,
+       amount = excluded.amount,
+       note = excluded.note,
+       expense_date = excluded.expense_date,
+       json = excluded.json,
+       sync_status = excluded.sync_status`,
+  ).run(
+    id,
+    expense.categoryId || expense.category_id || null,
+    Number(expense.amount) || 0,
+    expense.note || null,
+    String(expense.expenseDate || expense.expense_date || nowIso().slice(0, 10)),
+    JSON.stringify(expense),
+    expense.syncStatus || 'pending',
+    expense.createdAt || nowIso(),
+  );
+  return { id };
+}
+
+function listExpenses(db, { from, to, limit = 200 } = {}) {
+  const where = [];
+  const params = [];
+  if (from) {
+    where.push('expense_date >= ?');
+    params.push(String(from));
+  }
+  if (to) {
+    where.push('expense_date <= ?');
+    params.push(String(to));
+  }
+  params.push(Math.max(1, Math.min(2000, Number(limit) || 200)));
+  return db
+    .prepare(
+      `SELECT json FROM expenses
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY expense_date DESC, created_at DESC
+       LIMIT ?`,
+    )
+    .all(...params)
+    .map((r) => {
+      try {
+        return JSON.parse(r.json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+/** Local dashboard aggregates from sales / stock / held / customers. */
+function buildDashboard(db) {
+  const today = nowIso().slice(0, 10);
+  const daySum = (datePrefix) => {
+    const row = db
+      .prepare(
+        `SELECT IFNULL(SUM(total_amount),0) AS revenue, COUNT(*) AS orders
+         FROM sales WHERE status = 'completed' AND created_at LIKE ?`,
+      )
+      .get(`${datePrefix}%`);
+    return { revenue: Number(row?.revenue) || 0, orders: Number(row?.orders) || 0 };
+  };
+  const todayStats = daySum(today);
+  const y = new Date();
+  y.setDate(y.getDate() - 1);
+  const yIso = y.toISOString().slice(0, 10);
+  const yesterdayStats = daySum(yIso);
+  const monthPrefix = today.slice(0, 7);
+  const monthRow = db
+    .prepare(
+      `SELECT IFNULL(SUM(total_amount),0) AS revenue, COUNT(*) AS orders
+       FROM sales WHERE status = 'completed' AND created_at LIKE ?`,
+    )
+    .get(`${monthPrefix}%`);
+  const payments = db
+    .prepare(
+      `SELECT mode, IFNULL(SUM(amount),0) AS amount, COUNT(*) AS count
+       FROM sale_payments sp
+       JOIN sales s ON s.client_bill_id = sp.client_bill_id
+       WHERE s.status = 'completed' AND s.created_at LIKE ?
+       GROUP BY mode`,
+    )
+    .all(`${today}%`)
+    .map((r) => ({ mode: r.mode, amount: Number(r.amount) || 0, count: Number(r.count) || 0 }));
+  const recent = listSales(db, { limit: 8, offset: 0 }).items;
+  const lowStock = db
+    .prepare(
+      `SELECT v.id, v.sku, p.name, v.stock_qty AS quantity
+       FROM product_variants v
+       JOIN products p ON p.id = v.product_id
+       WHERE v.stock_qty <= 5
+       ORDER BY v.stock_qty ASC
+       LIMIT 20`,
+    )
+    .all()
+    .map((r) => ({
+      id: r.id,
+      sku: r.sku,
+      name: r.name,
+      quantity: Number(r.quantity) || 0,
+      reorderLevel: 5,
+    }));
+  const best = db
+    .prepare(
+      `SELECT product_name, IFNULL(SUM(quantity),0) AS totalQty, IFNULL(SUM(line_total),0) AS revenue
+       FROM sale_items si
+       JOIN sales s ON s.client_bill_id = si.client_bill_id
+       WHERE s.status = 'completed' AND s.created_at LIKE ?
+       GROUP BY product_name
+       ORDER BY totalQty DESC
+       LIMIT 8`,
+    )
+    .all(`${monthPrefix}%`)
+    .map((r) => ({
+      product_name: r.product_name,
+      totalQty: Number(r.totalQty) || 0,
+      revenue: Number(r.revenue) || 0,
+    }));
+  const customersCount = db.prepare(`SELECT COUNT(*) AS n FROM customers`).get();
+  const heldCount = db.prepare(`SELECT COUNT(*) AS n FROM held_bills`).get();
+  const outOfStock = db
+    .prepare(`SELECT COUNT(*) AS n FROM product_variants WHERE stock_qty <= 0`)
+    .get();
+  const expenseToday = db
+    .prepare(`SELECT IFNULL(SUM(amount),0) AS n FROM expenses WHERE expense_date = ?`)
+    .get(today);
+  const expenseMonth = db
+    .prepare(`SELECT IFNULL(SUM(amount),0) AS n FROM expenses WHERE expense_date LIKE ?`)
+    .get(`${monthPrefix}%`);
+
+  const orders = todayStats.orders;
+  return {
+    todaySales: todayStats.revenue,
+    yesterdaySales: yesterdayStats.revenue,
+    salesDeltaPct:
+      yesterdayStats.revenue > 0
+        ? ((todayStats.revenue - yesterdayStats.revenue) / yesterdayStats.revenue) * 100
+        : 0,
+    monthSales: Number(monthRow?.revenue) || 0,
+    ordersCount: orders,
+    yesterdayOrdersCount: yesterdayStats.orders,
+    monthOrdersCount: Number(monthRow?.orders) || 0,
+    avgTicket: orders > 0 ? todayStats.revenue / orders : 0,
+    todayProfit: 0,
+    monthProfit: 0,
+    todayExpenses: Number(expenseToday?.n) || 0,
+    monthExpenses: Number(expenseMonth?.n) || 0,
+    heldCount: Number(heldCount?.n) || 0,
+    customersCount: Number(customersCount?.n) || 0,
+    returnsToday: 0,
+    outOfStockCount: Number(outOfStock?.n) || 0,
+    lowStockCount: lowStock.length,
+    lowStock,
+    bestSellers: best,
+    paymentBreakdown: payments,
+    hourlySales: [],
+    weekTrend: [],
+    recentTransactions: recent.map((b) => ({
+      id: b.id,
+      bill_number: b.bill_number,
+      total_amount: b.total_amount,
+      created_at: b.created_at,
+      customerName: b.customerName || null,
+    })),
+  };
+}
+
+function buildSalesReport(db, { from, to } = {}) {
+  from = from ? dayBoundStart(from) : from;
+  to = to ? dayBoundEnd(to) : to;
+  const where = [`status = 'completed'`];
+  const params = [];
+  if (from) {
+    where.push('created_at >= ?');
+    params.push(String(from));
+  }
+  if (to) {
+    where.push('created_at <= ?');
+    params.push(String(to));
+  }
+  const summary = db
+    .prepare(
+      `SELECT IFNULL(SUM(total_amount),0) AS revenue,
+              IFNULL(SUM(discount_amount),0) AS discount,
+              IFNULL(SUM(tax_amount),0) AS tax,
+              COUNT(*) AS bills
+       FROM sales WHERE ${where.join(' AND ')}`,
+    )
+    .get(...params);
+  const byDay = db
+    .prepare(
+      `SELECT substr(created_at,1,10) AS day,
+              IFNULL(SUM(total_amount),0) AS revenue,
+              COUNT(*) AS bills
+       FROM sales WHERE ${where.join(' AND ')}
+       GROUP BY substr(created_at,1,10)
+       ORDER BY day ASC`,
+    )
+    .all(...params);
+  return {
+    revenue: Number(summary?.revenue) || 0,
+    discount: Number(summary?.discount) || 0,
+    tax: Number(summary?.tax) || 0,
+    bills: Number(summary?.bills) || 0,
+    byDay: byDay.map((r) => ({
+      day: r.day,
+      revenue: Number(r.revenue) || 0,
+      bills: Number(r.bills) || 0,
+    })),
+  };
+}
+
+/**
+ * One-time import of legacy JSON outbox files into SQLite.
+ */
+function importLegacyOutbox(db, offlineRoot) {
+  const outboxDir = path.join(offlineRoot, 'outbox');
+  if (!fs.existsSync(outboxDir)) return 0;
+  let imported = 0;
+  for (const name of fs.readdirSync(outboxDir)) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const raw = fs.readFileSync(path.join(outboxDir, name), 'utf8');
+      const sale = JSON.parse(raw);
+      if (!sale?.clientBillId) continue;
+      const exists = db.prepare('SELECT 1 AS x FROM sales WHERE client_bill_id = ?').get(sale.clientBillId);
+      if (exists) continue;
+      saveSale(db, {
+        ...sale,
+        syncStatus: 'pending',
+        skipStock: true, // stock already reduced when JSON outbox was written
+      });
+      imported += 1;
+    } catch {
+      /* skip bad file */
+    }
+  }
+  if (imported > 0) setMeta(db, 'legacy_outbox_imported_at', nowIso());
+  return imported;
+}
+
+module.exports = {
+  openShopDb,
+  closeAll,
+  dbPathFor,
+  safeShop,
+  getStatus,
+  saveShopSettings,
+  readShopSettings,
+  replaceCatalog,
+  listProducts,
+  getProduct,
+  countProducts,
+  listCategories,
+  listBrands,
+  replaceCustomers,
+  listCustomers,
+  upsertCustomer,
+  adjustVariantStock,
+  saveSale,
+  listPendingSales,
+  markSaleSynced,
+  markSaleSyncError,
+  pendingSaleCount,
+  importLegacyOutbox,
+  setMeta,
+  getMeta,
+  nowIso,
+  saveAuthSession,
+  readAuthSession,
+  listSales,
+  getSale,
+  saveHeldBill,
+  listHeldBills,
+  deleteHeldBill,
+  enqueueSync,
+  listPendingSyncQueue,
+  markSyncQueueDone,
+  markSyncQueueError,
+  replaceJsonTable,
+  listJsonTable,
+  saveExpense,
+  listExpenses,
+  buildDashboard,
+  buildSalesReport,
+  ...extra,
+};

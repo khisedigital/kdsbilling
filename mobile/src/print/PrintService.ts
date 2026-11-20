@@ -63,13 +63,17 @@ function decodeBase64(value: string): number[] {
   return out;
 }
 
-/** Android has no canvas. Marathi lines are drawn by the native receipt raster. */
+/** Native phones have no DOM canvas. Marathi lines use the native receipt raster. */
 async function receiptBytes(plainOrMarkup: string, charsPerLine: number): Promise<number[]> {
   const plain = toPlainReceipt(plainOrMarkup, charsPerLine);
   const native = NativeModules.KdsLabelPrinter as
     | { encodeReceipt?: (text: string, cols: number) => Promise<string> }
     | undefined;
-  if (Platform.OS === 'android' && hasDevanagari(plain) && native?.encodeReceipt) {
+  if (
+    (Platform.OS === 'android' || Platform.OS === 'ios') &&
+    hasDevanagari(plain) &&
+    native?.encodeReceipt
+  ) {
     const encoded = await native.encodeReceipt(plain, charsPerLine);
     const bytes = decodeBase64(String(encoded || ''));
     if (bytes.length) return bytes;
@@ -174,7 +178,7 @@ export async function printViaBluetooth(
 
   const iosBle = getIosBle();
   if (iosBle) {
-    const bytes = buildEscPosBytes(payload, charsPerLine);
+    const bytes = await receiptBytes(payload, charsPerLine);
     if (!bytes.length) throw new Error('Nothing to print.');
     await iosBle.print(address, bytesToBase64(bytes));
     return;
@@ -184,6 +188,9 @@ export async function printViaBluetooth(
   await printPayload('RNBLEPrinter', payload, charsPerLine);
   await delay(estimatePrintFlushMs(payload));
 }
+
+/** Serialize Wi‑Fi prints on phone — same rule as desktop :9100 FIFO. */
+let mobileNetChain: Promise<void> = Promise.resolve();
 
 export async function printViaNetwork(
   host: string,
@@ -199,17 +206,26 @@ export async function printViaNetwork(
   const payload = sanitizeEscPosText(source);
   if (!payload.trim()) throw new Error('Nothing to print.');
 
-  const iosNet = getIosNet();
-  if (iosNet) {
-    const bytes = buildEscPosBytes(payload, charsPerLine);
-    if (!bytes.length) throw new Error('Nothing to print.');
-    await iosNet.printRaw(host.trim(), port, bytesToBase64(bytes));
-    return;
-  }
+  const run = async () => {
+    const iosNet = getIosNet();
+    if (iosNet) {
+      const bytes = await receiptBytes(payload, charsPerLine);
+      if (!bytes.length) throw new Error('Nothing to print.');
+      await iosNet.printRaw(host.trim(), port, bytesToBase64(bytes));
+    } else {
+      await ensureNetConnected(host, port);
+      await printPayload('RNNetPrinter', payload, charsPerLine);
+    }
+    // Head needs wall time after the socket write (same as desktop linger).
+    await delay(Math.max(estimatePrintFlushMs(payload), 3500));
+  };
 
-  await ensureNetConnected(host, port);
-  await printPayload('RNNetPrinter', payload, charsPerLine);
-  await delay(estimatePrintFlushMs(payload));
+  const next = mobileNetChain.then(run, run);
+  mobileNetChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  await next;
 }
 
 /** Sends ready-made ESC/POS commands to a Bluetooth printer. */
@@ -281,4 +297,12 @@ export async function printViaSystem(
   _paper?: '58' | '80',
 ): Promise<void> {
   throw new Error('Installed system printers are only available in the desktop app.');
+}
+
+/** No-op on mobile — system queues only exist in the desktop app. */
+export function primeSystemPrinter(_printerName?: string | null): void {}
+
+/** No-op on native — canvas font warm-up is desktop/web only. */
+export function prewarmIndicFont(): Promise<void> {
+  return Promise.resolve();
 }

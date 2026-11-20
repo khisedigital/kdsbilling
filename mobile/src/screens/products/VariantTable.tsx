@@ -1,10 +1,10 @@
-import React, { useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
-import { Button, Portal, Text } from 'react-native-paper';
+import React, { useState } from 'react';
+import { Modal, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
+import { Button, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
-import { radius, spacing } from '../../theme/layout';
+import { dialogCard, radius, spacing } from '../../theme/layout';
 import type { VariantProfile } from '../../utils/variantProfile';
 import { variantProfileForBusinessType } from '../../utils/variantProfile';
 
@@ -66,19 +66,15 @@ function CellSelect({
   onChange: (value: string) => void;
 }) {
   const t = useT();
-  const anchorRef = useRef<View>(null);
+  const { width: windowWidth } = useWindowDimensions();
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState('');
-  const [anchor, setAnchor] = useState({ x: 0, y: 0, width: 160, height: 36 });
   const selected = options.find((item) => item.value === value);
   const swatch = selected?.swatch || (value ? swatchFor(value) : undefined);
 
   const openMenu = () => {
-    anchorRef.current?.measureInWindow((x, y, width, height) => {
-      setAnchor({ x, y, width: Math.max(width, 168), height });
-      setCustom('');
-      setOpen(true);
-    });
+    setCustom('');
+    setOpen(true);
   };
 
   const choose = (next: string) => {
@@ -88,64 +84,60 @@ function CellSelect({
 
   return (
     <>
-      <View ref={anchorRef} collapsable={false}>
-        <Pressable onPress={openMenu} style={styles.select}>
-          {swatch ? (
-            <View style={[styles.swatch, { backgroundColor: swatch }, swatch === '#F4F4F5' && styles.swatchBorder]} />
-          ) : null}
-          <Text style={[styles.selectText, !value && styles.placeholder]} numberOfLines={1}>
-            {value ? (selected?.label || value) : t(placeholder)}
-          </Text>
-          <Icon name="chevron-down" size={16} color={colors.textMuted} />
-        </Pressable>
-      </View>
-      {open ? (
-        <Portal>
-          <View style={styles.portal} pointerEvents="box-none">
-            <Pressable style={styles.backdrop} onPress={() => setOpen(false)} />
-            <View style={[styles.menu, { top: anchor.y + anchor.height + 4, left: anchor.x, width: anchor.width }]}>
-              <ScrollView style={styles.menuScroll} keyboardShouldPersistTaps="handled">
-                {options.map((item) => {
-                  const active = item.value === value;
-                  return (
-                    <Pressable
-                      key={item.value}
-                      onPress={() => choose(item.value)}
-                      style={[styles.menuItem, active && styles.menuItemOn]}>
-                      {item.swatch ? (
-                        <View
-                          style={[
-                            styles.swatch,
-                            { backgroundColor: item.swatch },
-                            item.swatch === '#F4F4F5' && styles.swatchBorder,
-                          ]}
-                        />
-                      ) : null}
-                      <Text style={[styles.menuLabel, active && styles.menuLabelOn]} numberOfLines={1}>
-                        {item.label}
-                      </Text>
-                      {active ? <Icon name="check" size={16} color={colors.primary} /> : null}
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-              <View style={styles.customRow}>
-                <TextInput
-                  value={custom}
-                  onChangeText={setCustom}
-                  placeholder={t('Custom')}
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.customInput}
-                  onSubmitEditing={() => {
-                    const next = custom.trim();
-                    if (next) choose(next);
-                  }}
-                />
-              </View>
+      <Pressable onPress={openMenu} style={styles.select}>
+        {swatch ? (
+          <View style={[styles.swatch, { backgroundColor: swatch }, swatch === '#F4F4F5' && styles.swatchBorder]} />
+        ) : null}
+        <Text style={[styles.selectText, !value && styles.placeholder]} numberOfLines={1}>
+          {value ? (selected?.label || value) : t(placeholder)}
+        </Text>
+        <Icon name="chevron-down" size={16} color={colors.textMuted} />
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.backdrop} onPress={() => setOpen(false)} />
+          <View style={[styles.menu, { width: Math.min(windowWidth - 48, 320) }]}>
+            <ScrollView style={styles.menuScroll} keyboardShouldPersistTaps="handled">
+              {options.map((item) => {
+                const active = item.value === value;
+                return (
+                  <Pressable
+                    key={item.value}
+                    onPress={() => choose(item.value)}
+                    style={[styles.menuItem, active && styles.menuItemOn]}>
+                    {item.swatch ? (
+                      <View
+                        style={[
+                          styles.swatch,
+                          { backgroundColor: item.swatch },
+                          item.swatch === '#F4F4F5' && styles.swatchBorder,
+                        ]}
+                      />
+                    ) : null}
+                    <Text style={[styles.menuLabel, active && styles.menuLabelOn]} numberOfLines={1}>
+                      {item.label}
+                    </Text>
+                    {active ? <Icon name="check" size={16} color={colors.primary} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <View style={styles.customRow}>
+              <TextInput
+                value={custom}
+                onChangeText={setCustom}
+                placeholder={t('Custom')}
+                placeholderTextColor={colors.textMuted}
+                style={styles.customInput}
+                onSubmitEditing={() => {
+                  const next = custom.trim();
+                  if (next) choose(next);
+                }}
+              />
             </View>
           </View>
-        </Portal>
-      ) : null}
+        </View>
+      </Modal>
     </>
   );
 }
@@ -465,16 +457,22 @@ const styles = StyleSheet.create({
   },
   addBtn: { borderColor: colors.primary, borderRadius: radius.sm },
   total: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
-  portal: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
-  backdrop: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
   menu: {
-    position: 'absolute',
+    ...dialogCard,
+    zIndex: 2,
     maxHeight: 280,
-    backgroundColor: colors.surface,
-    borderRadius: radius.sm,
+    overflow: 'hidden',
     borderWidth: 1,
     borderColor: colors.border,
-    overflow: 'hidden',
   },
   menuScroll: { maxHeight: 220 },
   menuItem: {

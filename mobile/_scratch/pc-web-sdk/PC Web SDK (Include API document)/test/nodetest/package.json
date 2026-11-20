@@ -1,0 +1,9 @@
+{
+  "name": "nodetest",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "dtpweb": "^2.1.5"
+  }
+}

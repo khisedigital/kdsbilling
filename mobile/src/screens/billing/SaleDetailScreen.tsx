@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,12 +18,14 @@ import { useT } from '../../i18n';
 import BottomBar from '../../components/ui/BottomBar';
 import { fetchBill, voidBill } from '../../services/businessService';
 import type { BillDetail } from '../../services/businessService';
-import { printReceipt } from '../../print/receiptPrinter';
+import { wakePrinterOnClick } from '../../print/receiptPrinter';
+import { enqueueSavedPrint } from '../../print/printRequestQueue';
 import { useCartStore } from '../../store/cartStore';
 import { canProcessReturn, itemRemainingQty } from '../../utils/billStatus';
 import { totalSaving } from '../../utils/billSaving';
 import { formatDateTime, getCreatedAt, parseApiDate } from '../../utils/formatDate';
 import { colors } from '../../theme/colors';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { common, radius, spacing } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'SaleDetail'>;
@@ -56,6 +58,7 @@ function formatQty(q: string | number) {
 
 export default function SaleDetailScreen({ route, navigation }: Props) {
   const t = useT();
+  const keyboardOverlap = useKeyboardOverlap();
   const { billId, fromSale } = route.params;
   const [bill, setBill] = useState<BillDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -117,17 +120,29 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
     };
   }, [fromSale, goHome, navigation]);
 
-  const handlePrint = async () => {
+  useEffect(() => {
+    if (!fromSale || typeof document === 'undefined') return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && active !== document.body) active.blur();
+  }, [fromSale]);
+
+  const printInflight = useRef(0);
+
+  const handlePrint = () => {
+    // Sync enqueue — every tap is kept even if USB is still busy.
+    wakePrinterOnClick();
+    printInflight.current += 1;
     setPrinting(true);
-    try {
-      await printReceipt(billId);
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : t('Could not print receipt. Check printer settings.');
-      Alert.alert(t('Print failed'), message);
-    } finally {
-      setPrinting(false);
-    }
+    void enqueueSavedPrint(billId)
+      .catch((err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : t('Could not print receipt. Check printer settings.');
+        Alert.alert(t('Print failed'), message);
+      })
+      .finally(() => {
+        printInflight.current = Math.max(0, printInflight.current - 1);
+        if (printInflight.current === 0) setPrinting(false);
+      });
   };
 
   const handleDone = () => {
@@ -216,8 +231,13 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
   return (
     <View style={common.screen}>
       <ScrollView
-        contentContainerStyle={[styles.scroll, fromSale && styles.scrollWithBar]}
-        showsVerticalScrollIndicator={false}>
+        contentContainerStyle={[
+          styles.scroll,
+          fromSale && styles.scrollWithBar,
+          keyboardOverlap > 0 && { paddingBottom: keyboardOverlap + spacing.xl },
+        ]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled">
         {/* Success / status header */}
         {fromSale ? (
           <View style={styles.successBlock}>
@@ -418,12 +438,11 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
               mode="contained"
               icon="printer"
               onPress={handlePrint}
-              loading={printing}
               buttonColor={colors.secondary}
               style={styles.actionBtn}
               contentStyle={styles.actionContent}
               labelStyle={styles.printLabel}>
-              {t('Print bill')}
+              {printing ? t('Printing…') : t('Print bill')}
             </Button>
             {showProcessReturn ? (
               <Button
@@ -487,7 +506,6 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
               label: printing ? t('Printing…') : t('Print'),
               onPress: handlePrint,
               icon: 'printer',
-              disabled: printing,
               flex: 1,
             },
           ]}
@@ -642,7 +660,14 @@ const styles = StyleSheet.create({
   itemName: { fontSize: 15, fontWeight: '600', color: colors.text, lineHeight: 20 },
   itemMeta: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
   itemNote: { fontSize: 11, color: colors.secondary, marginTop: 2, fontWeight: '600' },
-  itemTotal: { fontSize: 15, fontWeight: '700', color: colors.text },
+  itemTotal: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+    minWidth: 96,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   totals: {
     borderTopWidth: 1,
     borderTopColor: colors.border,
@@ -650,18 +675,39 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.sm,
     gap: 4,
   },
-  sumRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  sumLbl: { fontSize: 13, color: colors.textMuted },
-  sumVal: { fontSize: 13, fontWeight: '600', color: colors.text },
-  discVal: { fontSize: 13, fontWeight: '700', color: colors.secondary },
+  sumRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sumLbl: { flex: 1, fontSize: 13, color: colors.textMuted, paddingRight: spacing.sm },
+  sumVal: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+    minWidth: 96,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  discVal: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.secondary,
+    minWidth: 96,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   grandRow: {
     marginTop: spacing.sm,
     paddingTop: spacing.md,
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  grandLbl: { fontSize: 16, fontWeight: '700', color: colors.text },
-  grandVal: { fontSize: 18, fontWeight: '700', color: colors.secondary },
+  grandLbl: { flex: 1, fontSize: 16, fontWeight: '700', color: colors.text, paddingRight: spacing.sm },
+  grandVal: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.secondary,
+    minWidth: 96,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   saveRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -672,8 +718,15 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.successLight,
   },
-  saveLbl: { fontSize: 13, fontWeight: '700', color: colors.secondaryDark },
-  saveVal: { fontSize: 16, fontWeight: '800', color: colors.secondaryDark },
+  saveLbl: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.secondaryDark, paddingRight: spacing.sm },
+  saveVal: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.secondaryDark,
+    minWidth: 96,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   accordion: {
     flexDirection: 'row',
     alignItems: 'center',

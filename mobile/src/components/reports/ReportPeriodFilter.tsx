@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Dialog, Portal, Text } from 'react-native-paper';
+import { Button, Portal, Text } from 'react-native-paper';
+import AppDialog from '../ui/AppDialog';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import {
   MONTH_NAMES,
@@ -99,11 +100,11 @@ export default function ReportPeriodFilter({
       </View>
 
       <Portal>
-        <Dialog visible={pickerOpen} onDismiss={() => setPickerOpen(false)} style={styles.dialog}>
-          <Dialog.Title>
+        <AppDialog visible={pickerOpen} onDismiss={() => setPickerOpen(false)} style={styles.dialog}>
+          <AppDialog.Title>
             {mode === 'day' ? t('Select date') : mode === 'month' ? t('Select month') : t('Select year')}
-          </Dialog.Title>
-          <Dialog.ScrollArea style={styles.dialogScroll}>
+          </AppDialog.Title>
+          <AppDialog.ScrollArea style={styles.dialogScroll}>
             <ScrollView>
               <Text style={styles.pickerLabel}>{t('Year')}</Text>
               <View style={styles.optionGrid}>
@@ -168,12 +169,12 @@ export default function ReportPeriodFilter({
                     : t('Selected: {{value}}', { value: toDateString(new Date(draftYear, draftMonth, Math.min(draftDay, daysInMonth))) })}
               </Text>
             </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
+          </AppDialog.ScrollArea>
+          <AppDialog.Actions>
             <Button onPress={() => setPickerOpen(false)}>{t('Cancel')}</Button>
             <Button onPress={applyPicker}>{t('Apply')}</Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </View>
   );

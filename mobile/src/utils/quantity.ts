@@ -139,6 +139,14 @@ export function formatQuantity(qty: number, uom?: UomInfo | null): string {
   return `${stripTrailingZeros(qty)} ${uom.code}`;
 }
 
+/**
+ * Compact qty for stickers — no space before the unit.
+ * Thermal fonts advance a full cell for " ", which printed as "500         g".
+ */
+export function formatQuantityLabel(qty: number, uom?: UomInfo | null): string {
+  return formatQuantity(qty, uom).replace(/\s+/g, '');
+}
+
 export function getQuantityPresets(uom?: UomInfo | null): { label: string; quantity: number }[] {
   const code = uom?.code?.toLowerCase();
   if (code === 'kg') {

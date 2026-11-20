@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, HelperText, Portal } from 'react-native-paper';
+import { Button, FAB, HelperText, Portal } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -215,9 +216,9 @@ export default function SupplierListScreen({ navigation }: Props) {
       />
 
       <Portal>
-        <Dialog visible={visible} onDismiss={closeDialog} style={styles.dialog}>
-          <Dialog.Title>{mode === 'add' ? t('Add Supplier') : t('Edit Supplier')}</Dialog.Title>
-          <Dialog.Content>
+        <AppDialog visible={visible} onDismiss={closeDialog} style={styles.dialog}>
+          <AppDialog.Title>{mode === 'add' ? t('Add Supplier') : t('Edit Supplier')}</AppDialog.Title>
+          <AppDialog.Content>
             <AppTextInput
               label={t('Name *')}
               value={name}
@@ -254,8 +255,8 @@ export default function SupplierListScreen({ navigation }: Props) {
                 {t('New purchase entry')}
               </Button>
             ) : null}
-          </Dialog.Content>
-          <Dialog.Actions style={styles.dialogActions}>
+          </AppDialog.Content>
+          <AppDialog.Actions style={styles.dialogActions}>
             {mode === 'edit' ? (
               <Button textColor={colors.error} onPress={confirmDelete} disabled={loading}>
                 {t('Delete')}
@@ -271,8 +272,8 @@ export default function SupplierListScreen({ navigation }: Props) {
                 {mode === 'add' ? t('Add') : t('Save')}
               </Button>
             </View>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
 
       <BulkImportDialog

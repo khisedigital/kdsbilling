@@ -501,13 +501,13 @@ async function listTenantProducts(tenantId, query) {
 }
 
 async function createTenantProduct(tenantId, data) {
-  const { db } = await tenantConnectionManager.getTenantModelsForAdmin(tenantId);
-  return productService.createProduct(db, data);
+  const { tenant, db } = await tenantConnectionManager.getTenantModelsForAdmin(tenantId);
+  return productService.createProduct(db, data, { tenant });
 }
 
 async function importTenantProducts(tenantId, rows) {
-  const { db } = await tenantConnectionManager.getTenantModelsForAdmin(tenantId);
-  return productService.bulkImport(db, rows);
+  const { tenant, db } = await tenantConnectionManager.getTenantModelsForAdmin(tenantId);
+  return productService.bulkImport(db, rows, { tenant });
 }
 
 async function importTenantProductsFromMaster(tenantId, payload = {}) {

@@ -13,7 +13,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Text } from 'react-native-paper';
+import { Button, Text, TextInput as PaperInput } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,17 +24,28 @@ import { useLanguageStore } from '../../i18n/languageStore';
 import QtyStepper from '../../components/ui/QtyStepper';
 import CategoryPickerSheet from '../../components/ui/CategoryPickerSheet';
 import {
-  fetchProducts,
+  getCatalogRevision,
+  consumeLastCatalogPricePatches,
+  isCatalogCacheEnabled,
+  readCachedProducts,
+  subscribeCatalogChanges,
+  writeCachedProducts,
+  type CatalogPricePatch,
+} from '../../services/catalogCache';
+import {
+  fetchAllProducts,
   flattenProductsToVariants,
   matchBarcodeProduct,
   searchProducts,
   type SearchProductResult,
 } from '../../services/catalogService';
-import { previewBill } from '../../services/businessService';
+import { previewBillSmart } from '../../offline/billPreview';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { useProductAddToCart } from '../../hooks/useProductAddToCart';
 import { useCartStore } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
 import { common, radius, shadow, spacing } from '../../theme/layout';
+import { apiError } from '../../utils/apiError';
 import { totalSaving } from '../../utils/billSaving';
 import { formatQuantity } from '../../utils/quantity';
 import { screenProductName } from '../../utils/productName';
@@ -49,9 +60,20 @@ type DiscountMode = 'amount' | 'percent';
 
 const GRID_GAP = spacing.sm;
 const GRID_PAD = spacing.md;
-const COLS = 3;
 const BAR_HEIGHT = 64;
-const CATALOG_TTL_MS = 60_000;
+/** Keep serving local catalog; only re-download in background every 10 minutes. */
+const CATALOG_TTL_MS = 10 * 60_000;
+
+/** Columns that keep tiles readable and never wider than the pane. */
+function colsForPane(paneWidth: number, wide: boolean) {
+  if (wide) {
+    if (paneWidth >= 1100) return 4;
+    if (paneWidth >= 720) return 3;
+    return 2;
+  }
+  // Phones / narrow: always 2 products per row.
+  return 2;
+}
 
 function cartQtyStep(uomCode?: string) {
   const code = (uomCode || '').toLowerCase();
@@ -59,37 +81,51 @@ function cartQtyStep(uomCode?: string) {
   return 1;
 }
 
-function productMatches(product: SearchProductResult, query: string) {
+function productSearchBlob(product: SearchProductResult) {
+  return [
+    product.productName,
+    product.productNameMr || '',
+    product.sku || '',
+    product.size || '',
+    product.color || '',
+    ...(product.barcodes || []),
+  ].join('\0').toLowerCase();
+}
+
+function productMatches(product: SearchProductResult, query: string, blob?: string) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return (
-    product.productName.toLowerCase().includes(q) ||
-    (product.productNameMr || '').toLowerCase().includes(q) ||
-    (product.sku || '').toLowerCase().includes(q) ||
-    (product.size || '').toLowerCase().includes(q) ||
-    (product.color || '').toLowerCase().includes(q) ||
-    (product.barcodes || []).some((b) => b.toLowerCase().includes(q))
-  );
+  return (blob || productSearchBlob(product)).includes(q);
 }
+
+const gridKeyExtractor = (item: SearchProductResult) => item.variantId;
 
 export default function BillingScreen({ navigation, route }: Props) {
   const t = useT();
   useLanguageStore((s) => s.ui);
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const keyboardOverlap = useKeyboardOverlap();
   const [hostWidth, setHostWidth] = useState(windowWidth);
   const layoutWidth = hostWidth || windowWidth;
-  const isWideBill = Platform.OS === 'web' && layoutWidth >= 900;
+  const isWideBill = layoutWidth >= 900;
   const productWidth = isWideBill ? layoutWidth * 0.6 : layoutWidth;
-  const cols = !isWideBill ? COLS : productWidth >= 1100 ? 4 : 3;
+  const narrowPhone = !isWideBill && layoutWidth < 400;
+  const cols = colsForPane(productWidth, isWideBill);
+  const gridPad = narrowPhone ? spacing.sm : GRID_PAD;
   const tileWidth = useMemo(() => {
-    const inner = productWidth - GRID_PAD * 2 - GRID_GAP * (cols - 1);
-    return Math.max(120, Math.floor(inner / cols));
-  }, [productWidth, cols]);
+    const inner = Math.max(0, productWidth - gridPad * 2 - GRID_GAP * (cols - 1));
+    // Exact fit — never force a min width that overflows the row on Android.
+    return Math.max(88, Math.floor(inner / cols));
+  }, [productWidth, cols, gridPad]);
 
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const categoryIdRef = useRef<string | null>(null);
+  categoryIdRef.current = categoryId;
   const [catalog, setCatalog] = useState<SearchProductResult[]>([]);
+  /** Bumped on live price patches so FlatList rebinds visible tiles. */
+  const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [remoteResults, setRemoteResults] = useState<SearchProductResult[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -138,6 +174,8 @@ export default function BillingScreen({ navigation, route }: Props) {
 
   const skipNextFocusLoad = useRef(true);
   const catalogLoadedAt = useRef(0);
+  const catalogRevisionSeen = useRef(getCatalogRevision());
+  const hydratedFromCacheRef = useRef(false);
   const refreshAfterProductEdit = useRef(false);
   const previewReqId = useRef(0);
   const searchRef = useRef<TextInput>(null);
@@ -152,6 +190,10 @@ export default function BillingScreen({ navigation, route }: Props) {
     setCartOpen(false);
     setPreview(null);
     dismissQuantity();
+    if (typeof document !== 'undefined') {
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA') active.blur();
+    }
     navigation.setParams({ fresh: undefined });
   }, [route.params?.fresh, clearCart, dismissQuantity, navigation]);
 
@@ -238,9 +280,147 @@ export default function BillingScreen({ navigation, route }: Props) {
   const totalLabel = `₹${displayTotal.toFixed(2)}`;
   const hasItems = items.length > 0;
 
-  const loadCatalog = useCallback(async (force = false) => {
+  const applyPricePatchesToCart = useCartStore((s) => s.applyPricePatches);
+  const catalogRef = useRef<SearchProductResult[]>([]);
+  catalogRef.current = catalog;
+
+  /** Apply live price patches to cart + in-memory catalog (Billing already open). */
+  const applyPricePatches = useCallback((pricePatches: CatalogPricePatch[]) => {
+    // Prefer fresh caller patches; otherwise consume remembered ones once (no replay → ₹0 blink).
+    const patches = pricePatches.length ? pricePatches : consumeLastCatalogPricePatches();
+    if (!patches.length) return false;
+    // Drop the remembered copy whenever we apply (including live subscribe patches).
+    if (pricePatches.length) consumeLastCatalogPricePatches();
+
+    // Cart first — must not depend on the product still being in the painted grid.
+    const cartUpdated = applyPricePatchesToCart(patches);
+
+    const byVariant = new Map(patches.map((p) => [p.variantId, p]));
+    const byProduct = new Map<string, CatalogPricePatch[]>();
+    for (const patch of patches) {
+      if (!patch.productId) continue;
+      const list = byProduct.get(patch.productId) || [];
+      list.push(patch);
+      byProduct.set(patch.productId, list);
+    }
+
+    const prev = catalogRef.current;
+    let nextCatalog: SearchProductResult[] | null = null;
+    if (prev.length) {
+      let changed = false;
+      const next = prev.map((row) => {
+        let patch = byVariant.get(row.variantId);
+        if (!patch && row.productId) {
+          const siblings = byProduct.get(row.productId) || [];
+          if (siblings.length === 1) patch = siblings[0];
+        }
+        if (!patch) return row;
+        changed = true;
+        const patchPrice = patch.sellingPrice !== undefined ? Number(patch.sellingPrice) : null;
+        // Never let a missing/zero patch wipe a known good tile price (cross-device refresh race).
+        const nextPrice = patchPrice != null && Number.isFinite(patchPrice) && (patchPrice > 0 || row.sellingPrice <= 0)
+          ? patchPrice
+          : row.sellingPrice;
+        return {
+          ...row,
+          variantId: patch.variantId || row.variantId,
+          productName: patch.name !== undefined ? patch.name : row.productName,
+          productNameMr: patch.nameMr !== undefined ? patch.nameMr : row.productNameMr,
+          sellingPrice: nextPrice,
+          costPrice: patch.costPrice !== undefined ? Number(patch.costPrice) : row.costPrice,
+          mrp: patch.mrp !== undefined ? patch.mrp : row.mrp,
+          stockQty: patch.stockQty !== undefined ? patch.stockQty : row.stockQty,
+        };
+      });
+      if (changed) nextCatalog = next;
+    }
+
+    if (nextCatalog) {
+      catalogRef.current = nextCatalog;
+      setCatalog(nextCatalog);
+      syncFromCatalog(nextCatalog, { forcePrices: true });
+    }
+
+    if (cartUpdated || nextCatalog) {
+      catalogLoadedAt.current = Date.now();
+      setCatalogEpoch((n) => n + 1);
+      setLoadingCatalog(false);
+      return true;
+    }
+    return false;
+  }, [applyPricePatchesToCart, syncFromCatalog]);
+
+  /** Keep a known good price when a progressive/network row briefly arrives as ₹0. */
+  const mergeCatalogPrices = useCallback((next: SearchProductResult[]) => {
+    const prevByVariant = new Map(catalogRef.current.map((row) => [row.variantId, row]));
+    if (!prevByVariant.size) return next;
+    return next.map((row) => {
+      if (row.sellingPrice > 0) return row;
+      const prev = prevByVariant.get(row.variantId);
+      if (!prev || !(prev.sellingPrice > 0)) return row;
+      return {
+        ...row,
+        sellingPrice: prev.sellingPrice,
+        costPrice: (row.costPrice ?? 0) > 0 ? row.costPrice : prev.costPrice,
+        mrp: row.mrp != null ? row.mrp : prev.mrp,
+      };
+    });
+  }, []);
+
+  /** Load catalog tiles from disk cache (cold open / hydrate). */
+  const hydrateCatalogFromCache = useCallback(async (opts?: { force?: boolean }) => {
+    if (!isCatalogCacheEnabled()) return false;
+    if (hydratedFromCacheRef.current && !opts?.force) return false;
+    const cached = await readCachedProducts();
+    if (!cached?.items?.length) return false;
+    const active = cached.items.filter((p) => p.status !== 'inactive');
+    const flattened = mergeCatalogPrices(flattenProductsToVariants(active));
+    if (!flattened.length) return false;
+    catalogRef.current = flattened;
+    setCatalog(flattened);
+    // Soft sync — do not force ₹0 from a corrupt cache row onto open cart lines.
+    syncFromCatalog(flattened, { forcePrices: false });
+    hydratedFromCacheRef.current = true;
+    // Stamp with cache age so a stale disk cache still triggers a network refresh.
+    catalogLoadedAt.current = cached.updatedAt || 0;
+    catalogRevisionSeen.current = getCatalogRevision();
+    setCatalogEpoch((n) => n + 1);
+    setLoadingCatalog(false);
+    return true;
+  }, [mergeCatalogPrices, syncFromCatalog]);
+
+  const applyCatalogProducts = useCallback((
+    products: Parameters<typeof flattenProductsToVariants>[0],
+    opts?: { forcePrices?: boolean; cache?: boolean; alreadySorted?: boolean },
+  ) => {
+    const flattened = mergeCatalogPrices(flattenProductsToVariants(products, {
+      alreadySorted: !!opts?.alreadySorted,
+    }));
+    if (!flattened.length) return false;
+    hydratedFromCacheRef.current = true;
+    catalogLoadedAt.current = Date.now();
+    catalogRevisionSeen.current = getCatalogRevision();
+    catalogRef.current = flattened;
+    setCatalog(flattened);
+    setCatalogEpoch((n) => n + 1);
+    // Never replay stale lastPricePatches here — that caused ₹0 ↔ price blinking.
+    syncFromCatalog(flattened, { forcePrices: !!opts?.forcePrices });
+    setLoadingCatalog(false);
+    setLoadError('');
+    if (opts?.cache && isCatalogCacheEnabled()) {
+      void writeCachedProducts(products, products.length, 'replace');
+    }
+    return true;
+  }, [mergeCatalogPrices, syncFromCatalog]);
+
+  const loadCatalog = useCallback(async (force = false, opts?: { categoryId?: string | null }) => {
+    const revision = getCatalogRevision();
+    const revisionChanged = revision !== catalogRevisionSeen.current;
+    const catId = opts?.categoryId !== undefined ? opts.categoryId : categoryIdRef.current;
     if (
       !force &&
+      !revisionChanged &&
+      opts?.categoryId === undefined &&
       catalogLoadedAt.current > 0 &&
       Date.now() - catalogLoadedAt.current < CATALOG_TTL_MS
     ) {
@@ -248,21 +428,125 @@ export default function BillingScreen({ navigation, route }: Props) {
     }
     try {
       setLoadError('');
-      const result = await fetchProducts({ page: 1, limit: 500, status: 'active' });
-      const flattened = flattenProductsToVariants(result?.items || []);
-      catalogLoadedAt.current = Date.now();
-      setCatalog(flattened);
-      syncFromCatalog(flattened);
-    } catch {
-      setCatalog([]);
-      setLoadError('Could not load products');
+      // Desktop local DB: load a small favorites-first page (not all 10k+ products).
+      // Search still queries SQLite; full sync keeps the DB complete.
+      const { shouldUseLocalCatalog, readSqliteBillingCatalog } = await import(
+        '../../offline/localCatalog'
+      );
+      if (shouldUseLocalCatalog()) {
+        const page = await readSqliteBillingCatalog({ categoryId: catId });
+        if (page?.items?.length) {
+          applyCatalogProducts(page.items, { forcePrices: force || revisionChanged, alreadySorted: true });
+          return;
+        }
+        const hit = await hydrateCatalogFromCache({ force: true });
+        if (!hit && !hydratedFromCacheRef.current) {
+          setCatalog([]);
+          setLoadError('Could not load products');
+        }
+        return;
+      }
+      // Progressive paint via onPage — no separate 80-row prefetch (that was a double download).
+      let painted = hydratedFromCacheRef.current;
+      const items = await fetchAllProducts({
+        status: 'active',
+        onPage: (products, loaded, total) => {
+          // First useful page: show tiles immediately.
+          // Later: refresh every ~500 rows; final apply happens after the await.
+          if (painted && loaded < total && loaded % 500 !== 0) return;
+          // Intermediate pages: paint tiles only — force prices on the final apply.
+          if (applyCatalogProducts(products, {
+            forcePrices: false,
+            alreadySorted: true,
+          })) {
+            painted = true;
+          }
+        },
+      });
+      // Don't wipe a good cache/UI if the lean API returned nothing unexpectedly.
+      if (!items.length && hydratedFromCacheRef.current) {
+        catalogLoadedAt.current = Date.now();
+        return;
+      }
+      if (!applyCatalogProducts(items, {
+        forcePrices: revisionChanged || force,
+        cache: true,
+        alreadySorted: true,
+      }) && !hydratedFromCacheRef.current) {
+        setCatalog([]);
+        setLoadError('Could not load products');
+      }
+    } catch (err) {
+      // Network failed: keep / reload from SQLite or AsyncStorage cache.
+      const hit = await hydrateCatalogFromCache({ force: true });
+      if (!hit && !hydratedFromCacheRef.current) {
+        setCatalog([]);
+        setLoadError(apiError(err, 'Could not load products'));
+      }
     }
-  }, [syncFromCatalog]);
+  }, [applyCatalogProducts, hydrateCatalogFromCache]);
 
   useEffect(() => {
-    setLoadingCatalog(true);
-    loadCatalog(true).finally(() => setLoadingCatalog(false));
+    let cancelled = false;
+    (async () => {
+      setLoadingCatalog(true);
+      await loadCatalog(true);
+      if (!cancelled) setLoadingCatalog(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [loadCatalog]);
+
+  // Category chip: reload a small SQLite page for that category (desktop local).
+  const categoryLoadReady = useRef(false);
+  useEffect(() => {
+    if (!categoryLoadReady.current) {
+      categoryLoadReady.current = true;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { shouldUseLocalCatalog } = await import('../../offline/localCatalog');
+        if (!shouldUseLocalCatalog()) return;
+        setLoadingCatalog(true);
+        await loadCatalog(true, { categoryId });
+      } finally {
+        if (!cancelled) setLoadingCatalog(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [categoryId, loadCatalog]);
+
+  /** After stock/price edits: patch tiles, then reload SQLite so stock is not stuck at 0. */
+  const refreshCatalogAfterChange = useCallback(async (pricePatches: CatalogPricePatch[]) => {
+    applyPricePatches(pricePatches);
+    const hasStockPatch = (pricePatches || []).some((p) => p.stockQty !== undefined);
+    try {
+      const { shouldUseLocalCatalog } = await import('../../offline/localCatalog');
+      if (shouldUseLocalCatalog() && (hasStockPatch || !pricePatches?.length)) {
+        await loadCatalog(true);
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+    if (hasStockPatch) return;
+    const ok = await hydrateCatalogFromCache({ force: true });
+    if (!ok) await loadCatalog(true);
+  }, [applyPricePatches, hydrateCatalogFromCache, loadCatalog]);
+
+  // Live price/stock updates from Price Management / product detail (cache + bill lines).
+  useEffect(() => {
+    return subscribeCatalogChanges((revision, pricePatches) => {
+      if (revision === catalogRevisionSeen.current) return;
+      catalogRevisionSeen.current = revision;
+      void refreshCatalogAfterChange(pricePatches);
+    });
+  }, [refreshCatalogAfterChange]);
 
   useFocusEffect(
     useCallback(() => {
@@ -272,12 +556,18 @@ export default function BillingScreen({ navigation, route }: Props) {
       }
       if (refreshAfterProductEdit.current) {
         refreshAfterProductEdit.current = false;
-        void loadCatalog(true);
+        // Product form just saved — force cart + tiles from patches / SQLite.
+        void refreshCatalogAfterChange([]);
         return;
       }
-      // Soft refresh — skipped when catalog is fresh (avoids lag after scan / back)
-      loadCatalog(false);
-    }, [loadCatalog]),
+      if (getCatalogRevision() !== catalogRevisionSeen.current) {
+        catalogRevisionSeen.current = getCatalogRevision();
+        void refreshCatalogAfterChange([]);
+        return;
+      }
+      // Soft refresh only when TTL expired; otherwise Billing stays offline-fast.
+      void loadCatalog(false);
+    }, [loadCatalog, refreshCatalogAfterChange]),
   );
 
   useEffect(() => {
@@ -298,14 +588,16 @@ export default function BillingScreen({ navigation, route }: Props) {
         discountPercent: i.discountPercent,
         isCustom: i.isCustom === true,
         productName: i.productName,
+        productNameMr: i.productNameMr ?? null,
       })),
+      language: useLanguageStore.getState().bill,
       billDiscountAmount,
       billDiscountPercent,
     };
 
     const timer = setTimeout(async () => {
       try {
-        const result = await previewBill(snapshot);
+        const result = await previewBillSmart(snapshot);
         if (requestId !== previewReqId.current) return;
         setPreview({
           totalAmount: Number(result.totalAmount) || 0,
@@ -351,23 +643,44 @@ export default function BillingScreen({ navigation, route }: Props) {
     return () => clearTimeout(timer);
   }, [q]);
 
+  const catalogSearchBlobs = useMemo(
+    () => catalog.map((p) => productSearchBlob(p)),
+    [catalog],
+  );
+
   const gridItems = useMemo(() => {
     const inCategory = (p: SearchProductResult) =>
       !categoryId || p.categoryId === categoryId;
 
     if (debouncedQ) {
-      const code = debouncedQ.trim();
-      const local = catalog
-        .filter((p) => inCategory(p) && productMatches(p, debouncedQ))
-        .map((p) => matchBarcodeProduct([p], code) || p);
+      const local = catalog.filter((p, index) => (
+        inCategory(p) && productMatches(p, debouncedQ, catalogSearchBlobs[index])
+      ));
+      // Catalog is already favorites-then-name; keep that order for local hits.
       if (debouncedQ.length < 2) return local;
-      const seen = new Set(local.map((p) => p.variantId));
+      // remoteResults come from SQLite search — authoritative for live stock.
+      // Prefer them over in-memory catalog tiles that can still show stale 0.
+      const remoteByVariant = new Map(
+        remoteResults.filter(inCategory).map((p) => [p.variantId, p]),
+      );
+      const mergedLocal = local.map((p) => {
+        const fresh = remoteByVariant.get(p.variantId);
+        if (!fresh) return p;
+        return {
+          ...p,
+          stockQty: fresh.stockQty,
+          sellingPrice: fresh.sellingPrice > 0 ? fresh.sellingPrice : p.sellingPrice,
+          costPrice: (fresh.costPrice ?? 0) > 0 ? fresh.costPrice : p.costPrice,
+          mrp: fresh.mrp != null ? fresh.mrp : p.mrp,
+        };
+      });
+      const seen = new Set(mergedLocal.map((p) => p.variantId));
       const extra = remoteResults.filter((p) => inCategory(p) && !seen.has(p.variantId));
-      return extra.length ? [...local, ...extra] : local;
+      return extra.length ? [...mergedLocal, ...extra] : mergedLocal;
     }
     if (!categoryId) return catalog;
     return catalog.filter(inCategory);
-  }, [catalog, debouncedQ, remoteResults, categoryId]);
+  }, [catalog, catalogSearchBlobs, debouncedQ, remoteResults, categoryId]);
 
   const openDiscount = () => {
     if (billDiscountPercent > 0) {
@@ -488,12 +801,13 @@ export default function BillingScreen({ navigation, route }: Props) {
       if (now - lastKey > 80) buffer = '';
       lastKey = now;
 
-      if (event.key === 'Enter') {
+      if (event.key === 'Enter' || event.key === 'NumpadEnter') {
         const code = buffer.trim();
         buffer = '';
         if (code.length >= 3) {
-          // Scanner wedge: digits then Enter (works even when search input is focused).
+          // Scanner wedge: digits then Enter. Do not let that Enter press a button.
           event.preventDefault();
+          event.stopPropagation();
           void commitScan(code);
         }
         return;
@@ -601,16 +915,18 @@ export default function BillingScreen({ navigation, route }: Props) {
 
   const renderProduct = useCallback(
     ({ item }: { item: SearchProductResult }) => (
-      <ProductGridTile
-        product={item}
-        qtyInCart={qtyByVariant.get(item.variantId) || 0}
-        width={tileWidth}
-        onAdd={addProduct}
-        onIncrease={handleIncrease}
-        onDecrease={handleDecrease}
-        onEditQty={handleEditQty}
-        onEditProduct={handleEditProduct}
-      />
+      <View style={[styles.gridCell, { width: tileWidth }]}>
+        <ProductGridTile
+          product={item}
+          qtyInCart={qtyByVariant.get(item.variantId) || 0}
+          width={tileWidth}
+          onAdd={addProduct}
+          onIncrease={handleIncrease}
+          onDecrease={handleDecrease}
+          onEditQty={handleEditQty}
+          onEditProduct={handleEditProduct}
+        />
+      </View>
     ),
     [qtyByVariant, tileWidth, addProduct, handleIncrease, handleDecrease, handleEditQty, handleEditProduct],
   );
@@ -621,8 +937,16 @@ export default function BillingScreen({ navigation, route }: Props) {
     : spacing.lg;
   const qtyLabel = itemCount % 1 === 0 ? String(itemCount) : itemCount.toFixed(2);
   const gridContentStyle = useMemo(
-    () => [styles.gridContent, { paddingBottom: barPad }, !gridItems.length && styles.gridEmpty],
-    [barPad, gridItems.length],
+    () => [
+      styles.gridContent,
+      { paddingHorizontal: gridPad, paddingBottom: barPad },
+      !gridItems.length && styles.gridEmpty,
+    ],
+    [barPad, gridItems.length, gridPad],
+  );
+  const gridExtraData = useMemo(
+    () => ({ qtyByVariant, catalogEpoch }),
+    [qtyByVariant, catalogEpoch],
   );
 
   const beginPriceEdit = (variantId: string, unitPrice: number) => {
@@ -718,37 +1042,37 @@ export default function BillingScreen({ navigation, route }: Props) {
         setHostWidth((prev) => (prev === next ? prev : next));
       }}>
       <View style={isWideBill ? styles.productPane : styles.fill}>
-      <View style={[styles.header, isWideBill && styles.headerCompact]}>
+      <View style={[styles.header, isWideBill && styles.headerCompact, narrowPhone && styles.headerNarrow]}>
         {!isWideBill ? (
           <View style={styles.actionsRow}>
             <Pressable
               onPress={() => navigation.navigate('ProductForm')}
-              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.iconBtn, narrowPhone && styles.iconBtnNarrow, pressed && styles.pressed]}
               accessibilityLabel={t('Add product')}>
-              <Icon name="package-variant" size={24} color={colors.primary} />
+              <Icon name="package-variant" size={narrowPhone ? 20 : 24} color={colors.primary} />
             </Pressable>
             <Pressable
               onPress={() => navigation.navigate('HeldBills')}
-              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.iconBtn, narrowPhone && styles.iconBtnNarrow, pressed && styles.pressed]}
               accessibilityLabel={t('Held bills')}>
-              <Icon name="pause-circle-outline" size={22} color={colors.primary} />
+              <Icon name="pause-circle-outline" size={narrowPhone ? 20 : 22} color={colors.primary} />
             </Pressable>
             <Pressable
               onPress={() => setCustomOpen(true)}
-              style={({ pressed }) => [styles.iconBtn, styles.customBtn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.iconBtn, styles.customBtn, narrowPhone && styles.iconBtnNarrow, pressed && styles.pressed]}
               accessibilityLabel={t('Custom item')}>
-              <Icon name="cart-plus" size={24} color={colors.primary} />
+              <Icon name="cart-plus" size={narrowPhone ? 20 : 24} color={colors.primary} />
             </Pressable>
             <View style={styles.actionsSpacer} />
             <Pressable
               onPress={() => navigation.navigate('BarcodeScanner')}
-              style={({ pressed }) => [styles.scanBtn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.scanBtn, narrowPhone && styles.iconBtnNarrow, pressed && styles.pressed]}
               accessibilityLabel={t('Scan barcode')}>
-              <Icon name="barcode-scan" size={24} color={colors.textOnPrimary} />
+              <Icon name="barcode-scan" size={narrowPhone ? 20 : 24} color={colors.textOnPrimary} />
             </Pressable>
           </View>
         ) : null}
-        <View style={styles.searchRow}>
+        <View style={[styles.searchRow, narrowPhone && styles.searchRowNarrow]}>
           {isWideBill ? (
             <>
               <Pressable
@@ -771,7 +1095,7 @@ export default function BillingScreen({ navigation, route }: Props) {
               </Pressable>
             </>
           ) : null}
-          <View style={[styles.searchBox, isWideBill && styles.searchBoxCompact]}>
+          <View style={[styles.searchBox, isWideBill && styles.searchBoxCompact, narrowPhone && styles.searchBoxNarrow]}>
             <Icon name="magnify" size={20} color={colors.textMuted} />
             <TextInput
               ref={searchRef}
@@ -805,6 +1129,7 @@ export default function BillingScreen({ navigation, route }: Props) {
               style={[
                 styles.categoryBtn,
                 isWideBill && styles.categoryBtnCompact,
+                narrowPhone && styles.categoryBtnNarrow,
                 categoryId ? styles.categoryBtnOn : null,
               ]}
               accessibilityLabel={t('Filter by category')}>
@@ -844,7 +1169,7 @@ export default function BillingScreen({ navigation, route }: Props) {
       <FlatList
         data={gridItems}
         key={`grid-${cols}`}
-        keyExtractor={(item) => item.variantId}
+        keyExtractor={gridKeyExtractor}
         numColumns={cols}
         style={styles.fill}
         keyboardShouldPersistTaps="handled"
@@ -854,9 +1179,9 @@ export default function BillingScreen({ navigation, route }: Props) {
         maxToRenderPerBatch={9}
         updateCellsBatchingPeriod={50}
         windowSize={5}
-        removeClippedSubviews
+        removeClippedSubviews={Platform.OS !== 'web'}
         contentContainerStyle={gridContentStyle}
-        columnWrapperStyle={styles.gridRow}
+        columnWrapperStyle={cols > 1 ? styles.gridRow : undefined}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
         }
@@ -878,7 +1203,7 @@ export default function BillingScreen({ navigation, route }: Props) {
               </Text>
               <Text style={styles.emptySubtitle}>
                 {loadError
-                  ? t('Pull to refresh, or scan a barcode')
+                  ? loadError
                   : q
                     ? t('Nothing found for “{{query}}”', { query: q })
                     : t('Add a product, or use Custom item')}
@@ -905,11 +1230,11 @@ export default function BillingScreen({ navigation, route }: Props) {
           )
         }
         renderItem={renderProduct}
-        extraData={qtyByVariant}
+        extraData={gridExtraData}
       />
 
       {hasItems && !isWideBill ? (
-        <View style={[styles.payBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+        <View style={[styles.payBar, narrowPhone && styles.payBarNarrow, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
           <Pressable
             onPress={() => setCartOpen(true)}
             style={({ pressed }) => [styles.billPeek, pressed && styles.pressed]}
@@ -918,20 +1243,22 @@ export default function BillingScreen({ navigation, route }: Props) {
               <Text style={styles.billBadgeText}>{qtyLabel}</Text>
             </View>
             <View style={styles.billPeekText}>
-              <Text style={styles.billPeekLabel}>
+              <Text style={styles.billPeekLabel} numberOfLines={1}>
                 {billTotals.discountAmount > 0
                   ? t('View bill · −₹{{amount}}', { amount: billTotals.discountAmount.toFixed(2) })
                   : t('View bill')}
               </Text>
-              <Text style={styles.billPeekTotal}>{totalLabel}</Text>
+              <Text style={[styles.billPeekTotal, narrowPhone && styles.billPeekTotalNarrow]} numberOfLines={1}>
+                {totalLabel}
+              </Text>
             </View>
-            <Icon name="chevron-up" size={20} color={colors.textMuted} />
+            {!narrowPhone ? <Icon name="chevron-up" size={20} color={colors.textMuted} /> : null}
           </Pressable>
           <Pressable
             onPress={goPay}
-            style={({ pressed }) => [styles.payBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.payBtn, narrowPhone && styles.payBtnNarrow, pressed && styles.pressed]}
             accessibilityLabel={t('Proceed to payment')}>
-            <Text style={styles.payBtnText}>{t('Pay')}</Text>
+            <Text style={[styles.payBtnText, narrowPhone && styles.payBtnTextNarrow]}>{t('Pay')}</Text>
           </Pressable>
         </View>
       ) : null}
@@ -959,9 +1286,15 @@ export default function BillingScreen({ navigation, route }: Props) {
           if (discountOpen) setDiscountOpen(false);
           else setCartOpen(false);
         }}>
-        <View style={styles.sheetRoot}>
+        <View style={[styles.sheetRoot, keyboardOverlap > 0 && { paddingBottom: keyboardOverlap }]}>
           <Pressable style={styles.sheetOverlay} onPress={() => setCartOpen(false)} />
-          <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+          <View style={[
+            styles.sheet,
+            {
+              paddingBottom: Math.max(insets.bottom, spacing.md),
+              maxHeight: keyboardOverlap > 0 ? Math.max(0, windowHeight - keyboardOverlap - 12) : '78%',
+            },
+          ]}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>{t('Current bill')}</Text>
@@ -1050,7 +1383,7 @@ export default function BillingScreen({ navigation, route }: Props) {
           </View>
 
           {discountOpen ? (
-            <View style={styles.discountOverlay} pointerEvents="box-none">
+            <View style={[styles.discountOverlay, keyboardOverlap > 0 && { paddingBottom: keyboardOverlap }]} pointerEvents="box-none">
               <Pressable style={styles.discountScrim} onPress={() => setDiscountOpen(false)} />
               <View style={[styles.discountCard, { marginBottom: Math.max(insets.bottom, spacing.md) }]}>
                 <Text style={styles.discountTitle}>{t('Bill discount')}</Text>
@@ -1154,6 +1487,9 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xs,
     paddingBottom: spacing.xs,
   },
+  headerNarrow: {
+    paddingHorizontal: spacing.sm,
+  },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1168,8 +1504,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
   },
+  searchRowNarrow: {
+    flexWrap: 'wrap',
+  },
   searchBox: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
@@ -1182,8 +1522,13 @@ const styles = StyleSheet.create({
     height: 38,
     paddingHorizontal: spacing.sm,
   },
+  searchBoxNarrow: {
+    flexBasis: '100%',
+    height: 42,
+  },
   searchInput: {
     flex: 1,
+    minWidth: 0,
     fontSize: 15,
     color: colors.text,
     paddingVertical: 0,
@@ -1219,11 +1564,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.primary,
     backgroundColor: colors.primaryLight,
+    flexShrink: 1,
   },
   categoryBtnCompact: {
     height: 38,
     minWidth: 84,
     maxWidth: 120,
+  },
+  categoryBtnNarrow: {
+    flexGrow: 1,
+    maxWidth: '100%',
+    minWidth: 0,
+    height: 42,
   },
   categoryBtnOn: {
     backgroundColor: colors.primary,
@@ -1249,6 +1601,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  iconBtnNarrow: {
+    width: 40,
+    height: 40,
+  },
   scanBtn: {
     width: 44,
     height: 44,
@@ -1259,13 +1615,17 @@ const styles = StyleSheet.create({
   },
   pressed: { opacity: 0.88 },
   gridContent: {
-    paddingHorizontal: GRID_PAD,
     paddingTop: spacing.md,
   },
   gridEmpty: { flexGrow: 1, justifyContent: 'center' },
   gridRow: {
     gap: GRID_GAP,
     marginBottom: GRID_GAP,
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+  },
+  gridCell: {
+    alignSelf: 'stretch',
   },
   emptyWrap: {
     alignItems: 'center',
@@ -1311,8 +1671,13 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     ...shadow.lg,
   },
+  payBarNarrow: {
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+  },
   billPeek: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
@@ -1333,7 +1698,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.textOnPrimary,
   },
-  billPeekText: { flex: 1 },
+  billPeekText: { flex: 1, minWidth: 0 },
   billPeekLabel: {
     fontSize: 11,
     fontWeight: '600',
@@ -1344,6 +1709,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
   },
+  billPeekTotalNarrow: {
+    fontSize: 16,
+  },
   payBtn: {
     minWidth: 108,
     minHeight: 48,
@@ -1353,10 +1721,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  payBtnNarrow: {
+    minWidth: 84,
+    paddingHorizontal: spacing.md,
+  },
   payBtnText: {
     fontSize: 17,
     fontWeight: '800',
     color: colors.textOnPrimary,
+  },
+  payBtnTextNarrow: {
+    fontSize: 15,
   },
   sheetRoot: { flex: 1, justifyContent: 'flex-end', position: 'relative' },
   sheetOverlay: { flex: 1, backgroundColor: colors.overlay },
@@ -1385,11 +1760,14 @@ const styles = StyleSheet.create({
   sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
   sheetActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
     marginBottom: spacing.md,
   },
   sheetAction: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: '22%',
+    minWidth: 72,
     alignItems: 'center',
     gap: 4,
     paddingVertical: spacing.sm,
@@ -1448,7 +1826,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  lineTotal: { fontSize: 16, fontWeight: '800', color: colors.secondary },
+  lineTotal: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.secondary,
+    minWidth: 88,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   removeBtn: {
     width: 28,
     height: 28,

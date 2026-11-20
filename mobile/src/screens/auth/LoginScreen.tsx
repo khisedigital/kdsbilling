@@ -19,6 +19,7 @@ import { useAuthStore } from '../../store/authStore';
 import { useT } from '../../i18n';
 import LanguageToggle from '../../i18n/LanguageToggle';
 import { APP_DISPLAY_NAME } from '../../constants/branding';
+import { getCachedApiUrl } from '../../config/api';
 import { formatMobileDisplay } from '../../utils/phone';
 import { colors } from '../../theme/colors';
 import { radius, spacing } from '../../theme/layout';
@@ -257,6 +258,11 @@ export default function LoginScreen() {
             </Button>
           </Animated.View>
 
+          {__DEV__ ? (
+            <Text style={styles.devApiHint} numberOfLines={2}>
+              {getCachedApiUrl()}
+            </Text>
+          ) : null}
           <Text style={styles.footer}>Khise Digital Solution Pvt Ltd</Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -437,6 +443,13 @@ const styles = StyleSheet.create({
   btn: { borderRadius: radius.md, marginTop: spacing.sm },
   btnContent: { paddingVertical: spacing.sm + 2 },
   btnLabel: { fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
+  devApiHint: {
+    marginTop: spacing.lg,
+    textAlign: 'center',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.55)',
+    paddingHorizontal: spacing.lg,
+  },
   footer: {
     marginTop: spacing.xxl,
     textAlign: 'center',

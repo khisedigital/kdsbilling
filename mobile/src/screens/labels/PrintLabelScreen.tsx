@@ -8,7 +8,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Dialog, Portal, Text } from 'react-native-paper';
+import { Button, Portal, Text } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BottomBar from '../../components/ui/BottomBar';
@@ -35,7 +36,7 @@ import { dialogCard, radius, spacing } from '../../theme/layout';
 const DEMO: GapLabelContent = {
   shopName: 'My Shop',
   productName: 'Sample Product',
-  detail: '500 g',
+  detail: '500g',
   barcode: DEMO_BARCODE,
   mrp: 'MRP: ₹120',
   price: '₹99',
@@ -295,9 +296,9 @@ export default function PrintLabelScreen() {
       </BottomBar>
 
       <Portal>
-        <Dialog visible={qtyOpen} onDismiss={() => setQtyOpen(false)} style={styles.dialog}>
-          <Dialog.Title>{t('How many copies')}</Dialog.Title>
-          <Dialog.Content>
+        <AppDialog visible={qtyOpen} onDismiss={() => setQtyOpen(false)} style={styles.dialog}>
+          <AppDialog.Title>{t('How many copies')}</AppDialog.Title>
+          <AppDialog.Content>
             <AppTextInput
               label={t('Quantity')}
               value={qtyDraft}
@@ -306,16 +307,16 @@ export default function PrintLabelScreen() {
               mode="outlined"
               autoFocus
             />
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button onPress={() => setQtyOpen(false)}>{t('Cancel')}</Button>
             <Button onPress={saveQty}>{t('Save')}</Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
 
-        <Dialog visible={printerOpen} onDismiss={() => !connecting && setPrinterOpen(false)} style={styles.printerDialog}>
-          <Dialog.Title>{t('Bluetooth printer')}</Dialog.Title>
-          <Dialog.Content style={styles.printerDialogContent}>
+        <AppDialog visible={printerOpen} onDismiss={() => !connecting && setPrinterOpen(false)} style={styles.printerDialog}>
+          <AppDialog.Title>{t('Bluetooth printer')}</AppDialog.Title>
+          <AppDialog.Content style={styles.printerDialogContent}>
             <Text style={styles.hint}>
               {t('Pair the printer in Android Bluetooth, then pick it here. Each print uses SIZE/GAP so the sensor pulls the label to the top before printing.')}
             </Text>
@@ -363,11 +364,11 @@ export default function PrintLabelScreen() {
               style={styles.refreshBtn}>
               {t('Refresh list')}
             </Button>
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button disabled={connecting} onPress={() => setPrinterOpen(false)}>{t('Close')}</Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </View>
   );

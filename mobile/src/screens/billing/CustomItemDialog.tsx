@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
-import { Button, Dialog, Portal, Text } from 'react-native-paper';
+import { Button, Portal, Text } from 'react-native-paper';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import AppDialog from '../../components/ui/AppDialog';
+import { spaceAboveKeyboard, useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { dialogCard, radius, spacing } from '../../theme/layout';
@@ -48,7 +51,11 @@ function lineTotal(row: DraftRow): number | null {
 export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props) {
   const t = useT();
   const { height, width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const overlap = useKeyboardOverlap();
+  const available = spaceAboveKeyboard(height, overlap, insets.top, insets.bottom);
   const compact = width < 520;
+  const listMax = Math.max(64, Math.min(available * 0.5, available - (compact ? 200 : 230)));
   const [rows, setRows] = useState<DraftRow[]>(() => [newRow()]);
   const [focusKey, setFocusKey] = useState('');
   const [error, setError] = useState('');
@@ -124,18 +131,26 @@ export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props
 
   return (
     <Portal>
-      <Dialog visible={visible} onDismiss={onDismiss} style={[styles.dialog, { maxHeight: height * 0.88 }]}>
-        <Dialog.Title>{t('Custom items')}</Dialog.Title>
-        <Dialog.Content style={styles.content}>
+      <AppDialog visible={visible} onDismiss={onDismiss} style={styles.dialog}>
+        <AppDialog.Title>{t('Custom items')}</AppDialog.Title>
+        <AppDialog.Content style={styles.content}>
           <View style={styles.tableHeader}>
             <Text style={[styles.th, styles.colName]}>{t('Item')}</Text>
-            <Text style={[styles.th, styles.alignEnd, styles.colPrice, compact && styles.colPriceCompact]}>{t('Price')}</Text>
-            <Text style={[styles.th, styles.alignEnd, styles.colQty, compact && styles.colQtyCompact]}>{t('Qty')}</Text>
-            {compact ? null : <Text style={[styles.th, styles.colTotal]}>{t('Total')}</Text>}
+            <View style={[styles.colPrice, styles.headEnd, compact && styles.colPriceCompact]}>
+              <Text style={[styles.th, styles.alignEnd]}>{t('Price')}</Text>
+            </View>
+            <View style={[styles.colQty, styles.headEnd, compact && styles.colQtyCompact]}>
+              <Text style={[styles.th, styles.alignEnd]}>{t('Qty')}</Text>
+            </View>
+            {compact ? null : (
+              <View style={[styles.colTotal, styles.headEnd]}>
+                <Text style={[styles.th, styles.alignEnd]}>{t('Total')}</Text>
+              </View>
+            )}
             <View style={styles.colRemove} />
           </View>
           <ScrollView
-            style={{ maxHeight: Math.max(160, height * 0.42) }}
+            style={{ maxHeight: listMax }}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.list}>
             {rows.map((row, index) => {
@@ -198,14 +213,14 @@ export default function CustomItemDialog({ visible, onDismiss, onSubmit }: Props
                 : t('{{count}} items · ₹{{total}}', { count: readyCount, total: readyTotal.toFixed(2) })}
             </Text>
           ) : null}
-        </Dialog.Content>
-        <Dialog.Actions style={styles.actions}>
+        </AppDialog.Content>
+        <AppDialog.Actions style={styles.actions}>
           <Button onPress={onDismiss}>{t('Cancel')}</Button>
           <Button mode="contained" onPress={submit}>
             {addLabel}
           </Button>
-        </Dialog.Actions>
-      </Dialog>
+        </AppDialog.Actions>
+      </AppDialog>
     </Portal>
   );
 }
@@ -251,7 +266,8 @@ const styles = StyleSheet.create({
   colPriceCompact: { width: 72 },
   colQty: { width: 56 },
   colQtyCompact: { width: 48 },
-  colTotal: { width: 78, textAlign: 'right' },
+  colTotal: { width: 78 },
+  headEnd: { alignItems: 'flex-end', justifyContent: 'center' },
   colRemove: { width: 28 },
   field: {
     height: 32,

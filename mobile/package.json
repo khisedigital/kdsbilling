@@ -12,6 +12,10 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
+    "test:offline-e2e": "node scripts/offline-module-e2e.js",
+    "test:offline-smoke": "node scripts/offline-module-smoke.js",
+    "test:ui-tour": "node scripts/ui-module-tour.js",
+    "test:print": "node scripts/test-print-module.js",
     "postinstall": "patch-package",
     "generate:icons": "bash scripts/generate-app-icons.sh",
     "web": "webpack serve --mode development",
@@ -24,6 +28,7 @@
     "desktop:win": "npm run web:build && cd desktop && npm run dist:win"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
     "@react-native-async-storage/async-storage": "^2.1.2",
     "@react-navigation/native": "^7.0.14",
     "@react-navigation/native-stack": "^7.2.0",

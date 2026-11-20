@@ -1,0 +1,4 @@
+error:  cannot create /Volumes/WorkData/projects/products/billing-poz/mobile/_scratch/pc-web-sdk/PC Web SDK (Include API document)/DothanTech-dtpwebú¿PC Webú®Interface Description-2022-12-30.pdf
+        Illegal byte sequence
+error:  cannot create /Volumes/WorkData/projects/products/billing-poz/mobile/_scratch/pc-web-sdk/PC Web SDK (Include API document)/DothanTech-dtpwebú¿PC Webú®Interface Quickstart-2022-12-30.pdf
+        Illegal byte sequence

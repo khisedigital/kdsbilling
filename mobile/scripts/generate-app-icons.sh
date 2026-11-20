@@ -47,6 +47,32 @@ for spec in "mdpi:48" "hdpi:72" "xhdpi:96" "xxhdpi:144" "xxxhdpi:192"; do
   cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png"
 done
 
+# Android 8+ uses the adaptive icon. Without these, a library's default robot icon wins.
+python3 - "$SOURCE" "$RES" <<'PY'
+import sys
+from pathlib import Path
+from PIL import Image
+
+src, res = Path(sys.argv[1]), Path(sys.argv[2])
+logo = Image.open(src).convert("RGBA")
+pixels = []
+for r, g, b, a in logo.getdata():
+    if r > 245 and g > 245 and b > 245:
+        pixels.append((255, 255, 255, 0))
+    else:
+        pixels.append((r, g, b, 255))
+logo.putdata(pixels)
+sizes = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
+for density, size in sizes.items():
+    inner = int(size * 0.72)
+    scaled = logo.resize((inner, inner), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    offset = ((size - inner) // 2, (size - inner) // 2)
+    canvas.paste(scaled, offset, scaled)
+    canvas.save(res / f"mipmap-{density}" / "ic_launcher_foreground.png", "PNG")
+print("Wrote adaptive launcher foregrounds")
+PY
+
 cp "$SOURCE" "$ICONSET/AppIcon-1024.png"
 sips -z 40 40 "$SOURCE" --out "$ICONSET/AppIcon-20@2x.png" >/dev/null
 sips -z 60 60 "$SOURCE" --out "$ICONSET/AppIcon-20@3x.png" >/dev/null

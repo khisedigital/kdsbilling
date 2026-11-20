@@ -125,7 +125,14 @@ async function printBill(req, res) {
   const bill = await billingService.getBill(req.db, req.params.id);
   const format = req.query.format || '80';
   const shopSettings = await loadShopSettings(req);
-  const data = generatePrint(bill, req.tenant, format, shopSettings, publicBaseUrl(req), req.query.language);
+  const data = await generatePrint(
+    bill,
+    req.tenant,
+    format,
+    shopSettings,
+    publicBaseUrl(req),
+    req.query.language,
+  );
   res.json({ success: true, data });
 }
 
@@ -266,7 +273,8 @@ async function printBillNetwork(req, res) {
     req.body.printerId,
     await loadShopSettings(req),
     publicBaseUrl(req),
-    req.body.language
+    req.body.language,
+    req.body.format || req.body.paperSize || null,
   );
   res.json({ success: true, data });
 }

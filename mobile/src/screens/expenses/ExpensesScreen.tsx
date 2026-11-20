@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, Portal, Text } from 'react-native-paper';
+import { Button, FAB, Portal, Text } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -74,9 +75,10 @@ export default function ExpensesScreen({}: Props) {
   }, [loadExpenses]);
 
   const filteredExpenses = useMemo(() => {
+    const rows = Array.isArray(expenses) ? expenses : [];
     const q = search.trim().toLowerCase();
-    if (!q) return expenses;
-    return expenses.filter(
+    if (!q) return rows;
+    return rows.filter(
       (e) =>
         (e.category?.name || '').toLowerCase().includes(q)
         || (e.expense_date || '').toLowerCase().includes(q)
@@ -171,10 +173,10 @@ export default function ExpensesScreen({}: Props) {
       />
 
       <Portal>
-        <Dialog visible={addOpen} onDismiss={() => setAddOpen(false)} style={styles.dialog}>
-          <Dialog.Title>{t('Add expense')}</Dialog.Title>
-          <Dialog.ScrollArea style={styles.dialogScroll}>
-            <ScrollView keyboardShouldPersistTaps="handled">
+        <AppDialog visible={addOpen} onDismiss={() => setAddOpen(false)} style={styles.dialog}>
+          <AppDialog.Title>{t('Add expense')}</AppDialog.Title>
+          <AppDialog.ScrollArea style={styles.dialogScroll}>
+            <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled>
               <Text style={styles.label}>{t('Category')}</Text>
               <View style={styles.catWrap}>
                 {categories.map((c) => (
@@ -208,8 +210,8 @@ export default function ExpensesScreen({}: Props) {
               />
               {formError ? <Text style={styles.errorText}>{formError}</Text> : null}
             </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
+          </AppDialog.ScrollArea>
+          <AppDialog.Actions>
             <Button onPress={() => setAddOpen(false)}>{t('Cancel')}</Button>
             <Button
               onPress={handleSave}
@@ -217,8 +219,8 @@ export default function ExpensesScreen({}: Props) {
               disabled={!categoryId || !amount || loading}>
               {t('Save')}
             </Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </View>
   );

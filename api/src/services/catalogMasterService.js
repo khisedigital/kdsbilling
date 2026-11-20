@@ -81,6 +81,7 @@ function serializeMasterProduct(row) {
     mrp: r.mrp != null ? Number(r.mrp) : null,
     sku: r.sku,
     barcode: r.barcode,
+    isFavorite: !!r.is_favorite,
     status: r.status,
     sortOrder: r.sort_order,
     variants,
@@ -347,8 +348,8 @@ async function deleteCategory(id) {
   const { MasterCategory, MasterProduct } = getMasterModels();
   const cat = await MasterCategory.findByPk(id);
   if (!cat) throw new AppError('Category not found', 404, 'NOT_FOUND');
-  const inUse = await MasterProduct.count({ where: { category_id: id } });
-  if (inUse > 0) throw new AppError('Category has master products', 400, 'VALIDATION_ERROR');
+  // Unlink products so delete always works (category becomes empty on products).
+  await MasterProduct.update({ category_id: null }, { where: { category_id: id } });
   await cat.destroy();
   return { deleted: true };
 }
@@ -415,8 +416,7 @@ async function deleteBrand(id) {
   const { MasterBrand, MasterProduct } = getMasterModels();
   const brand = await MasterBrand.findByPk(id);
   if (!brand) throw new AppError('Brand not found', 404, 'NOT_FOUND');
-  const inUse = await MasterProduct.count({ where: { brand_id: id } });
-  if (inUse > 0) throw new AppError('Brand has master products', 400, 'VALIDATION_ERROR');
+  await MasterProduct.update({ brand_id: null }, { where: { brand_id: id } });
   await brand.destroy();
   return { deleted: true };
 }
@@ -447,7 +447,7 @@ async function listMasterProducts(query = {}) {
   const rows = await MasterProduct.findAll({
     where,
     include: masterProductInclude(),
-    order: [['sort_order', 'ASC'], ['name', 'ASC']],
+    order: [['is_favorite', 'DESC'], ['sort_order', 'ASC'], ['name', 'ASC']],
   });
   return rows.map(serializeMasterProduct);
 }
@@ -481,6 +481,7 @@ async function createMasterProduct(data) {
     mrp: data.mrp ?? null,
     sku: data.sku || null,
     barcode: data.barcode || null,
+    is_favorite: !!(data.isFavorite ?? data.is_favorite),
     status: data.status || 'active',
     sort_order: Number(data.sortOrder) || 0,
   });
@@ -527,6 +528,9 @@ async function updateMasterProduct(id, data) {
   if (data.mrp !== undefined) updates.mrp = data.mrp;
   if (data.sku !== undefined) updates.sku = data.sku || null;
   if (data.barcode !== undefined) updates.barcode = data.barcode || null;
+  if (data.isFavorite !== undefined || data.is_favorite !== undefined) {
+    updates.is_favorite = !!(data.isFavorite ?? data.is_favorite);
+  }
   if (data.status !== undefined) updates.status = data.status;
   if (data.sortOrder !== undefined) updates.sort_order = Number(data.sortOrder);
   if (data.categoryId !== undefined) updates.category_id = data.categoryId || null;
@@ -582,6 +586,127 @@ function keepExistingPrices(incoming, existingVariants) {
     }
     return { ...variant, sellingPrice: sellingPrice || 0, mrp };
   });
+}
+
+/**
+ * When a shop creates a product, mirror it into the business-type master catalog
+ * if nothing already matches by barcode or English name.
+ * Never throws for "already exists" — returns { created:false }.
+ */
+async function ensureTenantProductInMaster(tenant, product) {
+  const businessTypeId = tenant?.business_type_id || null;
+  const name = String(product?.name || '').trim();
+  if (!businessTypeId || !name) {
+    return { created: false, skipped: true, reason: 'missing_business_type_or_name' };
+  }
+
+  const { MasterProduct, MasterProductVariant, MasterVariantBarcode } = getMasterModels();
+  const variantsRaw = Array.isArray(product.variants) ? product.variants : [];
+  const barcodes = [
+    ...new Set(
+      variantsRaw.flatMap((variant) =>
+        (variant.barcodes || [])
+          .map((row) => String(row?.barcode || row || '').trim())
+          .filter(Boolean),
+      ),
+    ),
+  ];
+
+  let existing = null;
+  if (barcodes.length) {
+    const barcodeHit = await MasterVariantBarcode.findOne({
+      where: { barcode: { [Op.in]: barcodes } },
+      include: [{
+        model: MasterProductVariant,
+        as: 'variant',
+        required: true,
+        include: [{
+          model: MasterProduct,
+          as: 'product',
+          required: true,
+          where: { business_type_id: businessTypeId },
+        }],
+      }],
+    });
+    existing = barcodeHit?.variant?.product || null;
+    if (!existing) {
+      existing = await MasterProduct.findOne({
+        where: { business_type_id: businessTypeId, barcode: { [Op.in]: barcodes } },
+      });
+    }
+  }
+  if (!existing) {
+    existing = await MasterProduct.findOne({
+      where: {
+        business_type_id: businessTypeId,
+        name: { [Op.like]: name },
+      },
+    });
+  }
+  if (existing) {
+    return { created: false, id: existing.id };
+  }
+
+  const categoryName = product.category?.name || product.categoryName || null;
+  const brandName = product.brand?.name || product.brandName || null;
+  const categoryId = categoryName
+    ? await findOrCreateMasterCategory(businessTypeId, categoryName, null, product.category?.name_mr)
+    : null;
+  const brandId = brandName
+    ? await findOrCreateMasterBrand(businessTypeId, brandName, null, product.brand?.name_mr)
+    : null;
+
+  const uomCode = String(product.uom?.code || product.uomCode || 'pcs').trim().toLowerCase() || 'pcs';
+  const masterVariants = variantsRaw
+    .map((variant) => {
+      const codes = [...new Set(
+        (variant.barcodes || [])
+          .map((row) => String(row?.barcode || row || '').trim())
+          .filter(Boolean),
+      )];
+      if (!codes.length && !variant.size) return null;
+      return {
+        size: variant.size || null,
+        barcodes: codes,
+        sellingPrice: Number(variant.selling_price ?? variant.sellingPrice) || 0,
+        mrp: variant.mrp != null ? Number(variant.mrp) : null,
+      };
+    })
+    .filter(Boolean);
+
+  // cleanVariantInput drops barcode-less rows; keep at least one priced size when possible.
+  const variantsWithCodes = masterVariants.filter((row) => (row.barcodes || []).length);
+  const primary = variantsRaw[0] || {};
+  const sellingPrice = Number(
+    primary.selling_price ?? primary.sellingPrice ?? product.selling_price ?? product.sellingPrice,
+  ) || 0;
+  const costPrice = Number(
+    primary.cost_price ?? primary.costPrice ?? product.cost_price ?? product.costPrice,
+  ) || 0;
+  const mrp = primary.mrp != null
+    ? Number(primary.mrp)
+    : (product.mrp != null ? Number(product.mrp) : null);
+  const primaryBarcode = barcodes[0] || null;
+
+  const created = await createMasterProduct({
+    businessTypeId,
+    categoryId,
+    brandId,
+    name,
+    nameMr: product.name_mr || product.nameMr || null,
+    description: product.description || null,
+    uomCode,
+    sellingPrice,
+    costPrice,
+    mrp: Number.isFinite(mrp) ? mrp : null,
+    sku: primary.sku || product.sku || null,
+    barcode: primaryBarcode,
+    isFavorite: !!(product.is_favorite ?? product.isFavorite),
+    status: product.status || 'active',
+    variants: variantsWithCodes.length ? variantsWithCodes : undefined,
+  });
+
+  return { created: true, id: created.id };
 }
 
 /**
@@ -679,21 +804,36 @@ async function upsertImportedMasterProduct({ businessTypeId, categoryId, brandId
   return { created, id: product.id };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function looksLikeUuid(value) {
+  return UUID_RE.test(String(value || '').trim());
+}
+
 async function resolveBusinessTypeForImport(defaultBusinessTypeId, row) {
   const { BusinessType } = getMasterModels();
-  const codeOrName = row.businessTypeCode || row.businessType;
+  const codeOrName = row.businessTypeCode || row.businessType || row.businessTypeId;
   if (codeOrName) {
-    const normalized = String(codeOrName).trim().toLowerCase();
-    const bt = await BusinessType.findOne({
-      where: {
-        [Op.or]: [
-          { code: normalized },
-          { name: { [Op.like]: codeOrName } },
-        ],
-      },
-    });
-    if (!bt) throw new AppError(`Business type not found: ${codeOrName}`, 400, 'VALIDATION_ERROR');
-    return bt.id;
+    const raw = String(codeOrName).trim();
+    let bt = null;
+    if (looksLikeUuid(raw)) {
+      bt = await BusinessType.findByPk(raw);
+    }
+    if (!bt) {
+      const normalized = raw.toLowerCase();
+      bt = await BusinessType.findOne({
+        where: {
+          [Op.or]: [
+            { code: normalized },
+            { name: { [Op.like]: raw } },
+          ],
+        },
+      });
+    }
+    if (bt) return bt.id;
+    // Export CSVs often carry local UUIDs that differ on the server — use selected default BT.
+    if (defaultBusinessTypeId) return defaultBusinessTypeId;
+    throw new AppError(`Business type not found: ${codeOrName}`, 400, 'VALIDATION_ERROR');
   }
   if (!defaultBusinessTypeId) {
     throw new AppError('Business type is required (select above or add businessTypeCode column)', 400, 'VALIDATION_ERROR');
@@ -717,7 +857,7 @@ async function findOrCreateMasterCategory(businessTypeId, categoryName, results,
       sort_order: 0,
     },
   });
-  if (!created && cleanedMr && !cat.name_mr) {
+  if (!created && cleanedMr && cat.name_mr !== cleanedMr) {
     await cat.update({ name_mr: cleanedMr });
   }
   if (created && results) results.categoriesCreated += 1;
@@ -740,7 +880,7 @@ async function findOrCreateMasterBrand(businessTypeId, brandName, results, nameM
       sort_order: 0,
     },
   });
-  if (!created && cleanedMr && !brand.name_mr) {
+  if (!created && cleanedMr && brand.name_mr !== cleanedMr) {
     await brand.update({ name_mr: cleanedMr });
   }
   if (created && results) results.brandsCreated += 1;
@@ -765,7 +905,11 @@ async function bulkImportMasterCategories({ businessTypeId, rows }) {
       });
       if (existing) {
         const nameMr = cleanNameMr(row.nameMr ?? row.name_mr);
-        if (nameMr && !existing.name_mr) await existing.update({ name_mr: nameMr });
+        if (nameMr && existing.name_mr !== nameMr) {
+          await existing.update({ name_mr: nameMr });
+          results.success += 1;
+          continue;
+        }
         results.skipped += 1;
         continue;
       }
@@ -804,7 +948,11 @@ async function bulkImportMasterBrands({ businessTypeId, rows }) {
       });
       if (existing) {
         const nameMr = cleanNameMr(row.nameMr ?? row.name_mr);
-        if (nameMr && !existing.name_mr) await existing.update({ name_mr: nameMr });
+        if (nameMr && existing.name_mr !== nameMr) {
+          await existing.update({ name_mr: nameMr });
+          results.success += 1;
+          continue;
+        }
         results.skipped += 1;
         continue;
       }
@@ -826,95 +974,301 @@ async function bulkImportMasterBrands({ businessTypeId, rows }) {
 }
 
 async function bulkImportMasterProducts({ businessTypeId, rows, options = {} }) {
-  const { MasterProduct } = getMasterModels();
+  const {
+    MasterProduct,
+    MasterCategory,
+    MasterBrand,
+    BusinessType,
+    MasterProductVariant,
+    MasterVariantBarcode,
+    sequelize,
+  } = getMasterModels();
   if (!Array.isArray(rows) || !rows.length) {
     throw new AppError('Import rows array is required', 400, 'VALIDATION_ERROR');
   }
 
   const createCategories = options.createCategories !== false;
   const createBrands = options.createBrands !== false;
-  const skipDuplicates = options.skipDuplicates !== false;
-  const results = { success: 0, failed: 0, skipped: 0, categoriesCreated: 0, brandsCreated: 0, errors: [] };
+  // Default: update matching barcode/SKU. skipDuplicates=true (legacy checkbox) also means upsert.
+  const updateExisting = options.updateExisting !== false;
+  const results = {
+    success: 0,
+    created: 0,
+    updated: 0,
+    failed: 0,
+    skipped: 0,
+    categoriesCreated: 0,
+    brandsCreated: 0,
+    errors: [],
+  };
+
+  const btCache = new Map();
+  const categoryCache = new Map();
+  const brandCache = new Map();
+  // Per business-type: barcode/sku → product id (built lazily + updated as we go)
+  const barcodeMaps = new Map();
+  const skuMaps = new Map();
+
+  const resolveBt = async (row) => {
+    const codeOrName = row.businessTypeCode || row.businessType;
+    const cacheKey = codeOrName ? String(codeOrName).trim().toLowerCase() : `__default__:${businessTypeId || ''}`;
+    if (btCache.has(cacheKey)) return btCache.get(cacheKey);
+    const id = await resolveBusinessTypeForImport(businessTypeId, row);
+    btCache.set(cacheKey, id);
+    return id;
+  };
+
+  const getSkuMap = (btId) => {
+    if (!skuMaps.has(btId)) skuMaps.set(btId, new Map());
+    return skuMaps.get(btId);
+  };
+
+  const getBarcodeMap = (btId) => {
+    if (!barcodeMaps.has(btId)) barcodeMaps.set(btId, new Map());
+    return barcodeMaps.get(btId);
+  };
+
+  const findMatchingProduct = async (btId, sku, barcode) => {
+    // In-run cache first (same CSV / same request chunk)
+    if (barcode) {
+      const cachedId = getBarcodeMap(btId).get(barcode);
+      if (cachedId) {
+        const product = await MasterProduct.findByPk(cachedId);
+        if (product && product.business_type_id === btId) return product;
+      }
+      let product = await MasterProduct.findOne({
+        where: { business_type_id: btId, barcode },
+      });
+      if (product) return product;
+
+      const clash = await MasterVariantBarcode.findOne({
+        where: { barcode },
+        include: [{
+          model: MasterProductVariant,
+          as: 'variant',
+          required: true,
+          attributes: ['master_product_id'],
+          include: [{
+            model: MasterProduct,
+            as: 'product',
+            required: true,
+            attributes: ['id'],
+            where: { business_type_id: btId },
+          }],
+        }],
+      });
+      if (clash?.variant?.master_product_id) {
+        product = await MasterProduct.findByPk(clash.variant.master_product_id);
+        if (product) return product;
+      }
+    }
+
+    if (sku) {
+      const cachedId = getSkuMap(btId).get(sku);
+      if (cachedId) {
+        const product = await MasterProduct.findByPk(cachedId);
+        if (product && product.business_type_id === btId) return product;
+      }
+      const product = await MasterProduct.findOne({
+        where: { business_type_id: btId, sku },
+      });
+      if (product) return product;
+    }
+    return null;
+  };
+
+  const rememberProductKeys = (btId, productId, sku, barcode) => {
+    if (sku) getSkuMap(btId).set(sku, productId);
+    if (barcode) getBarcodeMap(btId).set(barcode, productId);
+  };
+
+  const resolveCategory = async (btId, categoryName, categoryMr) => {
+    const name = String(categoryName || '').trim();
+    if (!name) return null;
+    const key = `${btId}::${name.toLowerCase()}`;
+    if (categoryCache.has(key)) return categoryCache.get(key);
+
+    // CSV exports often put category UUID in the category column.
+    if (looksLikeUuid(name)) {
+      const byId = await MasterCategory.findOne({
+        where: { id: name, business_type_id: btId },
+        attributes: ['id'],
+      });
+      if (byId) {
+        categoryCache.set(key, byId.id);
+        return byId.id;
+      }
+      // Wrong/stale UUID — ignore instead of creating a category named like a UUID.
+      categoryCache.set(key, null);
+      return null;
+    }
+
+    let id = null;
+    if (!createCategories) {
+      const cat = await MasterCategory.findOne({
+        where: { business_type_id: btId, name },
+        attributes: ['id'],
+      });
+      if (!cat) throw new AppError(`Category not found: ${categoryName}`, 400, 'VALIDATION_ERROR');
+      id = cat.id;
+    } else {
+      id = await findOrCreateMasterCategory(btId, name, results, categoryMr);
+    }
+    categoryCache.set(key, id);
+    return id;
+  };
+
+  const resolveBrand = async (btId, brandName, brandMr) => {
+    const name = String(brandName || '').trim();
+    if (!name) return null;
+    const key = `${btId}::${name.toLowerCase()}`;
+    if (brandCache.has(key)) return brandCache.get(key);
+
+    if (looksLikeUuid(name)) {
+      const byId = await MasterBrand.findOne({
+        where: { id: name, business_type_id: btId },
+        attributes: ['id'],
+      });
+      if (byId) {
+        brandCache.set(key, byId.id);
+        return byId.id;
+      }
+      brandCache.set(key, null);
+      return null;
+    }
+
+    let id = null;
+    if (!createBrands) {
+      const brand = await MasterBrand.findOne({
+        where: { business_type_id: btId, name },
+        attributes: ['id'],
+      });
+      if (!brand) throw new AppError(`Brand not found: ${brandName}`, 400, 'VALIDATION_ERROR');
+      id = brand.id;
+    } else {
+      id = await findOrCreateMasterBrand(btId, name, results, brandMr);
+    }
+    brandCache.set(key, id);
+    return id;
+  };
+
+  // Validate default business type once when provided.
+  if (businessTypeId) {
+    const bt = await BusinessType.findByPk(businessTypeId, { attributes: ['id'] });
+    if (!bt) throw new AppError('Business type not found', 404, 'NOT_FOUND');
+    btCache.set(`__default__:${businessTypeId}`, businessTypeId);
+  }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     try {
-      if (!row.name?.trim()) throw new AppError('Product name is required', 400, 'VALIDATION_ERROR');
+      const name = String(row.name || row.Name || row.product || row.Product || '').trim();
+      if (!name) throw new AppError('Product name is required', 400, 'VALIDATION_ERROR');
 
-      const resolvedBusinessTypeId = await resolveBusinessTypeForImport(businessTypeId, row);
-      const sellingPriceRaw = row.sellingPrice ?? row.selling_price;
-      const sellingPrice =
-        sellingPriceRaw === undefined || sellingPriceRaw === null || sellingPriceRaw === ''
-          ? 0
-          : Number(sellingPriceRaw);
+      const resolvedBusinessTypeId = await resolveBt(row);
+      const parseMoney = (value) => {
+        if (value === undefined || value === null || value === '') return 0;
+        if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+        const cleaned = String(value)
+          .replace(/₹/g, '')
+          .replace(/rs\.?/gi, '')
+          .replace(/,/g, '')
+          .trim();
+        if (!cleaned) return 0;
+        const n = Number(cleaned);
+        return Number.isFinite(n) ? n : 0;
+      };
+      const sellingPrice = parseMoney(row.sellingPrice ?? row.selling_price ?? row.price);
+      const costPrice = parseMoney(row.costPrice ?? row.cost_price);
+      const mrpRaw = row.mrp ?? row.MRP;
+      const mrp = mrpRaw === undefined || mrpRaw === null || mrpRaw === ''
+        ? null
+        : parseMoney(mrpRaw);
 
-      let categoryId = null;
-      if (row.category) {
-        const categoryMr = row.categoryNameMr ?? row.category_name_mr ?? row.categoryMr;
-        if (!createCategories) {
-          const { MasterCategory } = getMasterModels();
-          const cat = await MasterCategory.findOne({
-            where: { business_type_id: resolvedBusinessTypeId, name: String(row.category).trim() },
-          });
-          if (!cat) throw new AppError(`Category not found: ${row.category}`, 400, 'VALIDATION_ERROR');
-          categoryId = cat.id;
-        } else {
-          categoryId = await findOrCreateMasterCategory(
-            resolvedBusinessTypeId,
-            row.category,
-            results,
-            categoryMr,
-          );
-        }
-      }
-
-      let brandId = null;
-      if (row.brand) {
-        const brandMr = row.brandNameMr ?? row.brand_name_mr ?? row.brandMr;
-        if (!createBrands) {
-          const { MasterBrand } = getMasterModels();
-          const brand = await MasterBrand.findOne({
-            where: { business_type_id: resolvedBusinessTypeId, name: String(row.brand).trim() },
-          });
-          if (!brand) throw new AppError(`Brand not found: ${row.brand}`, 400, 'VALIDATION_ERROR');
-          brandId = brand.id;
-        } else {
-          brandId = await findOrCreateMasterBrand(resolvedBusinessTypeId, row.brand, results, brandMr);
-        }
-      }
+      const categoryId = row.category
+        ? await resolveCategory(
+          resolvedBusinessTypeId,
+          row.category,
+          row.categoryNameMr ?? row.category_name_mr ?? row.categoryMr,
+        )
+        : null;
+      const brandId = row.brand
+        ? await resolveBrand(
+          resolvedBusinessTypeId,
+          row.brand,
+          row.brandNameMr ?? row.brand_name_mr ?? row.brandMr,
+        )
+        : null;
 
       const sku = row.sku ? String(row.sku).trim() : null;
-      if (sku && skipDuplicates) {
-        const existing = await MasterProduct.findOne({
-          where: { business_type_id: resolvedBusinessTypeId, sku },
-        });
-        if (existing) {
-          results.skipped += 1;
-          continue;
+      const barcode = row.barcode ? String(row.barcode).trim() : null;
+
+      let uom = String(row.uomCode || row.uom || 'pcs').trim().toLowerCase() || 'pcs';
+      if (uom.length > 10) uom = uom.slice(0, 10);
+
+      const payload = {
+        business_type_id: resolvedBusinessTypeId,
+        category_id: categoryId,
+        brand_id: brandId,
+        name: name.slice(0, 200),
+        name_mr: cleanNameMr(row.nameMr ?? row.name_mr, 200),
+        description: row.description || null,
+        uom_code: uom,
+        selling_price: sellingPrice,
+        cost_price: costPrice,
+        mrp,
+        sku: sku ? sku.slice(0, 50) : null,
+        barcode: barcode ? barcode.slice(0, 50) : null,
+        status: row.status || 'active',
+        sort_order: Number(row.sortOrder ?? row.sort_order) || 0,
+      };
+
+      let product = await findMatchingProduct(resolvedBusinessTypeId, sku, barcode);
+      let wasUpdate = false;
+
+      if (product && updateExisting) {
+        await product.update(payload);
+        wasUpdate = true;
+      } else if (product && !updateExisting) {
+        results.skipped += 1;
+        continue;
+      } else {
+        product = await MasterProduct.create(payload);
+      }
+
+      const variants = variantsFromProductInput({
+        barcode,
+        sellingPrice,
+        mrp,
+        variants: row.variants,
+      });
+      if (variants.length) {
+        const transaction = await sequelize.transaction();
+        try {
+          await replaceMasterVariants(product, variants, transaction);
+          await transaction.commit();
+        } catch (err) {
+          await transaction.rollback();
+          // Keep the product even if barcode/variant attach fails (duplicate barcode, etc.)
+          if (results.errors.length < 50) {
+            results.errors.push({
+              row: i + 1,
+              name,
+              message: `${wasUpdate ? 'Updated' : 'Saved'} without barcode: ${err.message}`,
+            });
+          }
         }
       }
 
-      await createMasterProduct({
-        businessTypeId: resolvedBusinessTypeId,
-        categoryId,
-        brandId,
-        name: row.name.trim(),
-        nameMr: row.nameMr ?? row.name_mr,
-        description: row.description || null,
-        uomCode: (row.uomCode || row.uom || 'pcs').trim().toLowerCase(),
-        sellingPrice: Number(sellingPrice),
-        costPrice: row.costPrice ?? row.cost_price ?? 0,
-        mrp: row.mrp ?? null,
-        sku,
-        barcode: row.barcode || null,
-        sortOrder: Number(row.sortOrder ?? row.sort_order) || 0,
-        status: row.status || 'active',
-      });
-
+      rememberProductKeys(resolvedBusinessTypeId, product.id, payload.sku, payload.barcode);
+      if (wasUpdate) results.updated += 1;
+      else results.created += 1;
       results.success += 1;
     } catch (err) {
       results.failed += 1;
-      results.errors.push({ row: i + 1, name: row.name || '', message: err.message });
+      if (results.errors.length < 50) {
+        results.errors.push({ row: i + 1, name: row.name || '', message: err.message });
+      }
     }
   }
 
@@ -978,5 +1332,6 @@ module.exports = {
   bulkImportMasterCategories,
   bulkImportMasterBrands,
   upsertImportedMasterProduct,
+  ensureTenantProductInMaster,
   latestSavedMasterBarcodes,
 };

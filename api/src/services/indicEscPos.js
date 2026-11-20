@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const FONT_PATH = path.join(__dirname, '../../assets/fonts/NotoSansDevanagari-Bold.ttf');
+const FONT_PATH = path.join(__dirname, '../../assets/fonts/NotoSansDevanagari-Regular.ttf');
 const DEVANAGARI = /[\u0900-\u097F]/;
 const AMOUNT_TAIL = /^(.*\S)\s+(\d+(?:\.\d+)?\s+\d+\.\d{2}\s+\d+\.\d{2})\s*$/;
 
@@ -45,14 +45,17 @@ function wrapByPixels(ctx, text, maxWidth) {
 
 /** ESC * 24-dot bands. GS v 0 is ignored by many POS heads and prints as ???. */
 function bitImage(width, height, px) {
-  const out = [0x1b, 0x33, 24];
+  const out = [];
   const black = (x, y) => {
     if (x >= width || y >= height) return false;
     const i = (y * width + x) * 4;
     const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-    return lum < 112;
+    // Natural stroke. A lower cutoff was filling the letters in.
+    return lum < 136;
   };
   for (let band = 0; band < height; band += 24) {
+    const bandH = Math.min(24, height - band);
+    out.push(0x1b, 0x33, bandH);
     out.push(0x1b, 0x2a, 33, width & 0xff, (width >> 8) & 0xff);
     for (let x = 0; x < width; x += 1) {
       for (let k = 0; k < 3; k += 1) {
@@ -77,32 +80,27 @@ function renderIndicLine(text, widthPx, align = 'left') {
   const { createCanvas, GlobalFonts } = loadCanvas();
   ensureFont(GlobalFonts);
   const width = Math.max(8, Number(widthPx) || 384);
-  const fontSize = 20;
+  // Centered header lines stay short. Item names stay large enough to read.
+  const fontSize = align === 'center' ? 22 : 28;
   const probe = createCanvas(width, 4);
   const measure = probe.getContext('2d');
   measure.font = `400 ${fontSize}px KdsDevanagari`;
 
   const trimmed = String(text || '').trim();
-  const amounts = align === 'center' ? null : trimmed.match(AMOUNT_TAIL);
+  const justified = align === 'center' ? null : trimmed.match(/^(\S.*?)\s{2,}(\S.*)$/);
+  const amounts = justified || (align === 'center' ? null : trimmed.match(AMOUNT_TAIL));
   const nameSource = amounts ? amounts[1].trim() : trimmed;
   const tail = amounts ? amounts[2].trim() : '';
   const tailWidth = tail ? measure.measureText(tail).width + 8 : 0;
   const nameMax = Math.max(40, width - tailWidth - 4);
   const center = align === 'center' || align === 'right';
   const rows = wrapByPixels(measure, nameSource || ' ', center ? width - 8 : nameMax);
-  const sample = measure.measureText('ईंशिाी्ॐ');
-  const ascent = Math.ceil(Math.max(
-    sample.fontBoundingBoxAscent || 0,
-    sample.actualBoundingBoxAscent || 0,
-    fontSize * 1.05,
-  ));
-  const descent = Math.ceil(Math.max(
-    sample.fontBoundingBoxDescent || 0,
-    sample.actualBoundingBoxDescent || 0,
-    fontSize * 0.45,
-  ));
-  const padTop = Math.ceil(fontSize * 0.32);
-  const rowH = Math.ceil(ascent + descent + padTop);
+  const sample = measure.measureText(nameSource || 'ई');
+  // Use the ink box, not the full em square — that was a blank band on every line.
+  const ascent = Math.ceil(Math.max(sample.actualBoundingBoxAscent || 0, fontSize * 0.9));
+  const descent = Math.ceil(Math.max(sample.actualBoundingBoxDescent || 0, fontSize * 0.28));
+  const padTop = 2;
+  const rowH = ascent + descent + padTop;
   const height = Math.max(rowH, rowH * rows.length);
 
   const canvas = createCanvas(width, height);

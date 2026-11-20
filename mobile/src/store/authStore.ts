@@ -39,23 +39,88 @@ export const useAuthStore = create<AuthState>()(
         if (!normalizedMobile) {
           throw { response: { data: { error: { message: 'Enter a valid 10-digit mobile number' } } } };
         }
+        const code = shopCode.trim().toLowerCase();
 
-        const result = await authService.login({
-          shopCode: shopCode.trim().toLowerCase(),
-          mobile: normalizedMobile,
-          password,
-        });
-        setAuthToken(result.accessToken);
-        set({
-          accessToken: result.accessToken,
-          refreshToken: result.refreshToken,
-          user: result.user,
-          tenant: result.tenant,
-          savedLogin: {
-            shopCode: shopCode.trim().toLowerCase(),
+        const applySession = async (
+          result: authService.LoginResponse,
+          plainPassword: string,
+        ) => {
+          setAuthToken(result.accessToken);
+          set({
+            accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
+            user: result.user,
+            tenant: result.tenant,
+            savedLogin: {
+              shopCode: code,
+              mobile: normalizedMobile,
+            },
+          });
+          // Cache credentials locally so the same user can unlock offline later.
+          try {
+            const { hasSqliteBridge } = await import('../offline/sqliteApi');
+            if (hasSqliteBridge()) {
+              const { hashPassword, newSalt } = await import('../offline/passwordHash');
+              const { localSaveAuthSession } = await import('../offline/localApi');
+              const salt = newSalt();
+              const passwordHash = await hashPassword(plainPassword, salt);
+              await localSaveAuthSession({
+                shopCode: code,
+                mobile: normalizedMobile,
+                passwordHash,
+                salt,
+                accessToken: result.accessToken,
+                refreshToken: result.refreshToken,
+                user: result.user,
+                tenant: result.tenant,
+              });
+            }
+          } catch {
+            /* ignore cache errors */
+          }
+        };
+
+        try {
+          const result = await authService.login({
+            shopCode: code,
             mobile: normalizedMobile,
-          },
-        });
+            password,
+          });
+          await applySession(result, password);
+          return;
+        } catch (err) {
+          // Offline / network fail → unlock from local SQLite session if password matches.
+          try {
+            const { hasSqliteBridge } = await import('../offline/sqliteApi');
+            const { localReadAuthSession } = await import('../offline/localApi');
+            const { hashPassword } = await import('../offline/passwordHash');
+            if (!hasSqliteBridge()) throw err;
+            const session = await localReadAuthSession(code);
+            if (
+              !session ||
+              String(session.shopCode).toLowerCase() !== code ||
+              String(session.mobile) !== normalizedMobile
+            ) {
+              throw err;
+            }
+            const hash = await hashPassword(password, String(session.salt || ''));
+            if (hash !== session.passwordHash) {
+              throw { response: { data: { error: { message: 'Invalid password' } } } };
+            }
+            setAuthToken(session.accessToken || 'local-offline-token');
+            set({
+              accessToken: session.accessToken || 'local-offline-token',
+              refreshToken: session.refreshToken || null,
+              user: session.user,
+              tenant: session.tenant,
+              savedLogin: { shopCode: code, mobile: normalizedMobile },
+            });
+            return;
+          } catch (offlineErr) {
+            if (offlineErr && (offlineErr as { response?: unknown }).response) throw offlineErr;
+            throw err;
+          }
+        }
       },
       logout: async () => {
         const refreshToken = get().refreshToken;

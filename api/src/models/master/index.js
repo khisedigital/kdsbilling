@@ -236,6 +236,7 @@ function defineMasterProduct(sequelize) {
       mrp: DataTypes.DECIMAL(15, 4),
       sku: DataTypes.STRING(50),
       barcode: DataTypes.STRING(50),
+      is_favorite: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
       sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
     },

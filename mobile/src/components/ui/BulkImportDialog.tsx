@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Button, Dialog, HelperText, Portal, Text } from 'react-native-paper';
+import { Button, HelperText, Portal, Text } from 'react-native-paper';
+import AppDialog from './AppDialog';
 import AppTextInput from './AppTextInput';
 import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
@@ -125,9 +126,9 @@ export default function BulkImportDialog({
 
   return (
     <Portal>
-      <Dialog visible={visible} onDismiss={() => !busy && onDismiss()} style={styles.dialog}>
-        <Dialog.Title>{title}</Dialog.Title>
-        <Dialog.Content>
+      <AppDialog visible={visible} onDismiss={() => !busy && onDismiss()} style={styles.dialog}>
+        <AppDialog.Title>{title}</AppDialog.Title>
+        <AppDialog.Content>
           <Text style={styles.hint}>{hint}</Text>
           <AppTextInput
             label={t('Paste {{kind}} list', { kind })}
@@ -168,8 +169,8 @@ export default function BulkImportDialog({
               ))}
             </View>
           ) : null}
-        </Dialog.Content>
-        <Dialog.Actions>
+        </AppDialog.Content>
+        <AppDialog.Actions>
           <Button onPress={onDismiss} disabled={busy}>
             {done ? t('Done') : t('Cancel')}
           </Button>
@@ -178,8 +179,8 @@ export default function BulkImportDialog({
               {t('Import')}
             </Button>
           ) : null}
-        </Dialog.Actions>
-      </Dialog>
+        </AppDialog.Actions>
+      </AppDialog>
     </Portal>
   );
 }

@@ -2,16 +2,18 @@ export interface Category {
   id: string;
   name: string;
   name_mr?: string | null;
+  nameMr?: string | null;
   parent_id?: string | null;
   description?: string;
   status: string;
-  parent?: { id: string; name: string };
+  parent?: { id: string; name: string; name_mr?: string | null; nameMr?: string | null };
 }
 
 export interface Brand {
   id: string;
   name: string;
   name_mr?: string | null;
+  nameMr?: string | null;
   description?: string;
   status: string;
 }
@@ -63,6 +65,8 @@ export interface Product {
   is_weight_based: boolean;
   allow_decimal_qty: boolean;
   has_variants: boolean;
+  is_favorite?: boolean;
+  isFavorite?: boolean;
   status: string;
   category?: Category;
   brand?: Brand;
@@ -126,6 +130,7 @@ export interface UpdateProductPayload {
   taxCode?: string;
   isWeightBased?: boolean;
   allowDecimalQty?: boolean;
+  isFavorite?: boolean;
   variantId?: string;
   sku?: string;
   barcode?: string;

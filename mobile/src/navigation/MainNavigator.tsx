@@ -39,6 +39,7 @@ import PrintLabelScreen from '../screens/labels/PrintLabelScreen';
 import BarcodeLabelScreen from '../screens/labels/BarcodeLabelScreen';
 import ProfileScreen from '../screens/settings/ProfileScreen';
 import ShopSettingsScreen from '../screens/settings/ShopSettingsScreen';
+import SyncDataScreen from '../screens/settings/SyncDataScreen';
 import IntegrationsScreen from '../screens/settings/IntegrationsScreen';
 import ShopifyIntegrationScreen from '../screens/settings/ShopifyIntegrationScreen';
 
@@ -46,12 +47,14 @@ export type MainStackParamList = {
   Dashboard: undefined;
   Billing: { fresh?: boolean } | undefined;
   BarcodeScanner: {
-    purpose?: 'bill' | 'capture';
+    /** bill = add to cart; capture = return code to ProductForm; productList = open product or add form; priceManagement = return product to price screen */
+    purpose?: 'bill' | 'capture' | 'productList' | 'priceManagement';
     scanTarget?: string;
     productId?: string;
   } | undefined;
   Profile: undefined;
   ShopSettings: undefined;
+  SyncData: undefined;
   PrinterSettings: undefined;
   PrintLabel: undefined;
   BarcodeLabel: undefined;
@@ -73,7 +76,10 @@ export type MainStackParamList = {
     scanTarget?: string;
     scanNonce?: number;
   } | undefined;
-  PriceManagement: undefined;
+  PriceManagement: {
+    scannedProductId?: string;
+    scanNonce?: number;
+  } | undefined;
   CategoryList: undefined;
   BrandList: undefined;
   StockList: undefined;
@@ -109,6 +115,7 @@ const screenTitles: Partial<Record<keyof MainStackParamList, string>> = {
   BarcodeScanner: 'Scan Barcode',
   Profile: 'My Profile',
   ShopSettings: 'Shop & Bill Settings',
+  SyncData: 'Sync Data',
   PrinterSettings: 'Billing Printer',
   PrintLabel: 'Print Label',
   BarcodeLabel: 'Barcode label',
@@ -185,14 +192,13 @@ export default function MainNavigator() {
         <Stack.Screen name="BarcodeScanner" component={BarcodeScannerScreen} />
         <Stack.Screen name="Profile" component={ProfileScreen} />
         <Stack.Screen name="ShopSettings" component={ShopSettingsScreen} />
+        <Stack.Screen name="SyncData" component={SyncDataScreen} />
         <Stack.Screen name="PrinterSettings" component={PrinterSettingsScreen} />
-        {/* Labels: Android Microlan Bluetooth, or desktop USB ESC/POS. */}
+        {/* Legacy Android-only gap label screen (hidden from menu). */}
         {Platform.OS === 'android' ? (
           <Stack.Screen name="PrintLabel" component={PrintLabelScreen} />
         ) : null}
-        {Platform.OS === 'android' || Platform.OS === 'web' ? (
-          <Stack.Screen name="BarcodeLabel" component={BarcodeLabelScreen} />
-        ) : null}
+        <Stack.Screen name="BarcodeLabel" component={BarcodeLabelScreen} />
         <Stack.Screen name="Integrations" component={IntegrationsScreen} />
         <Stack.Screen name="ShopifyIntegration" component={ShopifyIntegrationScreen} />
         <Stack.Screen name="Payment" component={PaymentScreen} />
@@ -213,7 +219,8 @@ export default function MainNavigator() {
         <Stack.Screen
           name="ProductForm"
           component={ProductFormScreen}
-          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+          // Card (not native modal) so Portal/Modal pickers stay above the form on iOS.
+          options={{ animation: 'slide_from_bottom' }}
         />
         <Stack.Screen name="PriceManagement" component={PriceManagementScreen} />
         <Stack.Screen name="CategoryList" component={CategoryListScreen} />

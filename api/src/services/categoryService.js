@@ -25,7 +25,7 @@ async function listCategories(db, query) {
 
   const categories = await Category.findAll({
     where,
-    include: [{ model: Category, as: 'parent', attributes: ['id', 'name'] }],
+    include: [{ model: Category, as: 'parent', attributes: ['id', 'name', 'name_mr'] }],
     order: [['name', 'ASC']],
   });
 
@@ -65,10 +65,11 @@ async function deleteCategory(db, id) {
   const category = await Category.findOne({ where: { id, deleted_at: null } });
   if (!category) throw new AppError('Category not found', 404, 'NOT_FOUND');
 
-  const productCount = await Product.count({ where: { category_id: id, deleted_at: null } });
-  if (productCount > 0) {
-    throw new AppError('Category has products. Reassign them first.', 400, 'CATEGORY_IN_USE');
-  }
+  // Unlink products so delete is not blocked when items still reference this category.
+  await Product.update(
+    { category_id: null },
+    { where: { category_id: id, deleted_at: null } },
+  );
 
   await category.update({ deleted_at: new Date(), status: 'inactive' });
   return { deleted: true };

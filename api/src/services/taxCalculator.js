@@ -1,4 +1,5 @@
 const AppError = require('../utils/AppError');
+const { getMasterModels } = require('../models/master');
 
 function round4(n) {
   return Math.round(n * 10000) / 10000;
@@ -6,6 +7,26 @@ function round4(n) {
 
 function round2(n) {
   return Math.round(n * 100) / 100;
+}
+
+/** Cache master Marathi names for one bill calculation (by English product name). */
+async function lookupMasterNameMr(englishName, cache) {
+  const key = String(englishName || '').trim().toLowerCase();
+  if (!key) return null;
+  if (cache.has(key)) return cache.get(key);
+  try {
+    const { MasterProduct } = getMasterModels();
+    const row = await MasterProduct.findOne({
+      where: { name: String(englishName).trim(), status: 'active' },
+      attributes: ['name_mr'],
+    });
+    const mr = row?.name_mr ? String(row.name_mr).trim() || null : null;
+    cache.set(key, mr);
+    return mr;
+  } catch {
+    cache.set(key, null);
+    return null;
+  }
 }
 
 async function getTaxGroupForVariant(db, variant) {
@@ -27,6 +48,20 @@ async function getTaxGroupForVariant(db, variant) {
 function formatLineProductName(name, size, color) {
   const parts = [size, color].filter(Boolean);
   return parts.length ? `${name} (${parts.join(' · ')})` : name;
+}
+
+/** Bill print language: Marathi name when set, otherwise English. */
+function pickCatalogProductName(product, item, language, masterNameMr = null) {
+  const english = String(product?.name || item?.productName || '').trim();
+  const marathi = String(
+    product?.name_mr
+    || item?.productNameMr
+    || item?.product_name_mr
+    || masterNameMr
+    || '',
+  ).trim();
+  if (language === 'mr' && marathi) return marathi;
+  return english || marathi;
 }
 
 function isCustomBillItem(item) {
@@ -81,7 +116,7 @@ function calculateCustomLine(item) {
   };
 }
 
-async function calculateLine(db, item, variant) {
+async function calculateLine(db, item, variant, language = 'en', masterNameMrCache = null) {
   const qty = parseFloat(item.quantity);
   const unitPrice = parseFloat(item.unitPrice ?? variant.selling_price);
   const lineSubtotal = round4(qty * unitPrice);
@@ -119,11 +154,25 @@ async function calculateLine(db, item, variant) {
   taxAmount = round4(taxAmount);
   const lineTotal = round4(taxable + taxAmount);
 
+  let masterNameMr = null;
+  const hasLocalMr = !!(
+    variant.product?.name_mr
+    || item?.productNameMr
+    || item?.product_name_mr
+  );
+  if (language === 'mr' && !hasLocalMr && masterNameMrCache) {
+    masterNameMr = await lookupMasterNameMr(variant.product?.name || item?.productName, masterNameMrCache);
+    // Persist so Billing / future prints don't keep hitting master.
+    if (masterNameMr && variant.product?.id && !variant.product.name_mr) {
+      variant.product.update({ name_mr: masterNameMr }).catch(() => null);
+    }
+  }
+
   return {
     variantId: variant.id,
     isCustom: false,
     productName: formatLineProductName(
-      variant.product?.name || item.productName,
+      pickCatalogProductName(variant.product, item, language, masterNameMr),
       variant.size,
       variant.color
     ),
@@ -142,8 +191,17 @@ async function calculateLine(db, item, variant) {
   };
 }
 
-async function calculateBill(db, { items, billDiscountAmount, billDiscountPercent, offer, roundOffAmount }) {
+async function calculateBill(db, {
+  items,
+  billDiscountAmount,
+  billDiscountPercent,
+  offer,
+  roundOffAmount,
+  language,
+}) {
   const { ProductVariant, Product } = db;
+  const lang = language === 'mr' ? 'mr' : 'en';
+  const masterNameMrCache = lang === 'mr' ? new Map() : null;
   const calculatedItems = [];
   let subtotal = 0;
   let taxAmount = 0;
@@ -163,7 +221,7 @@ async function calculateBill(db, { items, billDiscountAmount, billDiscountPercen
     });
     if (!variant) throw new AppError(`Variant not found: ${item.variantId}`, 404, 'NOT_FOUND');
 
-    const line = await calculateLine(db, item, variant);
+    const line = await calculateLine(db, item, variant, lang, masterNameMrCache);
     calculatedItems.push(line);
     subtotal += line.taxable;
     taxAmount += line.taxAmount;

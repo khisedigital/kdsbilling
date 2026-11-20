@@ -19,13 +19,17 @@ import type { MainStackParamList } from '../../navigation/MainNavigator';
 import { useT } from '../../i18n';
 import { useLanguageStore } from '../../i18n/languageStore';
 import BottomBar from '../../components/ui/BottomBar';
-import { printDraftReceipt } from '../../print/receiptPrinter';
-import { createBill, deleteHeldBill, previewBill, type BillDetail } from '../../services/businessService';
+import { wakePrinterOnClick } from '../../print/receiptPrinter';
+import { enqueueDraftPrint } from '../../print/printRequestQueue';
+import { previewBillSmart } from '../../offline/billPreview';
+import { isOfflineNow, useConnectivityStore } from '../../offline/connectivityStore';
+import { createSale } from '../../offline/saleService';
+import { deleteHeldBill, type BillDetail } from '../../services/businessService';
 import { useCartStore } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing } from '../../theme/layout';
 import { totalSaving } from '../../utils/billSaving';
-import { screenProductName } from '../../utils/productName';
+import { printedCartLineName, screenProductName } from '../../utils/productName';
 import { formatQuantity } from '../../utils/quantity';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Payment'>;
@@ -66,6 +70,7 @@ function nearestRupee(amount: number) {
 export default function PaymentScreen({ navigation }: Props) {
   const t = useT();
   useLanguageStore((s) => s.ui);
+  const online = useConnectivityStore((s) => s.online);
   const items = useCartStore((s) => s.items);
   const updatePrice = useCartStore((s) => s.updatePrice);
   const customerId = useCartStore((s) => s.customerId);
@@ -104,6 +109,7 @@ export default function PaymentScreen({ navigation }: Props) {
   const requestId = useRef(0);
   const splitExtraRef = useRef(splitExtra);
   splitExtraRef.current = splitExtra;
+  const checkoutLock = useRef(false);
 
   const totalDue = round2(exactTotal + roundOffAmount);
   const nearestTarget = nearestRupee(exactTotal);
@@ -170,7 +176,7 @@ export default function PaymentScreen({ navigation }: Props) {
     setLoadingPreview(true);
     setError('');
     try {
-      const result = (await previewBill({
+      const result = (await previewBillSmart({
         items: items.map((i) => ({
           variantId: i.variantId,
           quantity: i.quantity,
@@ -180,7 +186,9 @@ export default function PaymentScreen({ navigation }: Props) {
           discountPercent: i.discountPercent,
           isCustom: i.isCustom === true,
           productName: i.productName,
+          productNameMr: i.productNameMr ?? null,
         })),
+        language: useLanguageStore.getState().bill,
         billDiscountAmount,
         billDiscountPercent,
         offerId,
@@ -203,9 +211,23 @@ export default function PaymentScreen({ navigation }: Props) {
     }
   }, [items, billDiscountAmount, billDiscountPercent, offerId, syncPrimaryAmount]);
 
+  const billLanguage = useLanguageStore((s) => s.bill);
+
   useEffect(() => {
     loadPreview();
-  }, [loadPreview]);
+  }, [loadPreview, billLanguage]);
+
+  useEffect(() => {
+    if (online) return;
+    if (payMode === 'credit' || payMode === 'store_credit') setPayMode('cash');
+    setSplitExtra((prev) =>
+      prev.map((p) =>
+        p.mode === 'credit' || p.mode === 'store_credit'
+          ? { ...p, mode: 'upi' }
+          : p,
+      ),
+    );
+  }, [online, payMode]);
 
   useEffect(() => {
     if (billDiscountAmount > 0 || billDiscountPercent > 0) {
@@ -343,7 +365,8 @@ export default function PaymentScreen({ navigation }: Props) {
         const cart = items.find((i) => i.variantId === line.variantId);
         return {
           id: `item-${idx}`,
-          product_name: line.productName,
+          product_name: printedCartLineName(cart, line.productName),
+          product_name_mr: cart?.productNameMr ?? null,
           sku: '',
           variant_id: line.variantId,
           quantity: line.quantity,
@@ -351,35 +374,54 @@ export default function PaymentScreen({ navigation }: Props) {
           mrp: cart?.mrp ?? null,
           discount_amount: line.discountAmount || 0,
           line_total: line.lineTotal,
+          variant: cart
+            ? {
+              size: cart.size,
+              color: cart.color,
+              product: {
+                name: cart.productName,
+                name_mr: cart.productNameMr ?? null,
+              },
+            }
+            : null,
         };
       }),
       payments: paidRows,
     };
   };
 
-  const handlePrint = async () => {
+  const printInflight = useRef(0);
+
+  const handlePrint = () => {
+    // Sync enqueue — every tap is kept even if USB is still busy.
     setError('');
     const draft = buildDraftBill();
     if (!draft) {
       setError(t('Bill not ready'));
       return;
     }
+    wakePrinterOnClick();
+    printInflight.current += 1;
     setPrinting(true);
-    try {
-      await printDraftReceipt(draft);
-    } catch (printErr: unknown) {
-      Alert.alert(t('Print failed'), (printErr as Error)?.message || t('Could not print receipt.'));
-    } finally {
-      setPrinting(false);
-    }
+    void enqueueDraftPrint(draft)
+      .catch((printErr: unknown) => {
+        Alert.alert(t('Print failed'), (printErr as Error)?.message || t('Could not print receipt.'));
+      })
+      .finally(() => {
+        printInflight.current = Math.max(0, printInflight.current - 1);
+        if (printInflight.current === 0) setPrinting(false);
+      });
   };
 
   const handlePay = async () => {
+    if (checkoutLock.current) return;
     if (!validateBeforePay()) return;
+    checkoutLock.current = true;
     setLoading(true);
     try {
-      await createBill({
+      await createSale({
         customerId,
+        customerName,
         items: items.map((i) => ({
           variantId: i.variantId,
           quantity: i.quantity,
@@ -389,7 +431,9 @@ export default function PaymentScreen({ navigation }: Props) {
           discountPercent: i.discountPercent,
           isCustom: i.isCustom === true,
           productName: i.productName,
+          productNameMr: i.productNameMr ?? null,
         })),
+        language: useLanguageStore.getState().bill,
         billDiscountAmount,
         billDiscountPercent,
         offerId,
@@ -409,8 +453,10 @@ export default function PaymentScreen({ navigation }: Props) {
       }
       goToNewBill();
     } catch (err: unknown) {
+      checkoutLock.current = false;
       setError(
-        (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message
+        (err as { response?: { data?: { error?: { message?: string } } }; message?: string })?.response?.data?.error?.message
+        || (err as Error)?.message
         || t('Payment failed'),
       );
     } finally {
@@ -491,9 +537,12 @@ export default function PaymentScreen({ navigation }: Props) {
         <View style={styles.modeRow}>
           {PAYMENT_MODES.map((m) => {
             const on = payMode === m.id;
+            const needsNet = m.id === 'credit' || m.id === 'store_credit';
+            const disabled = needsNet && !online;
             return (
               <Pressable
                 key={m.id}
+                disabled={disabled}
                 onPress={() => {
                   setPayMode(m.id);
                   setSplitExtra((prev) =>
@@ -502,7 +551,7 @@ export default function PaymentScreen({ navigation }: Props) {
                     ),
                   );
                 }}
-                style={[styles.modeBtn, on && styles.modeBtnOn]}>
+                style={[styles.modeBtn, on && styles.modeBtnOn, disabled && { opacity: 0.4 }]}>
                 <Icon name={m.icon} size={22} color={on ? colors.primary : colors.textMuted} />
                 <Text style={[styles.modeLbl, on && styles.modeLblOn]}>{t(m.label)}</Text>
               </Pressable>
@@ -759,7 +808,7 @@ export default function PaymentScreen({ navigation }: Props) {
           label: loading ? t('Saving…') : t('Save Sale'),
           onPress: handlePay,
           icon: 'check-bold',
-          disabled: !preview || loading || printing,
+          disabled: !preview || loading,
           color: colors.secondary,
           flex: 1,
         }}
@@ -768,7 +817,8 @@ export default function PaymentScreen({ navigation }: Props) {
             label: printing ? t('Printing…') : t('Print'),
             onPress: handlePrint,
             icon: 'printer',
-            disabled: !preview || loading || printing,
+            // Do not set loading — Paper disables the button while loading and drops taps.
+            disabled: !preview || loading,
             flex: 1,
           },
         ]}>
@@ -1015,7 +1065,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  lineAmt: { fontSize: 14, fontWeight: '700', color: colors.text, marginLeft: spacing.md },
+  lineAmt: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+    marginLeft: spacing.md,
+    minWidth: 92,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   miniSum: {
     marginTop: spacing.md,
     paddingTop: spacing.md,
@@ -1023,10 +1081,24 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     gap: 4,
   },
-  sumRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  sumLbl: { fontSize: 13, color: colors.textMuted },
-  sumVal: { fontSize: 13, fontWeight: '600', color: colors.text },
-  discVal: { fontSize: 13, fontWeight: '700', color: colors.secondary },
+  sumRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sumLbl: { flex: 1, fontSize: 13, color: colors.textMuted, paddingRight: spacing.sm },
+  sumVal: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+    minWidth: 92,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  discVal: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.secondary,
+    minWidth: 92,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   saveRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1037,8 +1109,15 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: colors.successLight,
   },
-  saveLbl: { fontSize: 13, fontWeight: '700', color: colors.secondaryDark },
-  saveVal: { fontSize: 15, fontWeight: '800', color: colors.secondaryDark },
+  saveLbl: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.secondaryDark, paddingRight: spacing.sm },
+  saveVal: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.secondaryDark,
+    minWidth: 92,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   error: { marginBottom: spacing.sm },
   feedback: {
     flexDirection: 'row',

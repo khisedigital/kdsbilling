@@ -35,5 +35,35 @@ target 'BillingPOS' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # libPrinterSDK.a is device-only. Never put it in the base OTHER_LDFLAGS
+    # (simulator would fail). Only link it for iphoneos. Never replace
+    # LIBRARY_SEARCH_PATHS[sdk=iphoneos*] without $(inherited) — that drops KdsPrint.
+    printer_sdk_path = '"$(PODS_ROOT)/../../node_modules/react-native-thermal-receipt-printer/ios/PrinterSDK"'
+    strip_printer_sdk = lambda do |config|
+      %w[OTHER_LDFLAGS OTHER_LIBTOOLFLAGS].each do |key|
+        flags = config.build_settings[key]
+        next if flags.nil?
+
+        list = flags.is_a?(Array) ? flags.flatten : flags.to_s.split(/\s+/)
+        cleaned = list.reject { |flag| flag.to_s.gsub(/["']/, '') == '-lPrinterSDK' }
+        config.build_settings[key] = cleaned
+      end
+      # Clear any previous broken sdk-specific LIBRARY_SEARCH_PATHS overwrite.
+      config.build_settings.delete('LIBRARY_SEARCH_PATHS[sdk=iphoneos*]')
+      config.build_settings['LIBRARY_SEARCH_PATHS'] = ['$(inherited)', printer_sdk_path]
+      config.build_settings['OTHER_LDFLAGS[sdk=iphoneos*]'] = '$(inherited) -lPrinterSDK'
+    end
+
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each { |config| strip_printer_sdk.call(config) }
+    end
+
+    installer.aggregate_targets.each do |aggregate|
+      aggregate.user_project.native_targets.each do |target|
+        target.build_configurations.each { |config| strip_printer_sdk.call(config) }
+      end
+      aggregate.user_project.save
+    end
   end
 end

@@ -9,7 +9,8 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import { ActivityIndicator, Button, Dialog, Portal, SegmentedButtons, Text, TextInput } from 'react-native-paper';
+import { ActivityIndicator, Button, Portal, SegmentedButtons, Text, TextInput } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import SectionCard from '../../components/ui/SectionCard';
@@ -18,6 +19,7 @@ import { scanBluetoothPrinters } from '../../print/PrintService';
 import { testPrint } from '../../print/receiptPrinter';
 import {
   getPrinterSettings,
+  resolvePaperSize,
   savePrinterSettings,
   type PaperSize,
   type PrinterSettings,
@@ -176,13 +178,16 @@ export default function PrinterSettingsScreen() {
 
         <SectionCard title={t('Printer type')} icon="printer">
           <SegmentedButtons
-            value={settings.type}
+            value={settings.type === 'system' ? 'network' : settings.type}
             onValueChange={(v) => setSettings({ ...settings, type: v as PrinterType })}
             buttons={[
-              { value: 'bluetooth', label: t('Bluetooth'), icon: 'bluetooth' },
               { value: 'network', label: t('Wi-Fi / LAN'), icon: 'wifi' },
+              { value: 'bluetooth', label: t('Bluetooth'), icon: 'bluetooth' },
             ]}
           />
+          <Text style={[styles.paperHint, { marginTop: 8 }]}>
+            {t('Recommended: Wi‑Fi port 9100 (same on phone, Mac and Windows). Bluetooth is a fallback.')}
+          </Text>
         </SectionCard>
 
         <SectionCard title={t('Paper size')} icon="file-outline">
@@ -190,8 +195,14 @@ export default function PrinterSettingsScreen() {
             {t('Must match your printer roll (wrong size adds blank wrap lines)')}
           </Text>
           <SegmentedButtons
-            value={settings.paperSize}
-            onValueChange={(v) => setSettings({ ...settings, paperSize: v as PaperSize })}
+            value={resolvePaperSize(settings.paperSize)}
+            onValueChange={(v) => {
+              const paperSize = resolvePaperSize(v);
+              const next = { ...settings, paperSize };
+              setSettings(next);
+              // Persist immediately so the next Print uses this size.
+              void savePrinterSettings(next);
+            }}
             buttons={[
               { value: '58', label: t('58mm') },
               { value: '80', label: t('80mm') },
@@ -300,13 +311,13 @@ export default function PrinterSettingsScreen() {
       </ScrollView>
 
       <Portal>
-        <Dialog
+        <AppDialog
           visible={pickerOpen}
           onDismiss={() => setPickerOpen(false)}
           style={styles.dialog}
         >
-          <Dialog.Title>{t('Select Bluetooth printer')}</Dialog.Title>
-          <Dialog.Content style={styles.dialogContent}>
+          <AppDialog.Title>{t('Select Bluetooth printer')}</AppDialog.Title>
+          <AppDialog.Content style={styles.dialogContent}>
             <ScreenSearch
               value={search}
               onChangeText={setSearch}
@@ -336,14 +347,14 @@ export default function PrinterSettingsScreen() {
               })}
               {!filteredDevices.length ? <Text style={styles.noMatch}>{t('No matching printers')}</Text> : null}
             </ScrollView>
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button onPress={() => setPickerOpen(false)}>{t('Cancel')}</Button>
             <Button onPress={handleScan} loading={scanning}>
               {t('Rescan')}
             </Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </>
   );

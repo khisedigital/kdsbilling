@@ -12,12 +12,13 @@ import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
-import SearchableSelect from '../../components/ui/SearchableSelect';
+import CategoryPickerSheet from '../../components/ui/CategoryPickerSheet';
 import { useT } from '../../i18n';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import {
   fetchMasterCatalogBusinessTypes,
   fetchMasterCatalogCategories,
-  fetchMasterCatalogProducts,
+  fetchAllMasterCatalogProducts,
   importFromMasterCatalog,
   type MasterCatalogProduct,
 } from '../../services/catalogService';
@@ -48,7 +49,9 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(false);
+  const [loadedCount, setLoadedCount] = useState(0);
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
 
   const selectedIds = useMemo(
     () => Object.keys(selected).filter((id) => selected[id]),
@@ -93,14 +96,16 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
       return;
     }
     setLoadingProducts(true);
+    setLoadedCount(0);
     try {
-      const rows = await fetchMasterCatalogProducts({
+      const rows = await fetchAllMasterCatalogProducts({
         businessTypeId,
         categoryId: categoryId || undefined,
         search: search.trim() || undefined,
-        limit: 1000,
+        onPage: (n) => setLoadedCount(n),
       });
       setProducts(rows);
+      setLoadedCount(rows.length);
     } catch (err) {
       setProducts([]);
       Alert.alert(tRef.current('Error'), apiError(err, tRef.current('Could not load master products')));
@@ -136,27 +141,35 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
       return;
     }
     setImporting(true);
+    setImportProgress({ done: 0, total: selectedIds.length });
     try {
-      const result = await importFromMasterCatalog(selectedIds);
+      const result = await importFromMasterCatalog(selectedIds, undefined, {
+        onProgress: (done, total) => setImportProgress({ done, total }),
+      });
       const errLines = (result.errors || [])
         .slice(0, 3)
         .map((e: { name?: string; message?: string }) => (e.message ? t(e.message) : e.name))
         .filter(Boolean);
       const detail = errLines.length ? `\n${errLines.join('\n')}` : '';
+      const updateHint = result.updated
+        ? `\n\n${t('Updated existing products with master name and Marathi name.')}`
+        : '';
       Alert.alert(
         t('Import complete'),
-        t('Imported {{imported}}\nSkipped {{skipped}}\nFailed {{failed}}{{detail}}', {
+        t('Imported {{imported}}\nUpdated {{updated}}\nUnchanged {{skipped}}\nFailed {{failed}}{{detail}}', {
           imported: result.imported,
+          updated: result.updated || 0,
           skipped: result.skipped,
           failed: result.failed,
           detail,
-        }),
+        }) + updateHint,
         [{ text: t('OK'), onPress: () => navigation.goBack() }],
       );
     } catch (err) {
       Alert.alert(t('Import failed'), apiError(err, t('Could not import products')));
     } finally {
       setImporting(false);
+      setImportProgress(null);
     }
   };
 
@@ -203,20 +216,40 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
           style={styles.search}
         />
         {categoryOptions.length ? (
-          <SearchableSelect
-            options={categoryOptions}
-            value={categoryId || null}
-            onChange={(id) => setCategoryId(id || '')}
-            open={categoryOpen}
-            onOpenChange={setCategoryOpen}
-            placeholder="Category"
-            allLabel="All categories"
-            searchPlaceholder="Search categories…"
-          />
+          <Pressable
+            onPress={() => setCategoryOpen(true)}
+            style={[styles.categoryBtn, categoryId ? styles.categoryBtnOn : null]}
+            accessibilityLabel={t('Category')}>
+            <Icon
+              name="shape-outline"
+              size={18}
+              color={categoryId ? colors.textOnPrimary : colors.primary}
+            />
+            <Text
+              style={[styles.categoryBtnText, categoryId ? styles.categoryBtnTextOn : null]}
+              numberOfLines={1}>
+              {categoryOptions.find((o) => o.id === categoryId)?.label || t('All categories')}
+            </Text>
+            <Icon
+              name="chevron-down"
+              size={18}
+              color={categoryId ? colors.textOnPrimary : colors.primary}
+            />
+          </Pressable>
         ) : null}
+        <CategoryPickerSheet
+          visible={categoryOpen}
+          options={categoryOptions}
+          value={categoryId || null}
+          allLabel={t('All categories')}
+          onSelect={(id) => setCategoryId(id || '')}
+          onClose={() => setCategoryOpen(false)}
+        />
         <Text style={styles.hint}>
           {loadingProducts
-            ? t('Loading products…')
+            ? (loadedCount
+              ? t('Loading products… {{count}} so far', { count: loadedCount })
+              : t('Loading products…'))
             : t('{{count}} products', { count: products.length })}
         </Text>
         <View style={styles.actions}>
@@ -270,6 +303,14 @@ export default function ImportMasterProductsScreen({ navigation }: Props) {
       />
 
       <View style={styles.footer}>
+        {importing && importProgress ? (
+          <Text style={styles.importProgress}>
+            {t('Importing {{done}} of {{total}}', {
+              done: importProgress.done,
+              total: importProgress.total,
+            })}
+          </Text>
+        ) : null}
         <Button
           mode="contained"
           loading={importing}
@@ -318,6 +359,24 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
   search: { marginBottom: 2, backgroundColor: colors.surface },
+  categoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 44,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginTop: 6,
+    backgroundColor: colors.surface,
+  },
+  categoryBtnOn: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  categoryBtnText: { flex: 1, fontSize: 14, color: colors.text },
+  categoryBtnTextOn: { color: colors.textOnPrimary, fontWeight: '600' },
   hint: { fontSize: 12, color: colors.textMuted, marginTop: 6, marginBottom: 4 },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 8 },
   count: { marginLeft: 'auto', fontSize: 12, color: colors.textMuted },
@@ -344,5 +403,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  importProgress: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 8,
   },
 });

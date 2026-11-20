@@ -8,6 +8,7 @@ import SectionCard from '../../components/ui/SectionCard';
 import * as profileService from '../../services/profileService';
 import { useAuthStore } from '../../store/authStore';
 import { colors } from '../../theme/colors';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { common, spacing, typography } from '../../theme/layout';
 import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
@@ -16,6 +17,7 @@ type Props = NativeStackScreenProps<MainStackParamList, 'Profile'>;
 
 export default function ProfileScreen({}: Props) {
   const t = useT();
+  const keyboardOverlap = useKeyboardOverlap();
   const user = useAuthStore((s) => s.user);
   const updateLocalUser = useAuthStore((s) => s.updateLocalUser);
   const logout = useAuthStore((s) => s.logout);
@@ -112,7 +114,10 @@ export default function ProfileScreen({}: Props) {
   }
 
   return (
-    <ScrollView style={common.screen} contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      style={common.screen}
+      contentContainerStyle={[common.screenPad, keyboardOverlap > 0 && { paddingBottom: keyboardOverlap + spacing.xl }]}
+      keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>{t('My Profile')}</Text>
       <Text style={styles.subtitle}>{t('Update your name, mobile, and password')}</Text>
 

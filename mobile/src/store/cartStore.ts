@@ -1,11 +1,13 @@
 import { create } from 'zustand';
-import { useLanguageStore } from '../i18n/languageStore';
+import type { CatalogPricePatch } from '../services/catalogCache';
 import type { SearchProductResult } from '../services/catalogService';
 import type { UomInfo } from '../utils/quantity';
 
 export interface CartItem {
   /** Catalog variant id, or `custom-<id>` for open-price lines */
   variantId: string;
+  /** Catalog product id — used to re-link prices if a variant id is refreshed. */
+  productId?: string;
   productName: string;
   /** Marathi catalog name, used on screen when the UI language is Marathi. */
   productNameMr?: string | null;
@@ -42,7 +44,9 @@ interface CartState {
   updatePrice: (variantId: string, unitPrice: number) => void;
   removeItem: (variantId: string) => void;
   /** Refresh name/price/stock on bill lines after a catalog product is edited. */
-  syncFromCatalog: (catalog: SearchProductResult[]) => void;
+  syncFromCatalog: (catalog: SearchProductResult[], opts?: { forcePrices?: boolean }) => void;
+  /** Force-apply product-form / price-management patches onto open bill lines. */
+  applyPricePatches: (patches: CatalogPricePatch[]) => boolean;
   setCustomer: (id: string | null, name?: string | null) => void;
   setBillDiscount: (amount: number, percent: number) => void;
   setOffer: (id: string | null) => void;
@@ -86,6 +90,11 @@ export const useCartStore = create<CartState>((set, get) => ({
                 mrp: item.mrp !== undefined ? item.mrp : i.mrp,
                 productName: item.productName || i.productName,
                 productNameMr: item.productNameMr ?? i.productNameMr,
+                productId: item.productId || i.productId,
+                // Keep catalog list price unless cashier already overrode this line.
+                ...(!i.priceEdited && item.unitPrice !== undefined
+                  ? { unitPrice: item.unitPrice }
+                  : {}),
               }
             : i
         ),
@@ -116,39 +125,63 @@ export const useCartStore = create<CartState>((set, get) => ({
     });
   },
   removeItem: (variantId) => set({ items: get().items.filter((i) => i.variantId !== variantId) }),
-  syncFromCatalog: (catalog) => {
+  syncFromCatalog: (catalog, opts) => {
     if (!catalog.length || !get().items.length) return;
+    const forcePrices = !!opts?.forcePrices;
     const byVariant = new Map(catalog.map((p) => [p.variantId, p]));
+    const byProduct = new Map<string, SearchProductResult[]>();
+    for (const row of catalog) {
+      if (!row.productId) continue;
+      const list = byProduct.get(row.productId) || [];
+      list.push(row);
+      byProduct.set(row.productId, list);
+    }
     let changed = false;
     const items = get().items.map((item) => {
       if (item.isCustom) return item;
-      const product = byVariant.get(item.variantId);
+      let product = byVariant.get(item.variantId);
+      // Single-variant product edit may refresh under the same product id.
+      if (!product && item.productId) {
+        const siblings = byProduct.get(item.productId) || [];
+        if (siblings.length === 1) product = siblings[0];
+      }
       if (!product) return item;
-      const catalogPrice = Number(product.sellingPrice) || 0;
-      const nextPrice = item.priceEdited ? item.unitPrice : catalogPrice;
+      const catalogPrice = Math.round((Number(product.sellingPrice) || 0) * 100) / 100;
+      const currentPrice = Math.round((Number(item.unitPrice) || 0) * 100) / 100;
+      // When forcing catalog prices, still refuse a ₹0 overwrite of a positive line
+      // (corrupt cache / progressive lean payload race).
+      const forcedPrice = catalogPrice > 0 || currentPrice <= 0 ? catalogPrice : currentPrice;
+      const nextPrice = !forcePrices && item.priceEdited ? item.unitPrice : (
+        forcePrices ? forcedPrice : catalogPrice
+      );
       const nextMrp = product.mrp != null ? Number(product.mrp) || null : null;
       const nextAllow = !!(product.allowDecimalQty || product.isWeightBased);
       const nextStock = product.stockQty ?? item.stockQty;
       const mrName = product.productNameMr?.trim() || null;
-      const nextName =
-        useLanguageStore.getState().bill === 'mr' && mrName ? mrName : product.productName;
+      // Always keep English in productName; bill print resolves Marathi separately.
+      const nextName = product.productName;
       if (
         item.productName === nextName &&
         (item.productNameMr || null) === mrName &&
         item.sku === product.sku &&
         item.size === product.size &&
         item.color === product.color &&
-        item.unitPrice === nextPrice &&
+        currentPrice === nextPrice &&
         item.mrp === nextMrp &&
         item.allowDecimalQty === nextAllow &&
         item.stockQty === nextStock &&
         (item.uom?.code || '') === (product.uom?.code || '')
+        && item.variantId === product.variantId
+        && (item.productId || '') === (product.productId || item.productId || '')
+        && (!forcePrices || !item.priceEdited)
       ) {
         return item;
       }
       changed = true;
       return {
         ...item,
+        variantId: product.variantId,
+        productId: product.productId || item.productId,
         productName: nextName,
         productNameMr: mrName,
         sku: product.sku,
@@ -159,9 +192,72 @@ export const useCartStore = create<CartState>((set, get) => ({
         uom: product.uom || item.uom,
         allowDecimalQty: nextAllow,
         stockQty: nextStock,
+        // Catalog price win after Price Management / product edit.
+        ...(forcePrices ? { priceEdited: false } : {}),
       };
     });
     if (changed) set({ items });
+  },
+  applyPricePatches: (patches) => {
+    const clean = (patches || []).filter((p) => p?.variantId);
+    if (!clean.length || !get().items.length) return false;
+    const byVariant = new Map(clean.map((p) => [p.variantId, p]));
+    const byProduct = new Map<string, CatalogPricePatch[]>();
+    for (const patch of clean) {
+      if (!patch.productId) continue;
+      const list = byProduct.get(patch.productId) || [];
+      list.push(patch);
+      byProduct.set(patch.productId, list);
+    }
+    let changed = false;
+    const items = get().items.map((item) => {
+      if (item.isCustom) return item;
+      let patch = byVariant.get(item.variantId);
+      if (!patch && item.productId) {
+        const siblings = byProduct.get(item.productId) || [];
+        if (siblings.length === 1) patch = siblings[0];
+      }
+      if (!patch) return item;
+      const currentPrice = Math.round((Number(item.unitPrice) || 0) * 100) / 100;
+      const patchPrice = patch.sellingPrice !== undefined
+        ? Math.round((Number(patch.sellingPrice) || 0) * 100) / 100
+        : null;
+      // Ignore stale ₹0 patches that would wipe a known good line price.
+      const nextPrice = patchPrice == null
+        ? currentPrice
+        : (patchPrice > 0 || currentPrice <= 0)
+          ? patchPrice
+          : currentPrice;
+      const nextName = patch.name !== undefined ? patch.name : item.productName;
+      const nextNameMr = patch.nameMr !== undefined ? patch.nameMr : item.productNameMr;
+      const nextMrp = patch.mrp !== undefined ? patch.mrp : item.mrp;
+      const nextStock = patch.stockQty !== undefined ? patch.stockQty : item.stockQty;
+      if (
+        currentPrice === nextPrice
+        && item.productName === nextName
+        && (item.productNameMr || null) === (nextNameMr || null)
+        && item.mrp === nextMrp
+        && item.stockQty === nextStock
+        && item.variantId === patch.variantId
+        && !item.priceEdited
+      ) {
+        return item;
+      }
+      changed = true;
+      return {
+        ...item,
+        variantId: patch.variantId,
+        productId: patch.productId || item.productId,
+        productName: nextName || item.productName,
+        productNameMr: nextNameMr,
+        unitPrice: nextPrice,
+        mrp: nextMrp ?? null,
+        stockQty: nextStock,
+        priceEdited: false,
+      };
+    });
+    if (changed) set({ items });
+    return changed;
   },
   setCustomer: (id, name = null) => set({ customerId: id, customerName: name }),
   setBillDiscount: (amount, percent) => set({ billDiscountAmount: amount, billDiscountPercent: percent }),

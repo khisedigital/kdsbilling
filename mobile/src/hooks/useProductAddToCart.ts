@@ -1,15 +1,7 @@
 import { useCallback, useState } from 'react';
-import { useLanguageStore } from '../i18n';
 import type { SearchProductResult } from '../services/catalogService';
 import { useCartStore, type CartItem } from '../store/cartStore';
 import { needsQuantityPrompt } from '../utils/quantity';
-
-function cartProductName(product: SearchProductResult): string {
-  if (useLanguageStore.getState().bill === 'mr' && product.productNameMr?.trim()) {
-    return product.productNameMr.trim();
-  }
-  return product.productName;
-}
 
 export function useProductAddToCart() {
   const addItem = useCartStore((s) => s.addItem);
@@ -21,7 +13,9 @@ export function useProductAddToCart() {
   const buildCartItem = useCallback(
     (product: SearchProductResult, quantity: number): CartItem => ({
       variantId: product.variantId,
-      productName: cartProductName(product),
+      productId: product.productId || undefined,
+      // Keep English in productName; print/save picks Marathi from productNameMr when bill language is mr.
+      productName: product.productName,
       productNameMr: product.productNameMr?.trim() || null,
       sku: product.sku,
       size: product.size,

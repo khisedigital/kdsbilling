@@ -30,17 +30,16 @@ object ReceiptRaster {
     if (DEVANAGARI.containsMatchIn(plain)) {
       // Leave UTF-8 / Chinese mode so the image is not printed as ???.
       out.addAll(listOf(0x1C, 0x2E, 0x1B, 0x74, 0x00))
-    }
-
-    for (line in plain.split('\n')) {
-      if (!DEVANAGARI.containsMatchIn(line)) {
+      // One continuous picture. Shop-name then text makes many heads stop after the name.
+      val pictureWidth = (widthDots - 16).coerceAtLeast(8)
+      appendBitImage(out, renderReceipt(plain, pictureWidth))
+    } else {
+      for (line in plain.split('\n')) {
         for (ch in line) {
           val code = ch.code
           if (code in 0x20..0x7E) out.add(code)
         }
         out.add(0x0A)
-      } else {
-        appendBitImage(out, renderLine(line, widthDots))
       }
     }
 
@@ -67,6 +66,32 @@ object ReceiptRaster {
     }
     val width = maxOf(0, paper - left - right) and 1.inv()
     return left to width
+  }
+
+  private fun renderReceipt(plain: String, width: Int): Bitmap {
+    val lines = plain.replace("\r", "").split('\n')
+    val parts = ArrayList<Bitmap>()
+    for (line in lines) {
+      if (line.isBlank()) {
+        parts.add(Bitmap.createBitmap(width, 8, Bitmap.Config.ARGB_8888).also { it.eraseColor(Color.WHITE) })
+      } else {
+        parts.add(renderLine(line, width))
+      }
+    }
+    if (parts.isEmpty()) {
+      return Bitmap.createBitmap(width, 8, Bitmap.Config.ARGB_8888).also { it.eraseColor(Color.WHITE) }
+    }
+    val height = parts.sumOf { it.height }
+    val stacked = Bitmap.createBitmap(width, height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(stacked)
+    canvas.drawColor(Color.WHITE)
+    var y = 0
+    for (part in parts) {
+      canvas.drawBitmap(part, 0f, y.toFloat(), null)
+      y += part.height
+      if (!part.isRecycled) part.recycle()
+    }
+    return stacked
   }
 
   private fun renderLine(text: String, width: Int): Bitmap {

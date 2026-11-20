@@ -35,7 +35,8 @@ export type LabelHeightMm = 25 | 28 | 30;
  * 0 = continuous (all copies in one job) — works on most printers.
  * 3 = batched — only for heads that cut/drift after a few stickers in one job.
  */
-export type LabelBatchSize = 0 | 3;
+/** 0 = continuous. 2 = safe burst size (3rd sticker often drops the barcode digits). */
+export type LabelBatchSize = 0 | 2;
 
 /**
  * Gap-label / barcode sticker printer — stored separately from billing.
@@ -58,8 +59,8 @@ export interface LabelPrinterSettings {
 /** Heuristic when a printer is first selected (user can still override). */
 export function suggestLabelBatchSize(printerName: string): LabelBatchSize {
   const n = String(printerName || '').toLowerCase();
-  // Seznik / Sezink-class heads only keep ~3 stickers of ESC/POS in the buffer.
-  if (/sez?n[iy]?k|sezenik/.test(n)) return 3;
+  // Seznik-class: buffer is tight — 2 stickers/burst keeps barcode digits on every label.
+  if (/sez?n[iy]?k|sezenik/.test(n)) return 2;
   // Poshiflow and similar handle a full continuous job.
   if (/poshi|poshiflow/.test(n)) return 0;
   return 0;
@@ -73,7 +74,7 @@ export function resolveLabelBatchSize(
   if (key && settings.labelBatchByPrinter && key in settings.labelBatchByPrinter) {
     return normalizeLabelBatchSize(settings.labelBatchByPrinter[key]);
   }
-  if (settings.labelBatchSize === 3) return 3;
+  if (normalizeLabelBatchSize(settings.labelBatchSize) === 2) return 2;
   if (key) return suggestLabelBatchSize(key);
   return 0;
 }
@@ -84,8 +85,10 @@ const LABEL_KEY = 'label_printer_settings';
 export const IS_DESKTOP = Platform.OS === 'web';
 
 export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
+  // Desktop shops usually plug USB thermal; phones use BT unless Wi‑Fi :9100 is set.
+  // Wi‑Fi remains the most portable option when the printer has a LAN/Wi‑Fi module.
   type: IS_DESKTOP ? 'system' : 'bluetooth',
-  // Web/desktop defaults to 80mm (common POS roll); phones default 58mm Bluetooth rolls.
+  networkPort: 9100,
   paperSize: IS_DESKTOP ? '80' : '58',
 };
 
@@ -95,13 +98,30 @@ export const DEFAULT_LABEL_PRINTER_SETTINGS: LabelPrinterSettings = {
   labelBatchSize: 0,
 };
 
+/** Accept '58' / '58mm' / 58 / '80mm' / 'a4' from UI, storage, or older builds. */
+export function resolvePaperSize(
+  value: unknown,
+  fallback: PaperSize = DEFAULT_PRINTER_SETTINGS.paperSize,
+): PaperSize {
+  if (value === 58) return '58';
+  if (value === 80) return '80';
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === '58' || raw === '58mm' || raw === '2' || raw.startsWith('58')) return '58';
+  if (raw === 'a4' || raw === 'letter') return 'a4';
+  if (raw === '80' || raw === '80mm' || raw === '3' || raw.startsWith('80')) return '80';
+  return fallback;
+}
+
 function normalizeLabelHeightMm(value: unknown): LabelHeightMm {
   if (value === 25 || value === 30) return value;
   return 28;
 }
 
 export function normalizeLabelBatchSize(value: unknown): LabelBatchSize {
-  return value === 3 ? 3 : 0;
+  // Older builds saved 3; map to 2 so barcode digits stay on every sticker.
+  if (value === 2 || value === 3 || value === '2' || value === '3') return 2;
+  return 0;
 }
 
 function normalizeLabelBatchByPrinter(value: unknown): Record<string, LabelBatchSize> | undefined {
@@ -125,7 +145,9 @@ function normalizePrinterSettings(raw: string | null): PrinterSettings {
     networkPath?: string;
   };
   delete saved.networkPath;
+  // Legacy: type:'a4' meant office paper (before paperSize existed).
   if (stored.type === 'a4') saved.paperSize = 'a4';
+  saved.paperSize = resolvePaperSize(saved.paperSize, DEFAULT_PRINTER_SETTINGS.paperSize);
   if (saved.networkPort === 9100) saved.networkPort = undefined;
   // Phones have no OS “system” queue for bills — map legacy system → bluetooth.
   if (!IS_DESKTOP && saved.type === 'system') saved.type = 'bluetooth';
@@ -156,13 +178,42 @@ function normalizeLabelPrinterSettings(raw: string | null): LabelPrinterSettings
   return saved;
 }
 
+/** Hot cache so Print uses the size just chosen in Settings (AsyncStorage can lag). */
+let billingPrinterCache: PrinterSettings | null = null;
+
+/** Sync peek of the hot cache — used to wake the printer on click before await. */
+export function peekPrinterSettings(): PrinterSettings | null {
+  if (!billingPrinterCache) return null;
+  return {
+    ...billingPrinterCache,
+    paperSize: resolvePaperSize(billingPrinterCache.paperSize, DEFAULT_PRINTER_SETTINGS.paperSize),
+  };
+}
+
 /** Billing / receipt printer (bills, test print). Independent of label printer. */
 export async function getPrinterSettings(): Promise<PrinterSettings> {
-  return normalizePrinterSettings(await AsyncStorage.getItem(BILLING_KEY));
+  if (billingPrinterCache) {
+    // Re-normalize so paperSize stays '58' | '80' | 'a4'.
+    return {
+      ...billingPrinterCache,
+      paperSize: resolvePaperSize(billingPrinterCache.paperSize, DEFAULT_PRINTER_SETTINGS.paperSize),
+    };
+  }
+  const loaded = normalizePrinterSettings(await AsyncStorage.getItem(BILLING_KEY));
+  billingPrinterCache = loaded;
+  return { ...loaded };
 }
 
 export async function savePrinterSettings(settings: PrinterSettings): Promise<void> {
-  await AsyncStorage.setItem(BILLING_KEY, JSON.stringify(settings));
+  const normalized: PrinterSettings = {
+    ...settings,
+    paperSize: resolvePaperSize(settings.paperSize, DEFAULT_PRINTER_SETTINGS.paperSize),
+  };
+  if (!IS_DESKTOP && normalized.paperSize === 'a4') normalized.paperSize = '80';
+  if (IS_DESKTOP && normalized.paperSize === 'a4') normalized.type = 'system';
+  // Update memory first so the next bill print cannot race a slow disk write.
+  billingPrinterCache = { ...normalized };
+  await AsyncStorage.setItem(BILLING_KEY, JSON.stringify(normalized));
 }
 
 /** Gap-label / barcode sticker printer. Independent of billing printer. */

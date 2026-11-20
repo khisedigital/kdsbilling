@@ -181,9 +181,17 @@ function tableRows(
 }
 
 function pickShopName(shop: ShopSettings | null | undefined): string {
-  const s = shop as (ShopSettings & { shop_name?: string }) | null | undefined;
+  const s = shop as (ShopSettings & {
+    shop_name?: string;
+    shop_name_mr?: string;
+    name_mr?: string;
+  }) | null | undefined;
   const text = shopTextForBill(
-    { ...s, shopName: s?.shopName || s?.shop_name },
+    {
+      ...s,
+      shopName: s?.shopName || s?.shop_name,
+      shopNameMr: s?.shopNameMr || s?.shop_name_mr || s?.name_mr,
+    },
     useLanguageStore.getState().bill,
   );
   return ascii(text.shopName || APP_DISPLAY_NAME);
@@ -216,6 +224,36 @@ function pickBillNo(bill: BillDetail): string {
   return ascii(b.bill_number || b.billNumber || '');
 }
 
+function formatPrintedName(base: string, size?: string | null, color?: string | null): string {
+  const name = String(base || '').trim();
+  const parts = [size, color].map((p) => String(p || '').trim()).filter(Boolean);
+  if (!name) return parts.join(' · ') || '-';
+  return parts.length ? `${name} (${parts.join(' · ')})` : name;
+}
+
+/** Bill language Marathi → Marathi product name when set; else English / saved line. */
+function itemPrintName(item: NonNullable<BillDetail['items']>[number]): string {
+  const mrBill = useLanguageStore.getState().bill === 'mr';
+  const variant = item.variant;
+  const product = variant?.product;
+  const size = variant?.size;
+  const color = variant?.color;
+  const saved = String(item.product_name || '').trim();
+  if (mrBill) {
+    const marathi = String(
+      product?.name_mr
+      || item.product_name_mr
+      || '',
+    ).trim();
+    if (marathi) return formatPrintedName(marathi, size, color);
+    // Draft / createBill may already put Marathi (with size) on product_name.
+    if (hasDevanagari(saved)) return saved;
+  } else if (product?.name) {
+    return formatPrintedName(product.name, size, color);
+  }
+  return saved || '-';
+}
+
 function pickBillDate(bill: BillDetail): string {
   return fmtDate(bill.created_at || bill.createdAt);
 }
@@ -237,9 +275,9 @@ export function buildThermalReceipt(
   shop: ShopSettings | null,
   width = 32,
 ): string {
-  // 30 (58mm + left margin), 32, 48 (80mm), or A4 — never 42 on 80mm.
+  // 32 (58mm full width), 48 (80mm), or A4 — never 42 on 80mm.
   const w =
-    width <= 30 ? 30 : width <= 36 ? 32 : width >= A4_CHARS_PER_LINE ? A4_CHARS_PER_LINE : 48;
+    width <= 36 ? 32 : width >= A4_CHARS_PER_LINE ? A4_CHARS_PER_LINE : 48;
   const cols = colsFor(w);
   const lines: string[] = [];
   const shopName = pickShopName(shop);
@@ -262,12 +300,8 @@ export function buildThermalReceipt(
   lines.push(`<C>${L('TAX INVOICE')}</C>`);
   lines.push(rule(w, '-'));
 
-  const pushCenter = (text: string) => {
-    for (const part of wrapWords(text, w)) lines.push(`<C>${part}</C>`);
-  };
-  pushCenter(`${L('Bill')}: ${pickBillNo(bill)}`);
-  pushCenter(`${L('Date')}: ${pickBillDate(bill)}`);
-  pushCenter(`${L('Customer')}: ${ascii(bill.customer?.name || L('Walk-in'))}`);
+  lines.push(kv(w, L('Date'), pickBillDate(bill)));
+  lines.push(kv(w, L('Customer'), ascii(bill.customer?.name || L('Walk-in'))));
   lines.push(rule(w, '='));
   lines.push(tableHeader(w, cols));
   lines.push(rule(w, '-'));
@@ -277,7 +311,7 @@ export function buildThermalReceipt(
       ...tableRows(
         w,
         cols,
-        ascii(item.product_name),
+        ascii(itemPrintName(item)),
         n(item.quantity),
         n(item.unit_price),
         n(item.line_total),
@@ -332,9 +366,10 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
 
   const rows = (bill.items || [])
     .map((item, idx) => {
+      const name = itemPrintName(item);
       return `<tr>
         <td class="c">${idx + 1}</td>
-        <td>${escapeHtml(item.product_name)}${item.sku ? `<div class="sku">${escapeHtml(item.sku)}</div>` : ''}</td>
+        <td>${escapeHtml(name)}${item.sku ? `<div class="sku">${escapeHtml(item.sku)}</div>` : ''}</td>
         <td class="r">${escapeHtml(String(item.quantity))}</td>
         <td class="r">${escapeHtml(money(item.unit_price))}</td>
         <td class="r">${escapeHtml(money(item.line_total))}</td>
@@ -350,6 +385,11 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     .join('');
   const saved = totalSaving(bill.items || []);
 
+  const logoUrl = (shop?.logoUrl || '').trim();
+  const logoBlock = logoUrl
+    ? `<img class="logo" src="${escapeHtml(logoUrl)}" alt="" />`
+    : '';
+
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>${escapeHtml(pickBillNo(bill))}</title>
 <style>
@@ -358,6 +398,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b,.totals .grand{font-weight:700}
   .head{text-align:center;border:1px solid #000;padding:18px 14px;margin-bottom:18px}
+  .logo{display:block;max-height:72px;max-width:220px;margin:0 auto 10px;object-fit:contain}
   .shop{margin:0;font-size:32px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:center;line-height:1.45}
   .meta{margin:4px 0 0;color:#000;font-size:13px}
   .title{margin:10px 0 0;font-size:12px;letter-spacing:.2em}
@@ -377,6 +418,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   .foot{text-align:center;margin-top:28px;padding-top:12px;border-top:1px dashed #000;color:#000;font-size:13px}
 </style></head><body>
   <div class="head">
+    ${logoBlock}
     <h1 class="shop">${escapeHtml(shopName)}</h1>
     ${address ? `<p class="meta">${escapeHtml(address)}</p>` : ''}
     ${phone ? `<p class="meta">${escapeHtml(L('Ph'))}: ${escapeHtml(phone)}</p>` : ''}
@@ -384,7 +426,6 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     <p class="title">${escapeHtml(L('TAX INVOICE'))}</p>
   </div>
   <div class="info">
-    <div><strong>${escapeHtml(L('Bill'))}</strong> ${escapeHtml(pickBillNo(bill))}</div>
     <div><strong>${escapeHtml(L('Date'))}</strong> ${escapeHtml(pickBillDate(bill))}</div>
     <div><strong>${escapeHtml(L('Customer'))}</strong> ${escapeHtml(bill.customer?.name || L('Walk-in'))}</div>
   </div>

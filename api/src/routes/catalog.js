@@ -35,17 +35,20 @@ router.post('/products/bulk-import', requirePermission(PERMISSIONS.PRODUCT_CREAT
 router.get('/master-catalog/business-types', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.listMasterCatalogBusinessTypes));
 router.get('/master-catalog/categories', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.listMasterCatalogCategories));
 router.get('/master-catalog/products', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.listMasterCatalog));
+router.post('/master-catalog/sync-names', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.syncCatalogFromMaster));
 router.post('/products/import-from-master', requirePermission(PERMISSIONS.PRODUCT_CREATE), asyncHandler(catalog.importFromMasterCatalog));
 router.get('/products/open-food-facts', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.searchOpenFoodFacts));
 router.post('/products/import-from-open-food', requirePermission(PERMISSIONS.PRODUCT_CREATE), asyncHandler(catalog.importOpenFoodFacts));
 router.get('/products', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.listProducts));
 // Must stay above any `/products/:id` route so "price-bulk" is never treated as an id.
 router.post('/products/price-bulk', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.bulkUpdateVariantPricing));
+router.post('/products/favorites/bulk', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.setProductsFavoriteBulk));
 router.post('/products/delete-all', requirePermission(PERMISSIONS.PRODUCT_DELETE), asyncHandler(catalog.deleteAllProducts));
 router.post('/products', requirePermission(PERMISSIONS.PRODUCT_CREATE), asyncHandler(catalog.createProduct));
 router.get('/products/:id/barcode-status', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.productBarcodeStatus));
 router.get('/products/:id', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.getProduct));
 router.put('/products/:id', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.updateProduct));
+router.put('/products/:id/favorite', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.setProductFavorite));
 router.delete('/products/:id', requirePermission(PERMISSIONS.PRODUCT_DELETE), asyncHandler(catalog.deleteProduct));
 
 // Images

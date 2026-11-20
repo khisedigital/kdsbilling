@@ -8,6 +8,6 @@ Pod::Spec.new do |s|
   s.platforms    = { :ios => '15.1' }
   s.source       = { :path => '.' }
   s.source_files = '*.{h,m}'
-  s.frameworks   = 'UIKit', 'CoreBluetooth'
+  s.frameworks   = 'UIKit', 'CoreBluetooth', 'CoreText'
   s.dependency 'React-Core'
 end

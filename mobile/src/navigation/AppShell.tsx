@@ -1,12 +1,18 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, StyleSheet } from 'react-native';
+import { prefetchMarathiTranslator } from '../i18n/translateToMarathi';
+import { colors } from '../theme/colors';
 import AppSidebar from './AppSidebar';
 import MainNavigator from './MainNavigator';
 import { usePinnedSidebar } from './usePinnedSidebar';
-import { colors } from '../theme/colors';
 
 export default function AppShell() {
   const pinned = usePinnedSidebar();
+
+  useEffect(() => {
+    // Desktop/web: download Paar EN→MR once, then translations work offline.
+    prefetchMarathiTranslator();
+  }, []);
 
   return (
     <View style={styles.root}>

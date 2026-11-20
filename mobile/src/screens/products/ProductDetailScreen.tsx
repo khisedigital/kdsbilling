@@ -1,6 +1,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Dialog, HelperText, Portal, Text } from 'react-native-paper';
+import { Button, HelperText, Portal, SegmentedButtons, Text } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -18,6 +19,15 @@ import { colors } from '../../theme/colors';
 import { common, radius, spacing, typography, dialogCard} from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ProductDetail'>;
+type StockDirection = 'in' | 'out';
+
+function variantStockOf(v: ProductVariant | null | undefined): number {
+  if (!v) return 0;
+  return Number(
+    (v as { stockQty?: number; stock_qty?: number }).stockQty
+      ?? (v as { stock_qty?: number }).stock_qty,
+  ) || 0;
+}
 
 export default function ProductDetailScreen({ route, navigation }: Props) {
   const t = useT();
@@ -27,6 +37,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [stockVisible, setStockVisible] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState<ProductVariant | null>(null);
+  const [stockDirection, setStockDirection] = useState<StockDirection>('in');
   const [quantity, setQuantity] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -58,6 +69,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       return;
     }
     setSelectedVariant(target);
+    setStockDirection('in');
     setQuantity('');
     setNotes('');
     setFormError('');
@@ -71,21 +83,53 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       setFormError(t('Enter a valid quantity greater than 0'));
       return;
     }
+    const current = variantStockOf(selectedVariant);
+    if (stockDirection === 'out' && qty > current) {
+      setFormError(
+        t('Only {{qty}} in stock.', {
+          qty: formatQuantity(
+            current,
+            product?.uom
+              ? { code: product.uom.code, type: product.uom.type }
+              : { code: 'pcs', type: 'count' },
+          ),
+        }),
+      );
+      return;
+    }
     setSaving(true);
     setFormError('');
     try {
-      await postStockMovement('in', {
-        items: [{ variantId: selectedVariant.id, quantity: qty }],
+      await postStockMovement(stockDirection, {
+        items: [{
+          variantId: selectedVariant.id,
+          quantity: qty,
+          productId: product?.id || route.params.productId,
+        }],
         notes: notes.trim() || undefined,
       });
       setStockVisible(false);
+      const delta = stockDirection === 'out' ? -qty : qty;
+      // Optimistic UI — don't wait for reload to show the new qty.
+      setProduct((prev) => {
+        if (!prev) return prev;
+        const variants = (prev.variants || []).map((v) => {
+          if (v.id !== selectedVariant.id) return v;
+          const next = Math.max(0, variantStockOf(v) + delta);
+          return { ...v, stockQty: next, stock_qty: next } as ProductVariant;
+        });
+        const total = variants.reduce((s, v) => s + variantStockOf(v), 0);
+        return { ...prev, variants, stockQty: total };
+      });
       load();
       Alert.alert(
-        t('Stock added'),
-        t('Added {{qty}} to {{name}}.', { qty, name: product?.name || t('product') }),
+        stockDirection === 'out' ? t('Stock removed') : t('Stock added'),
+        stockDirection === 'out'
+          ? t('Removed {{qty}} from {{name}}.', { qty, name: product?.name || t('product') })
+          : t('Added {{qty}} to {{name}}.', { qty, name: product?.name || t('product') }),
       );
     } catch (err) {
-      setFormError(apiError(err, t('Could not add stock')));
+      setFormError(apiError(err, t('Could not update stock')));
     } finally {
       setSaving(false);
     }
@@ -110,7 +154,11 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
   const primaryVariant = product.variants?.[0];
   const sellPrice = primaryVariant ? parseFloat(String(primaryVariant.selling_price)) : 0;
-  const stockQty = product.stockQty ?? product.variants?.reduce((s, v) => s + (v.stockQty || 0), 0) ?? 0;
+  // Prefer variant rows (local SQLite / API). Do not trust stale product.stockQty.
+  const variantStockTotal = (product.variants || []).reduce((s, v) => s + variantStockOf(v), 0);
+  const stockQty = (product.variants?.length || 0) > 0
+    ? variantStockTotal
+    : Number(product.stockQty ?? (product as { stock_qty?: number }).stock_qty) || 0;
   const stockLabel = formatQuantity(stockQty, product.uom ? { code: product.uom.code, type: product.uom.type } : { code: 'pcs', type: 'count' });
   const lowStock = stockQty <= 0;
 
@@ -143,12 +191,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
         <View style={styles.stockActions}>
           <Button
             mode="contained"
-            icon="plus-circle"
+            icon="swap-vertical"
             onPress={() => openAddStock()}
             buttonColor={colors.secondary}
             style={styles.stockActionBtn}
             contentStyle={styles.addStockContent}>
-            {t('Add stock')}
+            {t('Update stock')}
           </Button>
           <Button
             mode="outlined"
@@ -196,7 +244,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
       <SectionCard title={t('Variants ({{count}})', { count: product.variants?.length || 0 })} icon="shape-outline">
         {product.variants?.map((v) => {
-          const vStock = v.stockQty ?? 0;
+          const vStock = variantStockOf(v);
           const uomInfo = product.uom ? { code: product.uom.code, type: product.uom.type } : { code: 'pcs', type: 'count' as const };
           const plainCodes = plainBarcodesOf(v);
           const mainCode = plainCodes[0] || mainBarcodeOf(v);
@@ -234,10 +282,10 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                 <Button
                   compact
                   mode="outlined"
-                  icon="plus"
+                  icon="swap-vertical"
                   onPress={() => openAddStock(v)}
                   style={styles.variantStockBtn}>
-                  {t('Add stock')}
+                  {t('Update stock')}
                 </Button>
               ) : null}
             </View>
@@ -254,11 +302,33 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       </Button>
 
       <Portal>
-        <Dialog visible={stockVisible} onDismiss={() => !saving && setStockVisible(false)} style={styles.dialog}>
-          <Dialog.Title>{t('Add stock')}</Dialog.Title>
-          <Dialog.Content>
+        <AppDialog visible={stockVisible} onDismiss={() => !saving && setStockVisible(false)} style={styles.dialog}>
+          <AppDialog.Title>{t('Update stock')}</AppDialog.Title>
+          <AppDialog.Content>
             <Text style={styles.dialogProduct}>{product.name}</Text>
             <Text style={styles.dialogSku}>{selectedVariant?.sku}</Text>
+            <Text style={styles.dialogSku}>
+              {t('Current {{qty}}', {
+                qty: formatQuantity(
+                  variantStockOf(selectedVariant),
+                  product.uom
+                    ? { code: product.uom.code, type: product.uom.type }
+                    : { code: 'pcs', type: 'count' },
+                ),
+              })}
+            </Text>
+            <SegmentedButtons
+              value={stockDirection}
+              onValueChange={(v) => {
+                setStockDirection((v as StockDirection) || 'in');
+                setFormError('');
+              }}
+              style={styles.directionBtns}
+              buttons={[
+                { value: 'in', label: t('Stock in'), icon: 'plus' },
+                { value: 'out', label: t('Stock out'), icon: 'minus' },
+              ]}
+            />
             <AppTextInput
               label={t('Quantity *')}
               value={quantity}
@@ -276,14 +346,18 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
               style={styles.input}
             />
             {formError ? <HelperText type="error" visible>{formError}</HelperText> : null}
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button onPress={() => setStockVisible(false)} disabled={saving}>{t('Cancel')}</Button>
-            <Button onPress={saveStock} loading={saving} disabled={saving}>
-              {t('Add')}
+            <Button
+              onPress={saveStock}
+              loading={saving}
+              disabled={saving}
+              textColor={stockDirection === 'out' ? colors.warning : undefined}>
+              {stockDirection === 'out' ? t('Remove') : t('Add')}
             </Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </ScrollView>
   );
@@ -357,6 +431,7 @@ const styles = StyleSheet.create({
   editBtn: { marginTop: spacing.md },
   dialog: { ...dialogCard },
   dialogProduct: { ...typography.h3, marginBottom: 2 },
-  dialogSku: { ...typography.caption, marginBottom: spacing.md },
+  dialogSku: { ...typography.caption, marginBottom: spacing.sm },
+  directionBtns: { marginBottom: spacing.md },
   input: { marginBottom: spacing.sm, backgroundColor: colors.surface },
 });

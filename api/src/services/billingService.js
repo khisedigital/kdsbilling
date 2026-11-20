@@ -57,7 +57,17 @@ const billIncludes = (db) => [
     as: 'items',
     include: [
       { model: db.SalesOrderItemTax, as: 'taxes' },
-      { model: db.ProductVariant, as: 'variant', attributes: ['id', 'sku'] },
+      {
+        model: db.ProductVariant,
+        as: 'variant',
+        attributes: ['id', 'sku', 'size', 'color'],
+        include: [{
+          model: db.Product,
+          as: 'product',
+          attributes: ['id', 'name', 'name_mr'],
+          required: false,
+        }],
+      },
     ],
   },
   { model: db.SalesPayment, as: 'payments' },
@@ -116,6 +126,12 @@ async function createBill(db, branchId, userId, payload) {
   if (!payload.items?.length) throw new AppError('Bill items required', 400, 'VALIDATION_ERROR');
   if (!payload.payments?.length) throw new AppError('Payment required', 400, 'VALIDATION_ERROR');
 
+  const clientBillId = payload.clientBillId || payload.client_bill_id || null;
+  if (clientBillId) {
+    const existing = await SalesOrder.findOne({ where: { client_bill_id: clientBillId } });
+    if (existing) return getBill(db, existing.id);
+  }
+
   let offer = null;
   if (payload.offerId) offer = await Offer.findOne({ where: { id: payload.offerId, status: 'active' } });
 
@@ -146,6 +162,7 @@ async function createBill(db, branchId, userId, payload) {
 
     const bill = await SalesOrder.create({
       bill_number: billNumber,
+      client_bill_id: clientBillId || null,
       branch_id: branchId,
       customer_id: customer ? customer.id : null,
       status: 'completed',
@@ -263,6 +280,11 @@ async function createBill(db, branchId, userId, payload) {
     return getBill(db, billId);
   } catch (err) {
     await transaction.rollback();
+    // Concurrent offline sync of the same clientBillId — return the winner.
+    if (clientBillId && err && (err.name === 'SequelizeUniqueConstraintError' || err.parent?.code === 'ER_DUP_ENTRY')) {
+      const existing = await SalesOrder.findOne({ where: { client_bill_id: clientBillId } });
+      if (existing) return getBill(db, existing.id);
+    }
     throw err;
   }
 }

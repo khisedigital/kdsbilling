@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -9,18 +10,25 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { ActivityIndicator, Button, Checkbox, Dialog, HelperText, Portal, Switch, Text, TextInput } from 'react-native-paper';
+import { ActivityIndicator, Button, Checkbox, HelperText, Switch, Text, TextInput } from 'react-native-paper';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import ExtraBarcodesEditor from '../../components/ExtraBarcodesEditor';
-import SearchableSelect from '../../components/ui/SearchableSelect';
+import CategoryPickerSheet from '../../components/ui/CategoryPickerSheet';
 import SectionCard from '../../components/ui/SectionCard';
 import { t as translate, useT } from '../../i18n';
+import { useLanguageStore } from '../../i18n/languageStore';
+import { useAutoMarathi } from '../../hooks/useAutoMarathi';
+import { localizedLabel } from '../../utils/productName';
 import VariantTable from './VariantTable';
 import { fetchMe } from '../../services/authService';
 import { barcodeOrGenerated } from '../../utils/barcode';
+import {
+  isCatalogCacheEnabled,
+  readCachedCategories,
+} from '../../services/catalogCache';
 import {
   createProduct,
   fetchBrands,
@@ -132,10 +140,11 @@ function ChoiceField({ label, value, choices, placeholder, onChange }: ChoiceFie
         </View>
       </Pressable>
 
-      <Portal>
-        <Dialog visible={open} onDismiss={() => setOpen(false)} style={styles.choiceDialog}>
-          <Dialog.Title>{label.replace(/\s*\*$/, '')}</Dialog.Title>
-          <Dialog.Content style={styles.choiceContent}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={styles.choiceModalRoot}>
+          <Pressable style={styles.choiceBackdrop} onPress={() => setOpen(false)} />
+          <View style={styles.choiceDialog}>
+            <Text style={styles.choiceTitle}>{label.replace(/\s*\*$/, '')}</Text>
             <ScrollView style={styles.choiceScroll} keyboardShouldPersistTaps="handled">
               {choices.map((item) => {
                 const active = item.value === value;
@@ -153,12 +162,10 @@ function ChoiceField({ label, value, choices, placeholder, onChange }: ChoiceFie
                 );
               })}
             </ScrollView>
-          </Dialog.Content>
-          <Dialog.Actions>
             <Button onPress={() => setOpen(false)}>{t('Cancel')}</Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -181,6 +188,7 @@ function apiError(err: unknown, fallback: string) {
 
 export default function ProductFormScreen({ navigation, route }: Props) {
   const t = useT();
+  const ui = useLanguageStore((s) => s.ui);
   const tRef = useRef(t);
   tRef.current = t;
   const { width: windowWidth } = useWindowDimensions();
@@ -197,6 +205,7 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   const [name, setName] = useState('');
   const [nameMr, setNameMr] = useState('');
+  const { translating: translatingMr, onMarathiChange } = useAutoMarathi(name, nameMr, setNameMr);
   const [description, setDescription] = useState('');
   const [sku, setSku] = useState('');
   const [barcode, setBarcode] = useState('');
@@ -268,91 +277,115 @@ export default function ProductFormScreen({ navigation, route }: Props) {
   useEffect(() => {
     let cancelled = false;
 
+    const applyProduct = (product: NonNullable<Awaited<ReturnType<typeof fetchProduct>>>, unitsList: UnitOfMeasure[]) => {
+      const variants = product.variants || [];
+      const first = variants[0];
+      const useSizes =
+        variants.length > 1 || variants.some((v) => !!(v.size || v.color));
+
+      setName(product.name);
+      setNameMr(product.name_mr || '');
+      setDescription(product.description || '');
+      setCategoryId(product.category_id || '');
+      setBrandId(product.brand_id || '');
+      setUomId(product.uom_id);
+      setTaxGroupId(product.tax_group_id || '');
+      setTaxCode(product.tax_code || '');
+      setIsWeightBased(product.is_weight_based);
+      setMultiSizes(useSizes);
+      setVariantId(first?.id || null);
+      const loadedStock =
+        product.stockQty ?? variants.reduce((sum, v) => sum + (v.stockQty || 0), 0);
+      setMainStockQty(sanitizeStockInput(String(loadedStock || 0)));
+
+      if (first) {
+        setSku(first.sku || '');
+        const plains = plainBarcodesOf(first).map(numericBarcode).filter(Boolean);
+        setBarcode(plains[0] || numericBarcode(mainBarcodeOf(first)));
+        setExtraBarcodes(plains.slice(1));
+        const productUom = unitsList.find((x) => x.id === product.uom_id) || product.uom || undefined;
+        setQtyRows(
+          quantityBarcodesOf(first).map((b) => ({
+            key: newRowKey(),
+            quantity: formatQuantity(b.quantity, productUom),
+            barcode: numericBarcode(b.barcode),
+          })),
+        );
+        setCostPrice(String(parseFloat(String(first.cost_price)) || ''));
+        setSellingPrice(String(parseFloat(String(first.selling_price)) || ''));
+        setMrp(first.mrp ? String(parseFloat(String(first.mrp))) : '');
+        setColor(first.color || '');
+      }
+
+      if (useSizes) {
+        setShowOptional(true);
+        // Clear product-level prices — only variants carry price when multi-size.
+        setSellingPrice('');
+        setCostPrice('');
+        setMrp('');
+        setSku('');
+        setBarcode('');
+        setExtraBarcodes([]);
+        setSizeRows(
+          variants.map((v) => {
+            const plains = plainBarcodesOf(v).map(numericBarcode).filter(Boolean);
+            return {
+              key: v.id,
+              id: v.id,
+              size: v.size || 'Default',
+              sku: v.sku || '',
+              barcode: plains[0] || numericBarcode(mainBarcodeOf(v)),
+              extraBarcodes: plains.slice(1),
+              sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
+              costPrice: String(parseFloat(String(v.cost_price)) || ''),
+              mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
+              stockQty: String(v.stockQty ?? 0),
+            };
+          }),
+        );
+        const colors = [...new Set(variants.map((v) => v.color).filter(Boolean))];
+        if (colors.length === 1) setColor(colors[0] as string);
+      }
+    };
+
     (async () => {
       try {
-        const [cats, brs, u, taxes, product] = await Promise.all([
+        // Cached categories only — never sync/relink on product edit (was making opens very slow).
+        if (isCatalogCacheEnabled()) {
+          const cachedCats = await readCachedCategories();
+          if (!cancelled && cachedCats?.length) setCategories(cachedCats);
+        }
+        if (cancelled) return;
+
+        const productPromise = productId ? fetchProduct(productId) : Promise.resolve(null);
+        const metaPromise = Promise.all([
           fetchCategories(),
           fetchBrands(),
           fetchUnits(),
           fetchTaxGroups(),
-          productId ? fetchProduct(productId) : Promise.resolve(null),
         ]);
-        if (cancelled) return;
 
+        // Edit: paint product fields as soon as the product API returns.
+        if (productId) {
+          const product = await productPromise;
+          if (cancelled) return;
+          if (product) {
+            applyProduct(product, []);
+            setLoadingProduct(false);
+          }
+        }
+
+        const [cats, brs, u, taxes] = await metaPromise;
+        if (cancelled) return;
         setCategories(cats);
         setBrands(brs);
         setUnits(u);
         setTaxGroups(taxes);
 
-        if (product) {
-          const variants = product.variants || [];
-          const first = variants[0];
-          const useSizes =
-            variants.length > 1 || variants.some((v) => !!(v.size || v.color));
-
-          setName(product.name);
-          setNameMr(product.name_mr || '');
-          setDescription(product.description || '');
-          setCategoryId(product.category_id || '');
-          setBrandId(product.brand_id || '');
-          setUomId(product.uom_id);
-          setTaxGroupId(product.tax_group_id || '');
-          setTaxCode(product.tax_code || '');
-          setIsWeightBased(product.is_weight_based);
-          setMultiSizes(useSizes);
-          setVariantId(first?.id || null);
-          const loadedStock =
-            product.stockQty ?? variants.reduce((sum, v) => sum + (v.stockQty || 0), 0);
-          setMainStockQty(sanitizeStockInput(String(loadedStock || 0)));
-
-          if (first) {
-            setSku(first.sku || '');
-            const plains = plainBarcodesOf(first).map(numericBarcode).filter(Boolean);
-            setBarcode(plains[0] || numericBarcode(mainBarcodeOf(first)));
-            setExtraBarcodes(plains.slice(1));
-            const productUom = u.find((x) => x.id === product.uom_id);
-            setQtyRows(
-              quantityBarcodesOf(first).map((b) => ({
-                key: newRowKey(),
-                quantity: formatQuantity(b.quantity, productUom),
-                barcode: numericBarcode(b.barcode),
-              })),
-            );
-            setCostPrice(String(parseFloat(String(first.cost_price)) || ''));
-            setSellingPrice(String(parseFloat(String(first.selling_price)) || ''));
-            setMrp(first.mrp ? String(parseFloat(String(first.mrp))) : '');
-            setColor(first.color || '');
-          }
-
-          if (useSizes) {
-            setShowOptional(true);
-            // Clear product-level prices — only variants carry price when multi-size.
-            setSellingPrice('');
-            setCostPrice('');
-            setMrp('');
-            setSku('');
-            setBarcode('');
-            setExtraBarcodes([]);
-            setSizeRows(
-              variants.map((v) => {
-                const plains = plainBarcodesOf(v).map(numericBarcode).filter(Boolean);
-                return {
-                  key: v.id,
-                  id: v.id,
-                  size: v.size || 'Default',
-                  sku: v.sku || '',
-                  barcode: plains[0] || numericBarcode(mainBarcodeOf(v)),
-                  extraBarcodes: plains.slice(1),
-                  sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
-                  costPrice: String(parseFloat(String(v.cost_price)) || ''),
-                  mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
-                  stockQty: String(v.stockQty ?? 0),
-                };
-              }),
-            );
-            const colors = [...new Set(variants.map((v) => v.color).filter(Boolean))];
-            if (colors.length === 1) setColor(colors[0] as string);
-          }
+        if (productId) {
+          const product = await productPromise;
+          if (cancelled) return;
+          if (product) applyProduct(product, u);
         } else {
           if (u.length) setUomId(u.find((x) => x.code === 'pcs')?.id || u[0].id);
           const zeroTax = taxes.find(
@@ -673,12 +706,12 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   const categoryOptions = categories.map((c) => ({
     id: c.id,
-    label: c.name,
+    label: localizedLabel(c.name, c, ui),
   }));
 
   const brandOptions = brands.map((brand) => ({
     id: brand.id,
-    label: brand.name,
+    label: localizedLabel(brand.name, brand, ui),
   }));
 
   const uomChoices = units.map((u) => ({
@@ -751,9 +784,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       />
       {!!error && nameMissing ? <HelperText type="error">{t('Enter a product name')}</HelperText> : null}
       <AppTextInput
-        label={t('Product name (Marathi)')}
+        label={translatingMr ? t('Product name (Marathi) · translating…') : t('Product name (Marathi)')}
         value={nameMr}
-        onChangeText={setNameMr}
+        onChangeText={onMarathiChange}
         mode="outlined"
         style={styles.input}
         placeholder={t('मराठी नाव')}
@@ -763,37 +796,64 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       <View style={styles.priceRow}>
         <View style={styles.halfInput}>
           <Text style={styles.fieldLabel}>{t('Category')}</Text>
-          <SearchableSelect
-            options={categoryOptions}
-            value={categoryId || null}
-            onChange={(id) => setCategoryId(id || '')}
-            open={categoryOpen}
-            onOpenChange={(open) => {
-              setCategoryOpen(open);
-              if (open) setBrandOpen(false);
+          <Pressable
+            onPress={() => {
+              setBrandOpen(false);
+              setCategoryOpen(true);
             }}
-            placeholder="Category"
-            allLabel="No category"
-            searchPlaceholder="Search categories…"
-          />
+            style={[styles.pickerBtn, categoryId ? styles.pickerBtnOn : null]}
+            accessibilityLabel={t('Category')}>
+            <Text
+              style={[styles.pickerBtnText, categoryId ? styles.pickerBtnTextOn : null]}
+              numberOfLines={1}>
+              {categoryOptions.find((o) => o.id === categoryId)?.label || t('No category')}
+            </Text>
+            <Icon
+              name="chevron-down"
+              size={18}
+              color={categoryId ? colors.textOnPrimary : colors.primary}
+            />
+          </Pressable>
         </View>
         <View style={styles.halfInput}>
           <Text style={styles.fieldLabel}>{t('Brand')}</Text>
-          <SearchableSelect
-            options={brandOptions}
-            value={brandId || null}
-            onChange={(id) => setBrandId(id || '')}
-            open={brandOpen}
-            onOpenChange={(open) => {
-              setBrandOpen(open);
-              if (open) setCategoryOpen(false);
+          <Pressable
+            onPress={() => {
+              setCategoryOpen(false);
+              setBrandOpen(true);
             }}
-            placeholder="Brand"
-            allLabel="No brand"
-            searchPlaceholder="Search brands…"
-          />
+            style={[styles.pickerBtn, brandId ? styles.pickerBtnOn : null]}
+            accessibilityLabel={t('Brand')}>
+            <Text
+              style={[styles.pickerBtnText, brandId ? styles.pickerBtnTextOn : null]}
+              numberOfLines={1}>
+              {brandOptions.find((o) => o.id === brandId)?.label || t('No brand')}
+            </Text>
+            <Icon
+              name="chevron-down"
+              size={18}
+              color={brandId ? colors.textOnPrimary : colors.primary}
+            />
+          </Pressable>
         </View>
       </View>
+
+      <CategoryPickerSheet
+        visible={categoryOpen}
+        options={categoryOptions}
+        value={categoryId || null}
+        allLabel={t('No category')}
+        onSelect={(id) => setCategoryId(id || '')}
+        onClose={() => setCategoryOpen(false)}
+      />
+      <CategoryPickerSheet
+        visible={brandOpen}
+        options={brandOptions}
+        value={brandId || null}
+        allLabel={t('No brand')}
+        onSelect={(id) => setBrandId(id || '')}
+        onClose={() => setBrandOpen(false)}
+      />
 
       <ChoiceField
         label={t('Unit *')}
@@ -1211,8 +1271,30 @@ const styles = StyleSheet.create({
   input: { marginBottom: spacing.md, backgroundColor: colors.surface },
   label: { ...typography.label, marginBottom: spacing.sm, marginTop: spacing.xs },
   fieldLabel: { ...typography.label, marginBottom: 0 },
-  choiceDialog: { ...dialogCard },
-  choiceContent: { paddingHorizontal: 0, maxHeight: 280 },
+  choiceModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  choiceBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  choiceDialog: {
+    ...dialogCard,
+    zIndex: 2,
+    maxHeight: '70%',
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  choiceTitle: {
+    ...typography.label,
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+  },
   choiceScroll: { maxHeight: 260 },
   choiceRow: {
     flexDirection: 'row',
@@ -1226,6 +1308,24 @@ const styles = StyleSheet.create({
   choiceRowOn: { backgroundColor: colors.primaryLight },
   choiceLabel: { flex: 1, fontSize: 15, color: colors.text, paddingRight: spacing.md },
   choiceLabelOn: { color: colors.primary, fontWeight: '700' },
+  pickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    minHeight: 48,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  pickerBtnOn: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  pickerBtnText: { flex: 1, fontSize: 15, color: colors.text },
+  pickerBtnTextOn: { color: colors.textOnPrimary, fontWeight: '600' },
   switchRow: {
     flexDirection: 'row',
     alignItems: 'center',

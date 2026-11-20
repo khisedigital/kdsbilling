@@ -1,4 +1,5 @@
 const { DEVANAGARI, renderIndicLine, paperDotsForMarkup } = require('./indicEscPos');
+const { getMasterModels } = require('../models/master');
 
 function formatMoneyThermal(amount) {
   const n = parseFloat(amount);
@@ -97,13 +98,87 @@ function payLabel(mode, language) {
   return MR_PAY[raw] || String(mode || '');
 }
 
-function buildReceiptPayload(bill, tenant, shopSettings = {}, publicBaseUrl = null, language = 'en') {
+function formatPrintedProductName(baseName, size, color) {
+  const name = String(baseName || '').trim();
+  const parts = [size, color].map((p) => String(p || '').trim()).filter(Boolean);
+  if (!name) return parts.join(' · ') || '-';
+  return parts.length ? `${name} (${parts.join(' · ')})` : name;
+}
+
+function hasDevanagari(text) {
+  return /[\u0900-\u097F]/.test(String(text || ''));
+}
+
+/** Marathi bill → Marathi product name when available; otherwise English / saved line name. */
+function itemPrintName(item, language, masterNameMrByEnglish = null) {
+  const variant = item.variant || item.ProductVariant;
+  const product = variant?.product || variant?.Product;
+  const size = variant?.size;
+  const color = variant?.color;
+  const saved = String(item.product_name || item.productName || '').trim();
+  if (language === 'mr') {
+    const englishKey = String(product?.name || '').trim().toLowerCase();
+    const marathi = String(
+      product?.name_mr
+      || product?.nameMr
+      || item.product_name_mr
+      || (englishKey && masterNameMrByEnglish?.get(englishKey))
+      || '',
+    ).trim();
+    if (marathi) return formatPrintedProductName(marathi, size, color);
+    // Already stored as Marathi on the line (createBill with language=mr).
+    if (hasDevanagari(saved)) return saved;
+  } else if (product?.name) {
+    return formatPrintedProductName(product.name, size, color);
+  }
+  return saved || '-';
+}
+
+/** Fill missing Marathi names from master catalog (by English product name). */
+async function loadMasterNameMrMap(bill) {
+  const names = [];
+  for (const item of bill.items || []) {
+    const product = item.variant?.product || item.ProductVariant?.product;
+    if (product?.name_mr) continue;
+    if (hasDevanagari(item.product_name)) continue;
+    const english = String(product?.name || '').trim();
+    if (english) names.push(english);
+  }
+  const unique = [...new Set(names)];
+  const map = new Map();
+  if (!unique.length) return map;
+  try {
+    const { MasterProduct } = getMasterModels();
+    const { Op } = require('sequelize');
+    const rows = await MasterProduct.findAll({
+      where: { name: { [Op.in]: unique }, status: 'active' },
+      attributes: ['name', 'name_mr'],
+    });
+    for (const row of rows) {
+      const mr = row.name_mr ? String(row.name_mr).trim() : '';
+      if (mr) map.set(String(row.name).trim().toLowerCase(), mr);
+    }
+  } catch {
+    // Master DB unavailable — keep English names.
+  }
+  return map;
+}
+
+function buildReceiptPayload(
+  bill,
+  tenant,
+  shopSettings = {},
+  publicBaseUrl = null,
+  language = 'en',
+  masterNameMrByEnglish = null,
+) {
   const mr = language === 'mr';
   const shopName =
     (mr && String(shopSettings.shopNameMr || '').trim()) || shopSettings.shopName || tenant.name;
   const addressMr = mr ? String(shopSettings.addressMr || '').trim() : '';
   const footer = (shopSettings.billFooter || 'Thank you!').trim() || 'Thank you!';
   const phone = String(shopSettings.phone || tenant.owner_mobile || '').trim();
+  const lang = mr ? 'mr' : 'en';
   return {
     shopName,
     address: addressMr || shopSettings.address || '',
@@ -116,7 +191,7 @@ function buildReceiptPayload(bill, tenant, shopSettings = {}, publicBaseUrl = nu
     date: resolveBillDate(bill),
     customer: bill.customer?.name || (language === 'mr' ? 'काउंटर' : 'Walk-in'),
     items: (bill.items || []).map((i) => ({
-      name: i.product_name,
+      name: itemPrintName(i, lang, masterNameMrByEnglish),
       sku: i.sku,
       qty: parseFloat(i.quantity),
       price: parseFloat(i.unit_price),
@@ -258,9 +333,29 @@ function pushShopHeader(lines, payload, charsPerLine, copy) {
 }
 
 
+/** Visual column count — Devanagari graphemes count as one cell each. */
+function colLen(text) {
+  const value = String(text || '');
+  if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+    return [...new Intl.Segmenter('mr', { granularity: 'grapheme' }).segment(value)].length;
+  }
+  return Array.from(value).length;
+}
+
 function padCell(text, width, align = 'left') {
-  const body = String(text || '').slice(0, width);
-  const gap = width - body.length;
+  const raw = String(text || '');
+  let body = raw;
+  if (colLen(body) > width) {
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+      body = [...new Intl.Segmenter('mr', { granularity: 'grapheme' }).segment(raw)]
+        .slice(0, width)
+        .map((p) => p.segment)
+        .join('');
+    } else {
+      body = Array.from(raw).slice(0, width).join('');
+    }
+  }
+  const gap = width - colLen(body);
   if (gap <= 0) return body;
   return align === 'right' ? `${' '.repeat(gap)}${body}` : `${body}${' '.repeat(gap)}`;
 }
@@ -311,14 +406,13 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
   const row = (left, right) => {
     const l = sanitizeThermalText(left);
     const r = sanitizeThermalText(right);
-    const space = charsPerLine - l.length - r.length;
+    const space = charsPerLine - colLen(l) - colLen(r);
     return l + ' '.repeat(Math.max(1, space)) + r;
   };
 
   const copy = billCopy(language);
   const lines = [];
   pushShopHeader(lines, payload, charsPerLine, copy);
-  lines.push(row(copy.bill, String(payload.billNumber || '')));
   lines.push(row(copy.date, formatReceiptDate(payload.date)));
   lines.push(row(copy.customer, sanitizeThermalText(payload.customer).slice(0, Math.max(8, charsPerLine - 10))));
   lines.push(divider('='));
@@ -419,7 +513,6 @@ function renderA4(payload, language = 'en') {
       <p class="doc-title">${escapeHtml(copy.taxInvoice)}</p>
     </div>
     <div class="bill-meta">
-      <div><strong>${escapeHtml(copy.bill)}</strong> ${escapeHtml(payload.billNumber)}</div>
       <div><strong>${escapeHtml(copy.date)}</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
       <div><strong>${escapeHtml(copy.customer)}</strong> ${escapeHtml(payload.customer)}</div>
     </div>
@@ -542,9 +635,17 @@ function thermalMarkupToEscPos(rawText) {
   return Buffer.concat(chunks);
 }
 
-function generatePrint(bill, tenant, format = '80', shopSettings = {}, publicBaseUrl = null, language = 'en') {
+async function generatePrint(bill, tenant, format = '80', shopSettings = {}, publicBaseUrl = null, language = 'en') {
   const lang = language === 'mr' ? 'mr' : 'en';
-  const payload = buildReceiptPayload(bill, tenant, shopSettings, publicBaseUrl, lang);
+  const masterNameMrByEnglish = lang === 'mr' ? await loadMasterNameMrMap(bill) : null;
+  const payload = buildReceiptPayload(
+    bill,
+    tenant,
+    shopSettings,
+    publicBaseUrl,
+    lang,
+    masterNameMrByEnglish,
+  );
   if (format === 'a4') return renderA4(payload, lang);
   return renderThermal(payload, charsForFormat(format), lang);
 }

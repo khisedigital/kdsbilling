@@ -10,6 +10,23 @@ function resolvePublicBase() {
 const BASE = resolvePublicBase();
 const API = `${BASE}/api/v1/platform`;
 
+/** Debounce fn so search inputs don't hit the API on every keystroke. */
+function debounce(fn, waitMs = 400) {
+  let timer = null;
+  const wrapped = (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, waitMs);
+  };
+  wrapped.cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  return wrapped;
+}
+
 function loadSession() {
   try {
     const raw = localStorage.getItem('platformAdminSession') || sessionStorage.getItem('platformKey');
@@ -249,6 +266,8 @@ const ACTION_ICONS = {
   manage: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>',
   key: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M11 12l9-9 3 3-2 2-2-2-2 2"/><circle cx="7.5" cy="15.5" r="1.5" fill="currentColor" stroke="none"/></svg>',
   box: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>',
+  star: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1Z"/></svg>',
+  'star-filled': '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="currentColor" stroke="currentColor" stroke-width="1"><path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1Z"/></svg>',
 };
 
 /** Compact icon action button for table rows */
@@ -1334,9 +1353,10 @@ async function loadCatalogProducts() {
     resetPage: true,
     emptyHtml: `<tr><td colspan="10" class="empty">No product templates${filterName || catLabel ? ` for ${esc([filterName, catLabel].filter(Boolean).join(' · '))}` : ''} yet. Add one or import from Excel.</td></tr>`,
     renderRow: (p) => `
-    <tr>
+    <tr ${p.isFavorite ? 'style="background:rgba(245,158,11,0.08)"' : ''}>
       <td>
         <strong>${esc(p.name)}</strong>
+        ${p.isFavorite ? ' <span title="Favorite" style="color:#F59E0B">★</span>' : ''}
         ${(p.variants || []).some((v) => v.size) ? `<br><small style="color:var(--muted)">${esc((p.variants || []).map((v) => v.size).filter(Boolean).join(', '))}</small>` : ''}
         ${p.description ? `<br><small style="color:var(--muted)">${esc(p.description)}</small>` : ''}
       </td>
@@ -1351,6 +1371,10 @@ async function loadCatalogProducts() {
       <td>
         <div class="row-actions">
         ${rowActions(
+          actionBtn('fav-mprod', p.id, {
+            icon: p.isFavorite ? 'star-filled' : 'star',
+            title: p.isFavorite ? 'Remove favorite' : 'Mark favorite',
+          }),
           actionBtn('edit-mprod', p.id, { icon: 'edit', title: 'Edit' }),
           actionBtn('delete-mprod', p.id, { icon: 'delete', title: 'Delete', danger: true }),
         )}
@@ -1565,12 +1589,17 @@ function editMasterCategory(id) {
 
 async function deleteMasterCategory(id) {
   const c = masterCategories.find((x) => x.id === id);
-  if (!c || !confirm(`Delete category "${c.name}"?`)) return;
-  await api(`/master-categories/${id}`, { method: 'DELETE' });
-  showAlert('Category deleted');
-  await loadBusinessTypes();
-  await loadMasterCategories();
-  if (selectedCatalogTab === 'products') await loadCatalogProducts();
+  if (!c) return;
+  if (!confirm(`Delete category "${c.name}"?\n\nProducts using it will be unassigned from this category.`)) return;
+  try {
+    await api(`/master-categories/${id}`, { method: 'DELETE' });
+    showAlert('Category deleted');
+    await loadBusinessTypes();
+    await loadMasterCategories();
+    if (selectedCatalogTab === 'products') await loadCatalogProducts();
+  } catch (e) {
+    showAlert(e.message || 'Could not delete category', 'error');
+  }
 }
 
 async function loadMasterBrands() {
@@ -1693,12 +1722,17 @@ function editMasterBrand(id) {
 
 async function deleteMasterBrand(id) {
   const b = masterBrands.find((x) => x.id === id);
-  if (!b || !confirm(`Delete brand "${b.name}"?`)) return;
-  await api(`/master-brands/${id}`, { method: 'DELETE' });
-  showAlert('Brand deleted');
-  await loadBusinessTypes();
-  await loadMasterBrands();
-  if (selectedCatalogTab === 'products') await loadCatalogProducts();
+  if (!b) return;
+  if (!confirm(`Delete brand "${b.name}"?\n\nProducts using it will be unassigned from this brand.`)) return;
+  try {
+    await api(`/master-brands/${id}`, { method: 'DELETE' });
+    showAlert('Brand deleted');
+    await loadBusinessTypes();
+    await loadMasterBrands();
+    if (selectedCatalogTab === 'products') await loadCatalogProducts();
+  } catch (e) {
+    showAlert(e.message || 'Could not delete brand', 'error');
+  }
 }
 
 function manageBrandsForType(id) {
@@ -1726,6 +1760,12 @@ function masterProductFormHtml(initial = {}) {
           <option value="inactive" ${initial.status === 'inactive' ? 'selected' : ''}>inactive</option>
         </select>
       </div>
+      <div class="field" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input id="mp_isFavorite" type="checkbox" ${initial.isFavorite ? 'checked' : ''} />
+          Favorite (show first after shop import)
+        </label>
+      </div>
     </div>
     <p class="hint">Master catalog items use price 0 by default. Clients set their own selling price after import.</p>
   `;
@@ -1750,6 +1790,7 @@ function collectMasterProductForm() {
     sku: undefined,
     barcode: undefined,
     sortOrder: 0,
+    isFavorite: !!$('mp_isFavorite')?.checked,
     status: $('mp_status').value,
   };
 }
@@ -3729,14 +3770,68 @@ function normalizeImportRow(row) {
   return out.name ? out : null;
 }
 
+function parseImportMoney(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  const cleaned = String(value)
+    .replace(/₹/g, '')
+    .replace(/rs\.?/gi, '')
+    .replace(/,/g, '')
+    .trim();
+  if (!cleaned) return undefined;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function normalizeCatalogImportRow(row) {
   const out = {};
   for (const [key, val] of Object.entries(row)) {
-    const k = String(key).trim();
+    // Strip Excel/CSV BOM from first header (common cause of "all rows invalid")
+    const k = String(key).replace(/^\uFEFF/, '').trim();
     if (!k || val == null || val === '') continue;
-    out[k] = CATALOG_IMPORT_NUMERIC_FIELDS.has(k) ? Number(val) : String(val).trim();
+    if (CATALOG_IMPORT_NUMERIC_FIELDS.has(k)) {
+      const n = parseImportMoney(val);
+      if (n !== undefined) out[k] = n;
+      continue;
+    }
+    out[k] = String(val).trim();
   }
-  return out.name ? out : null;
+  // Common CSV header aliases
+  if (!out.name) {
+    out.name = out.Name || out.product || out.Product || out['Product Name'] || out.product_name || out.productName || '';
+  }
+  if (!out.nameMr) {
+    out.nameMr = out.name_mr || out['Marathi name'] || out.marathiName || out['Name Mr'] || out['Product Name Mr'] || '';
+  }
+  if (out.sellingPrice == null) {
+    const price = parseImportMoney(out.selling_price ?? out.price ?? out.Price ?? out.MRP ?? out.mrp);
+    if (price !== undefined) out.sellingPrice = price;
+  }
+  if (!out.uom) out.uom = out.uomCode || out.unit || out.Unit || out.UOM || '';
+  if (!out.category) out.category = out.Category || out.category_name || out.categoryName || '';
+  if (!out.categoryNameMr) {
+    out.categoryNameMr = out.category_name_mr
+      || out.categoryMr
+      || out['Category Mr']
+      || out['Category Marathi']
+      || out['Category Name Mr']
+      || out['category name mr']
+      || '';
+  }
+  if (!out.brand) out.brand = out.Brand || out.brand_name || out.brandName || '';
+  if (!out.brandNameMr) {
+    out.brandNameMr = out.brand_name_mr
+      || out.brandMr
+      || out['Brand Mr']
+      || out['Brand Marathi']
+      || out['Brand Name Mr']
+      || '';
+  }
+  if (!out.sku) out.sku = out.SKU || out.Sku || '';
+  if (!out.barcode) out.barcode = out.Barcode || out.EAN || out.ean || out.barcode_number || '';
+  if (!String(out.name || '').trim()) return null;
+  out.name = String(out.name).trim();
+  return out;
 }
 
 function bindImportFilePreview(fileInputId, statusId, normalizer) {
@@ -3772,8 +3867,14 @@ function normalizeNameImportRow(row) {
   }
   // Accept common CSV header aliases
   if (!out.name && out.Name) out.name = out.Name;
-  if (!out.nameMr && (out.name_mr || out['Marathi name'] || out.marathiName)) {
-    out.nameMr = out.name_mr || out['Marathi name'] || out.marathiName;
+  if (!out.nameMr) {
+    out.nameMr = out.name_mr
+      || out['Marathi name']
+      || out.marathiName
+      || out['Name Mr']
+      || out['Category Mr']
+      || out['Brand Mr']
+      || '';
   }
   return out.name ? out : null;
 }
@@ -3894,19 +3995,19 @@ function importCatalogProductsModal() {
     <p style="font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.5">
       Import product templates into the <strong>catalog master</strong> (not tenant shops).
       Supports <strong>Excel (.xlsx)</strong>, <strong>CSV</strong>, and <strong>JSON</strong>.
-      Required: <code>name</code>, <code>sellingPrice</code>.
-      Optional: <code>nameMr, costPrice, mrp, uom, category, categoryNameMr, brand, brandNameMr, sku, barcode, description, sortOrder, businessTypeCode</code>.
-      Unknown categories/brands are created automatically for the selected business type.
+      Required: <code>name</code>. Large files are imported in batches (progress shown below).
+      Optional: <code>sellingPrice, nameMr, costPrice, mrp, uom, category, categoryNameMr, brand, brandNameMr, sku, barcode, description, sortOrder, businessTypeCode</code>.
+      Unknown categories/brands are created automatically for the selected business type. Missing selling price defaults to 0.
     </p>
     <div class="field">
-      <label>Default business type</label>
-      <select id="cimp_businessTypeId">${businessTypeOptionsHtml(defaultBusinessTypeId, 'Use businessTypeCode column per row')}</select>
-      <small style="color:var(--muted)">Applies when rows do not include <code>businessTypeCode</code></small>
+      <label>Business type (required on server)</label>
+      <select id="cimp_businessTypeId">${businessTypeOptionsHtml(defaultBusinessTypeId, 'Select business type')}</select>
+      <small style="color:var(--muted)">Select the target catalog (e.g. Kirana). Used when CSV UUIDs/codes do not match this server.</small>
     </div>
     <div class="grid-2">
       <div class="field"><label><input type="checkbox" id="cimp_createCategories" checked /> Auto-create categories</label></div>
       <div class="field"><label><input type="checkbox" id="cimp_createBrands" checked /> Auto-create brands</label></div>
-      <div class="field"><label><input type="checkbox" id="cimp_skipDuplicates" checked /> Skip duplicate SKUs</label></div>
+      <div class="field"><label><input type="checkbox" id="cimp_updateExisting" checked /> Update matching products (barcode / SKU)</label></div>
     </div>
     <p style="margin:0 0 12px">
       <a href="${BASE}/admin/samples/catalog-product-import-sample.xlsx" download="catalog-product-import-sample.xlsx" style="color:var(--primary);font-weight:600;margin-right:16px">
@@ -3939,33 +4040,85 @@ function importCatalogProductsModal() {
       }
     }
 
-    if (!rows.length) throw new Error('No valid rows found (each row needs name and sellingPrice)');
+    if (!rows.length) throw new Error('No valid rows found (each row needs a name)');
 
     const businessTypeId = $('cimp_businessTypeId').value || undefined;
-    if (!businessTypeId && !rows.some((r) => r.businessTypeCode || r.businessType)) {
-      throw new Error('Select a business type or include businessTypeCode in each row');
+    if (!businessTypeId) {
+      throw new Error('Select a business type (Kirana / Grocery, etc.) before importing');
     }
 
-    const result = await api('/master-products/import', {
-      method: 'POST',
-      body: JSON.stringify({
-        businessTypeId,
-        rows,
-        options: {
-          createCategories: $('cimp_createCategories').checked,
-          createBrands: $('cimp_createBrands')?.checked !== false,
-          skipDuplicates: $('cimp_skipDuplicates').checked,
-        },
-      }),
-    });
+    const options = {
+      createCategories: !!$('cimp_createCategories')?.checked,
+      createBrands: $('cimp_createBrands')?.checked !== false,
+      updateExisting: $('cimp_updateExisting')?.checked !== false,
+    };
+    const statusEl = $('cimp_status');
+    // Smaller chunks avoid nginx/proxy timeouts on large upserts
+    const CHUNK = 100;
+    const totals = {
+      success: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      categoriesCreated: 0,
+      brandsCreated: 0,
+      errors: [],
+    };
 
-    let msg = `Imported ${result.success} product(s)`;
-    if (result.skipped) msg += `, ${result.skipped} skipped (duplicate SKU)`;
-    if (result.categoriesCreated) msg += `, ${result.categoriesCreated} new categor${result.categoriesCreated === 1 ? 'y' : 'ies'}`;
-    if (result.brandsCreated) msg += `, ${result.brandsCreated} new brand${result.brandsCreated === 1 ? '' : 's'}`;
-    if (result.failed) msg += `, ${result.failed} failed`;
-    showAlert(msg, result.failed ? 'error' : 'success');
-    if (result.errors?.length) console.warn('Catalog import errors:', result.errors);
+    for (let offset = 0; offset < rows.length; offset += CHUNK) {
+      const chunk = rows.slice(offset, offset + CHUNK);
+      const done = Math.min(offset + chunk.length, rows.length);
+      if (statusEl) {
+        statusEl.style.color = 'var(--muted)';
+        statusEl.textContent = `Importing ${done} / ${rows.length}…`;
+      }
+      let result;
+      try {
+        result = await api('/master-products/import', {
+          method: 'POST',
+          body: JSON.stringify({ businessTypeId, rows: chunk, options }),
+        });
+      } catch (err) {
+        const msg = err?.message || String(err);
+        throw new Error(
+          `Import stopped at ${done}/${rows.length}: ${msg}. `
+          + 'Upload latest catalogMasterService.js + admin.js, restart API (pm2 reload), hard-refresh admin (Ctrl+Shift+R), and select Business type.',
+        );
+      }
+      totals.success += result.success || 0;
+      totals.created += result.created || 0;
+      totals.updated += result.updated || 0;
+      totals.skipped += result.skipped || 0;
+      totals.failed += result.failed || 0;
+      totals.categoriesCreated += result.categoriesCreated || 0;
+      totals.brandsCreated += result.brandsCreated || 0;
+      if (result.errors?.length && totals.errors.length < 50) {
+        totals.errors.push(...result.errors.slice(0, 50 - totals.errors.length));
+      }
+    }
+
+    let msg = `Imported ${totals.success} product(s)`;
+    if (totals.created || totals.updated) {
+      msg += ` (${totals.created} new, ${totals.updated} updated)`;
+    }
+    if (totals.skipped) msg += `, ${totals.skipped} skipped`;
+    if (totals.categoriesCreated) msg += `, ${totals.categoriesCreated} new categor${totals.categoriesCreated === 1 ? 'y' : 'ies'}`;
+    if (totals.brandsCreated) msg += `, ${totals.brandsCreated} new brand${totals.brandsCreated === 1 ? '' : 's'}`;
+    if (totals.failed) msg += `, ${totals.failed} failed`;
+    if (totals.errors?.length) {
+      const sample = totals.errors
+        .slice(0, 3)
+        .map((e) => `Row ${e.row}${e.name ? ` (${e.name})` : ''}: ${e.message}`)
+        .join(' | ');
+      msg += `. ${sample}`;
+      console.warn('Catalog import errors:', totals.errors);
+    }
+    showAlert(msg, totals.failed && !totals.success ? 'error' : (totals.failed ? 'error' : 'success'));
+    if (statusEl) {
+      statusEl.textContent = msg;
+      statusEl.style.color = totals.failed ? 'var(--danger)' : 'var(--muted)';
+    }
 
     await loadBusinessTypes();
     await loadCatalogProducts();
@@ -3988,7 +4141,7 @@ function importCatalogProductsModal() {
 }
 
 function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.trim());
   if (!lines.length) return [];
   const parseLine = (line) => {
     const out = [];
@@ -4007,7 +4160,7 @@ function parseCsv(text) {
     out.push(cur);
     return out.map((s) => s.trim());
   };
-  const headers = parseLine(lines[0]).map((h) => h.trim());
+  const headers = parseLine(lines[0]).map((h) => h.replace(/^\uFEFF/, '').trim());
   return lines.slice(1).map((line) => {
     const cells = parseLine(line);
     const row = {};
@@ -4122,7 +4275,8 @@ async function importMasterProductsModal() {
   };
 
   const setMimpFiltersBusy = (busy) => {
-    ['mimp_businessTypeId', 'mimp_categoryId', 'mimp_search', 'mimp_selectAll', 'mimp_clear'].forEach((id) => {
+    // Keep search enabled so typing isn't interrupted while a request is in flight.
+    ['mimp_businessTypeId', 'mimp_categoryId', 'mimp_selectAll', 'mimp_clear'].forEach((id) => {
       const el = $(id);
       if (el) el.disabled = busy;
     });
@@ -4192,21 +4346,27 @@ async function importMasterProductsModal() {
     }
   };
 
-  const reloadProducts = async () => {
+  let lastProductsQueryKey = null;
+
+  const reloadProducts = async ({ force = false } = {}) => {
+    const btId = $('mimp_businessTypeId')?.value || '';
+    const catId = $('mimp_categoryId')?.value || '';
+    const q = $('mimp_search')?.value?.trim() || '';
+    const queryKey = `${btId}|${catId}|${q}`;
+    if (!force && queryKey === lastProductsQueryKey) return;
+
     const seq = ++productsLoadSeq;
-    showListLoading('Loading products…');
+    showListLoading(q ? `Searching “${q}”…` : 'Loading products…');
     setMimpFiltersBusy(true);
     const params = new URLSearchParams();
-    const btId = $('mimp_businessTypeId')?.value;
-    const catId = $('mimp_categoryId')?.value;
-    const q = $('mimp_search')?.value?.trim();
     if (btId) params.set('businessTypeId', btId);
     if (catId) params.set('categoryId', catId);
     if (q) params.set('search', q);
-    params.set('limit', '500');
+    params.set('limit', '25000');
     try {
       const data = await api(`/tenants/${selectedTenantId}/master-catalog/products?${params.toString()}`);
       if (seq !== productsLoadSeq) return;
+      lastProductsQueryKey = queryKey;
       products = Array.isArray(data) ? data : (data?.items || data?.rows || []);
       const alertEl = $('modalAlert');
       if (alertEl && products.length) {
@@ -4225,29 +4385,36 @@ async function importMasterProductsModal() {
     }
   };
 
+  const debouncedSearchProducts = debounce(() => reloadProducts(), 450);
+
   await reloadCategories();
-  await reloadProducts();
+  await reloadProducts({ force: true });
 
   if ($('mimp_businessTypeId')) {
     $('mimp_businessTypeId').onchange = async () => {
+      debouncedSearchProducts.cancel();
       selectedIds.clear();
       updateCount();
       await reloadCategories();
-      await reloadProducts();
+      await reloadProducts({ force: true });
     };
   }
   if ($('mimp_categoryId')) {
     $('mimp_categoryId').onchange = () => {
+      debouncedSearchProducts.cancel();
       selectedIds.clear();
       updateCount();
-      reloadProducts();
+      reloadProducts({ force: true });
     };
   }
-  let searchTimer;
   if ($('mimp_search')) {
-    $('mimp_search').oninput = () => {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => reloadProducts(), 250);
+    $('mimp_search').oninput = () => debouncedSearchProducts();
+    $('mimp_search').onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        debouncedSearchProducts.cancel();
+        reloadProducts({ force: true });
+      }
     };
   }
   if ($('mimp_selectAll')) {
@@ -4573,10 +4740,24 @@ function bindEvents() {
     };
   }
 
-  $('catalogProductsTable').onclick = (e) => {
+  $('catalogProductsTable').onclick = async (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const id = btn.dataset.id;
+    if (btn.dataset.action === 'fav-mprod') {
+      const product = masterProducts.find((p) => p.id === id);
+      if (!product) return;
+      try {
+        await api(`/master-products/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ isFavorite: !product.isFavorite }),
+        });
+        await loadMasterProducts();
+      } catch (err) {
+        showAlert(err.message || 'Could not update favorite', 'error');
+      }
+      return;
+    }
     if (btn.dataset.action === 'edit-mprod') editMasterProduct(id);
     if (btn.dataset.action === 'delete-mprod') deleteMasterProduct(id);
   };

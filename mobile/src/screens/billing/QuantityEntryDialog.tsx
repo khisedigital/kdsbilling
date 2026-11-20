@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Keyboard, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Chip, Dialog, HelperText, Portal, Text } from 'react-native-paper';
+import { Keyboard, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Button, Chip, HelperText, Portal, Text } from 'react-native-paper';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AppDialog from '../../components/ui/AppDialog';
+import { spaceAboveKeyboard, useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useT } from '../../i18n';
@@ -40,6 +43,10 @@ export default function QuantityEntryDialog({
 }: Props) {
   const t = useT();
   useLanguageStore((s) => s.ui);
+  const { height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const overlap = useKeyboardOverlap();
+  const available = spaceAboveKeyboard(height, overlap, insets.top, insets.bottom);
   const productLabel = product ? screenProductName(product.productName, product.productNameMr) : '';
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
@@ -125,10 +132,12 @@ export default function QuantityEntryDialog({
   if (contained) {
     if (!product) return null;
     return (
-      <View style={styles.containedRoot} pointerEvents="box-none">
+      <View style={[styles.containedRoot, overlap > 0 && { paddingBottom: overlap }]} pointerEvents="box-none">
         <Pressable style={styles.containedScrim} onPress={onDismiss} accessibilityLabel={t('Dismiss quantity')} />
-        <View style={styles.containedCard} accessibilityViewIsModal>
-          {body}
+        <View style={[styles.containedCard, { maxHeight: available > 0 ? available : '92%' }]} accessibilityViewIsModal>
+          <ScrollView keyboardShouldPersistTaps="handled" bounces={false}>
+            {body}
+          </ScrollView>
         </View>
       </View>
     );
@@ -136,10 +145,10 @@ export default function QuantityEntryDialog({
 
   return (
     <Portal>
-      <Dialog visible={!!product} onDismiss={onDismiss} style={styles.dialog}>
+      <AppDialog visible={!!product} onDismiss={onDismiss} style={styles.dialog}>
         {product ? (
           <>
-            <Dialog.Title style={styles.paperTitle}>{editing ? t('Change quantity') : t('How much?')}</Dialog.Title>
+            <AppDialog.Title style={styles.paperTitle}>{editing ? t('Change quantity') : t('How much?')}</AppDialog.Title>
             <View style={styles.header}>
               <View style={styles.headerIcon}><Icon name="scale-balance" size={24} color={colors.primary} /></View>
               <View style={styles.headerText}>
@@ -154,7 +163,7 @@ export default function QuantityEntryDialog({
               </View>
             </View>
 
-            <Dialog.Content>
+            <AppDialog.Content>
               <AppTextInput
                 label={t('Quantity')}
                 value={input}
@@ -184,17 +193,17 @@ export default function QuantityEntryDialog({
                   ))}
                 </View>
               </ScrollView>
-            </Dialog.Content>
+            </AppDialog.Content>
 
-            <Dialog.Actions style={styles.actions}>
+            <AppDialog.Actions style={styles.actions}>
               <Button onPress={onDismiss} textColor={colors.textMuted}>{t('Cancel')}</Button>
               <Button mode="contained" onPress={confirm} buttonColor={colors.secondary} icon={editing ? 'check' : 'cart-plus'}>
                 {editing ? t('Update') : t('Add')}
               </Button>
-            </Dialog.Actions>
+            </AppDialog.Actions>
           </>
         ) : null}
-      </Dialog>
+      </AppDialog>
     </Portal>
   );
 }

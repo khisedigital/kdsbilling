@@ -8,6 +8,7 @@ import type { MainStackParamList } from '../../navigation/MainNavigator';
 import SectionCard from '../../components/ui/SectionCard';
 import * as shopifyService from '../../services/shopifyService';
 import { colors } from '../../theme/colors';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { common, radius, spacing, typography } from '../../theme/layout';
 import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
@@ -77,6 +78,7 @@ function InfoLine({ label, value }: { label: string; value: string }) {
 
 export default function ShopifyIntegrationScreen({}: Props) {
   const t = useT();
+  const keyboardOverlap = useKeyboardOverlap();
   const [status, setStatus] = useState<shopifyService.ShopifyStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -207,7 +209,7 @@ export default function ShopifyIntegrationScreen({}: Props) {
   return (
     <ScrollView
       style={common.screen}
-      contentContainerStyle={common.screenPad}
+      contentContainerStyle={[common.screenPad, keyboardOverlap > 0 && { paddingBottom: keyboardOverlap + spacing.xl }]}
       keyboardShouldPersistTaps="handled"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}>
       <View style={styles.hero}>

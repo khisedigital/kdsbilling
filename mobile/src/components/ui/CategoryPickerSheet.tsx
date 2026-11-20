@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { dialogCard, radius, shadow, spacing } from '../../theme/layout';
@@ -21,6 +22,8 @@ import { dialogCard, radius, shadow, spacing } from '../../theme/layout';
 export type CategoryOption = {
   id: string;
   label: string;
+  /** Extra text used only for search (e.g. the other language name). */
+  searchText?: string;
 };
 
 type Props = {
@@ -45,8 +48,9 @@ function CategoryPickerSheet({
 }: Props) {
   const t = useT();
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const compact = width >= 720 || Platform.OS === 'web';
+  const overlap = useKeyboardOverlap();
   const [query, setQuery] = useState('');
   const inputRef = useRef<RNTextInput>(null);
 
@@ -63,7 +67,10 @@ function CategoryPickerSheet({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return options;
-    return options.filter((o) => o.label.toLowerCase().includes(q));
+    return options.filter((o) => {
+      const haystack = `${o.label} ${o.searchText || ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
   }, [options, query]);
 
   const dismissAndClose = useCallback(() => {
@@ -94,13 +101,16 @@ function CategoryPickerSheet({
       animationType="slide"
       onRequestClose={dismissAndClose}
       statusBarTranslucent>
-      <View style={[styles.root, compact && styles.rootCentered]}>
+      <View style={[styles.root, compact && styles.rootCentered, overlap > 0 && { paddingBottom: overlap }]}>
         <Pressable style={styles.overlay} onPress={dismissAndClose} accessibilityLabel={t('Close')} />
         <View
           style={[
             styles.sheet,
             compact && styles.sheetCompact,
-            { paddingBottom: Math.max(insets.bottom, spacing.md) },
+            {
+              paddingBottom: Math.max(insets.bottom, spacing.md),
+              maxHeight: overlap > 0 ? Math.max(0, height - overlap - insets.top - 16) : undefined,
+            },
           ]}>
           <View style={styles.handle} />
           <View style={styles.header}>

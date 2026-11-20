@@ -4,7 +4,151 @@
     <option name="autoReloadType" value="NONE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a6f0ed90-c453-421f-84ef-55d88488c32e" name="Changes" comment="" />
+    <list default="true" id="a6f0ed90-c453-421f-84ef-55d88488c32e" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/../api/public/admin/admin.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/public/admin/admin.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/public/admin/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/../api/public/admin/index.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/app.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/controllers/businessController.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/controllers/businessController.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/controllers/catalogController.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/controllers/catalogController.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/models/master/index.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/models/master/index.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/models/tenant/catalog.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/models/tenant/catalog.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/routes/catalog.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/routes/catalog.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/billingService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/billingService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/brandService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/brandService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/catalogMasterService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/catalogMasterService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/categoryService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/categoryService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/masterCatalogImportService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/masterCatalogImportService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/masterPreloadService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/masterPreloadService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/platformService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/platformService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/printService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/printService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/printerService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/printerService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/productService.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/productService.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/services/taxCalculator.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/services/taxCalculator.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../api/src/utils/pagination.js" beforeDir="false" afterPath="$PROJECT_DIR$/../api/src/utils/pagination.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../deploy/nginx.conf.example" beforeDir="false" afterPath="$PROJECT_DIR$/../deploy/nginx.conf.example" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle____app_libs_sdk2_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_activity_activity_1_8_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_annotation_annotation_experimental_1_4_1_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_annotation_annotation_jvm_1_8_1.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_appcompat_appcompat_1_7_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_appcompat_appcompat_resources_1_7_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_arch_core_core_common_2_2_0.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_arch_core_core_runtime_2_1_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_arch_core_core_runtime_2_2_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_cardview_cardview_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_collection_collection_1_1_0.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_collection_collection_jvm_1_4_2.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_constraintlayout_constraintlayout_2_2_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_coordinatorlayout_coordinatorlayout_1_1_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_core_core_1_15_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_core_core_ktx_1_15_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_cursoradapter_cursoradapter_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_customview_customview_1_1_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_databinding_viewbinding_8_7_3_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_documentfile_documentfile_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_drawerlayout_drawerlayout_1_1_1_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_dynamicanimation_dynamicanimation_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_fragment_fragment_1_5_4_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_interpolator_interpolator_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_legacy_legacy_support_core_utils_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_lifecycle_lifecycle_common_2_6_2.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_lifecycle_lifecycle_livedata_2_6_2_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_lifecycle_lifecycle_livedata_core_2_6_2_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_lifecycle_lifecycle_runtime_2_6_2_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_lifecycle_lifecycle_viewmodel_2_6_2_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_lifecycle_lifecycle_viewmodel_savedstate_2_6_2_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_loader_loader_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_localbroadcastmanager_localbroadcastmanager_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_print_print_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_recyclerview_recyclerview_1_1_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_resourceinspection_resourceinspection_annotation_1_0_1.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_savedstate_savedstate_1_2_1_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_transition_transition_1_5_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_vectordrawable_vectordrawable_1_1_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_vectordrawable_vectordrawable_animated_1_1_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_versionedparcelable_versionedparcelable_1_1_1_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_viewpager2_viewpager2_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__androidx_viewpager_viewpager_1_0_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__com_google_android_material_material_1_12_0_aar.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__junit_junit_4_13_2.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_hamcrest_hamcrest_core_1_3.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_annotations_13_0.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlin_kotlin_stdlib_2_0_21.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlin_kotlin_stdlib_jdk7_1_8_0.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlin_kotlin_stdlib_jdk7_1_8_22.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlin_kotlin_stdlib_jdk8_1_8_0.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlin_kotlin_stdlib_jdk8_1_8_22.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlinx_kotlinx_coroutines_android_1_6_4.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/libraries/Gradle__org_jetbrains_kotlinx_kotlinx_coroutines_core_jvm_1_6_4.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/modules.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/modules/BarcodeLabels.iml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/android/app/build.gradle" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/android/app/build.gradle" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/ios/BillingPOS.xcodeproj/project.pbxproj" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/ios/BillingPOS.xcodeproj/project.pbxproj" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/ios/BillingPOS.xcodeproj/xcshareddata/xcschemes/BillingPOS.xcscheme" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/ios/BillingPOS.xcodeproj/xcshareddata/xcschemes/BillingPOS.xcscheme" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/ios/KdsPrint/KdsPrint.podspec" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/ios/KdsPrint/KdsPrint.podspec" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/ios/Podfile" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/ios/Podfile" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/ios/Podfile.lock" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/ios/Podfile.lock" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/patches/react-native-thermal-receipt-printer+1.1.5.patch" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/patches/react-native-thermal-receipt-printer+1.1.5.patch" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/ProductSearchField.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/ProductSearchField.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/reports/ReportPeriodFilter.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/reports/ReportPeriodFilter.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/ui/AppDialog.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/ui/AppDialog.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/ui/BulkImportDialog.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/ui/BulkImportDialog.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/ui/CategoryPickerSheet.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/ui/CategoryPickerSheet.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/ui/ListRow.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/ui/ListRow.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/components/ui/SearchableSelect.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/components/ui/SearchableSelect.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/config/dev-host.generated.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/config/dev-host.generated.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/hooks/useProductAddToCart.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/hooks/useProductAddToCart.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/i18n/LanguageToggle.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/i18n/LanguageToggle.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/i18n/mr.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/i18n/mr.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/i18n/mrExtra.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/i18n/mrExtra.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/navigation/AppHeader.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/navigation/AppHeader.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/navigation/AppSidebar.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/navigation/AppSidebar.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/navigation/MainNavigator.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/navigation/MainNavigator.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/navigation/menuConfig.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/navigation/menuConfig.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/navigation/usePinnedSidebar.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/navigation/usePinnedSidebar.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/print/PrintService.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/print/PrintService.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/print/buildReceipt.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/print/buildReceipt.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/print/closingReport.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/print/closingReport.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/print/escpos.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/print/escpos.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/print/labelEscPos.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/print/labelEscPos.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/auth/LoginScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/auth/LoginScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/BarcodeScannerScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/BarcodeScannerScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/BarcodeScannerScreen.web.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/BarcodeScannerScreen.web.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/BillingScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/BillingScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/CustomItemDialog.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/CustomItemDialog.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/PaymentScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/PaymentScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/ProductGridTile.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/ProductGridTile.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/QuantityEntryDialog.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/QuantityEntryDialog.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/SaleDetailScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/SaleDetailScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/billing/WideBillPanel.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/billing/WideBillPanel.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/closing/DailyClosingScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/closing/DailyClosingScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/customers/CustomerListScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/customers/CustomerListScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/expenses/ExpensesScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/expenses/ExpensesScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/inventory/PurchaseBillFormScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/inventory/PurchaseBillFormScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/inventory/SupplierListScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/inventory/SupplierListScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/labels/BarcodeLabelScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/labels/BarcodeLabelScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/labels/PrintLabelScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/labels/PrintLabelScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/BrandListScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/BrandListScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/CategoryListScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/CategoryListScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/ImportMasterProductsScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/ImportMasterProductsScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/PriceManagementScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/PriceManagementScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/ProductDetailScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/ProductDetailScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/ProductFormScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/ProductFormScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/ProductListScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/ProductListScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/products/VariantTable.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/products/VariantTable.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/settings/PrinterSettingsScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/settings/PrinterSettingsScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/settings/ProfileScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/settings/ProfileScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/settings/ShopSettingsScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/settings/ShopSettingsScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/screens/settings/ShopifyIntegrationScreen.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/screens/settings/ShopifyIntegrationScreen.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/services/api.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/services/api.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/services/businessService.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/services/businessService.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/services/catalogService.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/services/catalogService.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/store/cartStore.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/store/cartStore.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/types/catalog.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/types/catalog.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/utils/productName.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/utils/productName.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/src/utils/quantity.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/src/utils/quantity.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../mobile/web/alert.js" beforeDir="false" afterPath="$PROJECT_DIR$/../mobile/web/alert.js" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -13,11 +157,14 @@
   <component name="ClangdSettings">
     <option name="formatViaClangd" value="false" />
   </component>
-  <component name="ExecutionTargetManager" SELECTED_TARGET="device_and_snapshot_combo_box_target[PhysicalDevice::serial=RZ8TA0TZYEL]" />
+  <component name="ExecutionTargetManager" SELECTED_TARGET="device_and_snapshot_combo_box_target[]" />
   <component name="ExternalProjectsData">
     <projectState path="$PROJECT_DIR$">
       <ProjectState />
     </projectState>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/.." />
   </component>
   <component name="GradleScriptDefinitionsStorage" workingDir="$PROJECT_DIR$" gradleHome="$USER_HOME$/.gradle/wrapper/dists/gradle-8.14.3-bin/cv11ve7ro1n3o1j4so8xd9n66/gradle-8.14.3" javaHome="$APPLICATION_HOME_DIR$/jbr/Contents/Home" gradleVersion="8.14.3" />
   <component name="ProjectColorInfo">{
@@ -34,9 +181,11 @@
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.cidr.known.project.marker": "true",
+    "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.readMode.enableVisualFormatting": "true",
     "cf.first.check.clang-format": "false",
     "cidr.known.project.marker": "true",
+    "git-widget-placeholder": "main",
     "kotlin-language-version-configured": "true",
     "last_opened_file_path": "/Volumes/WorkData/projects/products/billing-poz/labels",
     "settings.editor.selected.configurable": "com.android.studio.ml.bot.mainConfigurable"

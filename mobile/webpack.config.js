@@ -52,8 +52,15 @@ module.exports = (env = {}, argv) => {
       extensions: ['.web.tsx', '.web.ts', '.web.js', '.tsx', '.ts', '.js', '.json'],
       alias: {
         'react-native$': path.join(root, 'web/react-native.js'),
+        // @huggingface/transformers is browser/Electron only — stub Node bindings.
+        sharp$: false,
+        'onnxruntime-node$': false,
       },
       fullySpecified: false,
+    },
+    // Paar EN→MR model (transformers.js) loads ONNX / WASM at runtime.
+    experiments: {
+      asyncWebAssembly: true,
     },
     module: {
       rules: [

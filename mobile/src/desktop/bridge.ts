@@ -43,6 +43,8 @@ export type DesktopBridge = {
     copies?: number;
     /** Gap labels: stickers per OS write (e.g. 3). */
     batchSize?: number;
+    /** Short FIFO settle for stickers; longer for bills. */
+    jobKind?: 'label' | 'receipt';
   }) => Promise<void>;
   /** ESC/POS to an OS-installed POS printer (58/80 mm). Optional on older desktop builds. */
   printRawSystem?: (options: {
@@ -52,8 +54,116 @@ export type DesktopBridge = {
     copies?: number;
     /** Stickers per spool write — keeps DeTong gap aligned (use 3). */
     batchSize?: number;
+    /** Short FIFO settle for stickers; longer for bills. */
+    jobKind?: 'label' | 'receipt';
   }) => Promise<void>;
+  /** Enable CUPS/Win queue now so paper can move as soon as bytes are ready. */
+  primePrinter?: (options: { printerName: string }) => Promise<void>;
   saveFile: (options: DesktopSaveFileOptions) => Promise<{ saved: boolean; path?: string }>;
+  /** Desktop offline file store (userData/offline/<shop>/…). Optional on older builds. */
+  offlineRead?: (options: { shopCode: string; key: string }) => Promise<{ ok: boolean; value: unknown }>;
+  offlineWrite?: (options: { shopCode: string; key: string; value: unknown }) => Promise<{ ok: boolean }>;
+  offlineRemove?: (options: { shopCode: string; key: string }) => Promise<{ ok: boolean }>;
+  offlineList?: (options: { shopCode: string; prefix?: string }) => Promise<{ ok: boolean; keys: string[] }>;
+  /** Local SQLite — fully offline catalog + sales. */
+  sqliteStatus?: (options: { shopCode: string }) => Promise<{
+    ok: boolean;
+    schemaVersion?: number;
+    catalogUpdatedAt?: string | null;
+    catalogProductCount?: number;
+    pendingSales?: number;
+  }>;
+  sqliteSaveShopSettings?: (options: { shopCode: string; settings: unknown }) => Promise<{ ok: boolean }>;
+  sqliteReadShopSettings?: (options: { shopCode: string }) => Promise<{ ok: boolean; settings: unknown }>;
+  sqliteReplaceCatalog?: (options: {
+    shopCode: string;
+    products?: unknown[];
+    categories?: unknown[];
+    brands?: unknown[];
+    clearProducts?: boolean;
+  }) => Promise<{ ok: boolean; products?: number }>;
+  sqliteListProducts?: (options: {
+    shopCode: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    categoryId?: string | null;
+  }) => Promise<{ ok: boolean; items: unknown[]; total: number }>;
+  sqliteListCategories?: (options: { shopCode: string }) => Promise<{ ok: boolean; items: unknown[] }>;
+  sqliteListBrands?: (options: { shopCode: string }) => Promise<{ ok: boolean; items: unknown[] }>;
+  sqliteReplaceCustomers?: (options: {
+    shopCode: string;
+    customers?: unknown[];
+  }) => Promise<{ ok: boolean; customers?: number }>;
+  sqliteListCustomers?: (options: {
+    shopCode: string;
+    search?: string;
+    limit?: number;
+  }) => Promise<{ ok: boolean; items: unknown[] }>;
+  sqliteUpsertCustomer?: (options: {
+    shopCode: string;
+    customer: unknown;
+  }) => Promise<{ ok: boolean; id?: string }>;
+  sqliteSetMeta?: (options: {
+    shopCode: string;
+    key: string;
+    value: string;
+  }) => Promise<{ ok: boolean }>;
+  sqliteGetMeta?: (options: {
+    shopCode: string;
+    key: string;
+    fallback?: string | null;
+  }) => Promise<{ ok: boolean; value: string | null }>;
+  sqliteSaveSale?: (options: { shopCode: string; sale: unknown }) => Promise<{ ok: boolean; pending?: number }>;
+  sqliteListPendingSales?: (options: { shopCode: string }) => Promise<{
+    ok: boolean;
+    rows: Array<{
+      clientBillId: string;
+      createdAt: string;
+      payload: Record<string, unknown>;
+      bill: unknown;
+      syncAttempts: number;
+      lastError?: string;
+    }>;
+    pending: number;
+  }>;
+  sqliteMarkSaleSynced?: (options: {
+    shopCode: string;
+    clientBillId: string;
+    serverBillId?: string | null;
+  }) => Promise<{ ok: boolean; pending?: number }>;
+  sqliteMarkSaleError?: (options: {
+    shopCode: string;
+    clientBillId: string;
+    message: string;
+    attempts: number;
+  }) => Promise<{ ok: boolean; pending?: number }>;
+  sqlitePendingCount?: (options: { shopCode: string }) => Promise<{ ok: boolean; pending: number }>;
+  sqliteSaveAuthSession?: (options: { shopCode: string; session: unknown }) => Promise<{ ok: boolean }>;
+  sqliteReadAuthSession?: (options: { shopCode: string }) => Promise<{ ok: boolean; session: any }>;
+  sqliteListSales?: (options: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    items: any[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }>;
+  sqliteGetSale?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; bill: any }>;
+  sqliteSaveHeldBill?: (options: { shopCode: string; held: unknown }) => Promise<{ ok: boolean; id?: string }>;
+  sqliteListHeldBills?: (options: { shopCode: string }) => Promise<{ ok: boolean; items: any[] }>;
+  sqliteDeleteHeldBill?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean }>;
+  sqliteDashboard?: (options: { shopCode: string }) => Promise<{ ok: boolean; data: any }>;
+  sqliteSalesReport?: (options: Record<string, unknown>) => Promise<{ ok: boolean; data: any }>;
+  sqliteEnqueueSync?: (options: Record<string, unknown>) => Promise<{ ok: boolean; id?: string }>;
+  sqliteListSyncQueue?: (options: { shopCode: string }) => Promise<{ ok: boolean; rows: any[] }>;
+  sqliteReplaceJsonTable?: (options: {
+    shopCode: string;
+    table: string;
+    rows: unknown[];
+  }) => Promise<{ ok: boolean }>;
+  sqliteListJsonTable?: (options: { shopCode: string; table: string }) => Promise<{ ok: boolean; items: any[] }>;
+  sqliteSaveExpense?: (options: { shopCode: string; expense: unknown }) => Promise<{ ok: boolean }>;
+  sqliteListExpenses?: (options: Record<string, unknown>) => Promise<{ ok: boolean; items: any[] }>;
+  /** Extra local entity / report / sync-queue IPC (desktop offline). */
+  [key: string]: any;
 };
 
 /** Present only inside the Electron app (exposed by desktop/preload.js) */

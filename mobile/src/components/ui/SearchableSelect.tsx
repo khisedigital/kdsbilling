@@ -1,15 +1,18 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Modal,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type TextInput as TextInputType,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { radius, shadow, spacing } from '../../theme/layout';
@@ -17,6 +20,16 @@ import { radius, shadow, spacing } from '../../theme/layout';
 export type SearchableSelectOption = {
   id: string;
   label: string;
+  /** Extra text matched by search (e.g. other language name). */
+  searchText?: string;
+};
+
+export type SearchableSelectValueAction = {
+  label: string;
+  icon?: string;
+  onPress: () => void;
+  loading?: boolean;
+  disabled?: boolean;
 };
 
 type Props = {
@@ -29,8 +42,11 @@ type Props = {
   placeholder?: string;
   allLabel?: string;
   searchPlaceholder?: string;
+  icon?: string;
+  style?: object | object[];
+  /** Shown when a value is selected (e.g. Favorite all in category). */
+  valueAction?: SearchableSelectValueAction | null;
 };
-
 type MenuLayout = { x: number; y: number; width: number };
 
 /**
@@ -46,8 +62,13 @@ function SearchableSelect({
   placeholder = 'Select…',
   allLabel = 'All',
   searchPlaceholder = 'Type to filter…',
+  icon = 'shape-outline',
+  style,
+  valueAction = null,
 }: Props) {
   const t = useT();
+  const { height: windowHeight } = useWindowDimensions();
+  const overlap = useKeyboardOverlap();
   const [query, setQuery] = useState('');
   const [menuLayout, setMenuLayout] = useState<MenuLayout | null>(null);
   const inputRef = useRef<TextInputType>(null);
@@ -62,15 +83,43 @@ function SearchableSelect({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return options;
-    return options.filter((o) => o.label.toLowerCase().includes(q));
+    return options.filter((o) => {
+      const haystack = `${o.label} ${o.searchText || ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
   }, [options, query]);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
 
   const measureMenu = useCallback(() => {
-    wrapRef.current?.measureInWindow((x, y, width, height) => {
-      setMenuLayout({ x, y: y + height, width });
-    });
+    const node = wrapRef.current as
+      | (View & {
+          measureInWindow?: (cb: (x: number, y: number, width: number, height: number) => void) => void;
+          measure?: (
+            cb: (
+              x: number,
+              y: number,
+              width: number,
+              height: number,
+              pageX: number,
+              pageY: number,
+            ) => void,
+          ) => void;
+        })
+      | null;
+    if (!node) return;
+    // Optional-chain the method itself — on some hosts `current` exists but measureInWindow does not.
+    if (typeof node.measureInWindow === 'function') {
+      node.measureInWindow((x, y, width, height) => {
+        setMenuLayout({ x, y: y + height, width });
+      });
+      return;
+    }
+    if (typeof node.measure === 'function') {
+      node.measure((_x, _y, width, height, pageX, pageY) => {
+        setMenuLayout({ x: pageX, y: pageY + height, width });
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -143,19 +192,45 @@ function SearchableSelect({
     [allLabel, pick, t, value],
   );
 
+  const visibleBottom = windowHeight - overlap - 8;
+  const panelMax = Math.min(280, Math.max(80, visibleBottom - 16));
+  const panelTop = menuLayout && menuLayout.y + panelMax > visibleBottom
+    ? Math.max(8, visibleBottom - panelMax)
+    : menuLayout?.y ?? 0;
+
+  const runValueAction = useCallback(() => {
+    if (!valueAction || valueAction.disabled || valueAction.loading) return;
+    onOpenChange(false);
+    valueAction.onPress();
+  }, [onOpenChange, valueAction]);
+
   return (
-    <View ref={wrapRef} style={styles.wrap} collapsable={false}>
+    <View ref={wrapRef} style={[styles.wrap, style]} collapsable={false}>
       <View style={[styles.trigger, open && styles.triggerOpen]}>
         <Pressable
           onPress={toggle}
           style={styles.triggerMain}
           accessibilityRole="button"
           accessibilityLabel={t(placeholder)}>
-          <Icon name="shape-outline" size={18} color={colors.textMuted} />
+          <Icon name={icon} size={18} color={colors.textMuted} />
           <Text style={styles.value} numberOfLines={1}>
             {selectedLabel}
           </Text>
         </Pressable>
+        {value && valueAction ? (
+          <Pressable
+            onPress={runValueAction}
+            hitSlop={8}
+            disabled={!!valueAction.disabled || !!valueAction.loading}
+            accessibilityLabel={t(valueAction.label)}
+            style={[styles.iconBtn, styles.valueActionBtn]}>
+            {valueAction.loading ? (
+              <ActivityIndicator size="small" color={colors.warning} />
+            ) : (
+              <Icon name={valueAction.icon || 'star'} size={18} color={colors.warning} />
+            )}
+          </Pressable>
+        ) : null}
         {value ? (
           <Pressable
             onPress={clearValue}
@@ -186,9 +261,10 @@ function SearchableSelect({
               style={[
                 styles.panel,
                 {
-                  top: menuLayout.y,
+                  top: panelTop,
                   left: menuLayout.x,
-                  width: Math.max(menuLayout.width, 180),
+                  width: Math.max(menuLayout.width, 220),
+                  maxHeight: panelMax,
                 },
               ]}>
               <View style={styles.search}>
@@ -211,6 +287,22 @@ function SearchableSelect({
                   </Pressable>
                 ) : null}
               </View>
+              {value && valueAction ? (
+                <Pressable
+                  onPress={runValueAction}
+                  disabled={!!valueAction.disabled || !!valueAction.loading}
+                  style={[
+                    styles.valueActionRow,
+                    (valueAction.disabled || valueAction.loading) && styles.valueActionRowDisabled,
+                  ]}>
+                  {valueAction.loading ? (
+                    <ActivityIndicator size="small" color={colors.warning} />
+                  ) : (
+                    <Icon name={valueAction.icon || 'star'} size={18} color={colors.warning} />
+                  )}
+                  <Text style={styles.valueActionText}>{t(valueAction.label)}</Text>
+                </Pressable>
+              ) : null}
               <FlatList
                 data={filtered}
                 keyExtractor={(item) => item.id}
@@ -284,11 +376,34 @@ const styles = StyleSheet.create({
     minHeight: 44,
     justifyContent: 'center',
   },
+  valueActionBtn: {
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+  },
   value: {
     flex: 1,
     fontSize: 14,
     fontWeight: '600',
     color: colors.text,
+  },
+  valueActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
+  valueActionRowDisabled: {
+    opacity: 0.6,
+  },
+  valueActionText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.warning,
   },
   modalRoot: {
     flex: 1,

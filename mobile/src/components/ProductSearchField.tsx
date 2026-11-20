@@ -1,9 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { Searchbar, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useT } from '../i18n';
 import { searchProducts, type SearchProductResult } from '../services/catalogService';
+import type { Product } from '../types/catalog';
 import { colors } from '../theme/colors';
 import { radius, spacing } from '../theme/layout';
 import { variantLabel } from '../utils/variantLabel';
@@ -18,9 +25,23 @@ type Props = {
   label?: string;
   onSelect: (product: SearchProductResult) => void;
   selectedLabel?: string;
+  /** Called when user taps Clear on the selected chip. */
+  onClear?: () => void;
   minChars?: number;
+  /** Limit search hits to this category when set. */
+  categoryId?: string | null;
   /** Show one row per product; selecting loads that product (caller can expand variants). */
   groupByProduct?: boolean;
+  /**
+   * When search is empty, show favorites / recent products to tap
+   * (much friendlier for barcode labels than “type 2 letters”).
+   */
+  browseWhenEmpty?: boolean;
+  /** Larger result list (label / purchase screens). */
+  largeResults?: boolean;
+  /** Show selling price + barcode in each row. */
+  showPriceAndBarcode?: boolean;
+  autoFocus?: boolean;
 };
 
 function groupSearchResults(items: SearchProductResult[]): ProductGroup[] {
@@ -43,47 +64,155 @@ function groupSearchResults(items: SearchProductResult[]): ProductGroup[] {
   return Array.from(map.values());
 }
 
+function productToSearchRows(product: Product): SearchProductResult[] {
+  const rows: SearchProductResult[] = [];
+  const categoryId =
+    (product as { categoryId?: string | null }).categoryId ??
+    (product as { category_id?: string | null }).category_id ??
+    null;
+  for (const v of product.variants || []) {
+    if (!v?.id) continue;
+    const vv = v as {
+      id: string;
+      sku?: string;
+      size?: string | null;
+      color?: string | null;
+      sellingPrice?: number;
+      selling_price?: number;
+      barcode?: string;
+      barcodes?: Array<string | { barcode?: string; code?: string }>;
+      stockQty?: number;
+      stock_qty?: number;
+    };
+    const barcodes: string[] = [];
+    if (vv.barcode) barcodes.push(String(vv.barcode));
+    for (const b of vv.barcodes || []) {
+      const code = typeof b === 'string' ? b : b?.barcode || b?.code;
+      if (code && !barcodes.includes(String(code))) barcodes.push(String(code));
+    }
+    rows.push({
+      variantId: vv.id,
+      productId: product.id,
+      productName: product.name || '',
+      productNameMr: product.name_mr ?? product.nameMr ?? null,
+      isFavorite: !!(product.is_favorite || (product as { isFavorite?: boolean }).isFavorite),
+      sku: vv.sku || '',
+      size: vv.size ?? null,
+      color: vv.color ?? null,
+      sellingPrice: Number(vv.sellingPrice ?? vv.selling_price) || 0,
+      barcodes,
+      stockQty: Number(vv.stockQty ?? vv.stock_qty) || 0,
+      categoryId,
+    });
+  }
+  return rows;
+}
+
 export default function ProductSearchField({
   label = 'Search by name, SKU or barcode',
   onSelect,
   selectedLabel,
+  onClear,
   minChars = 2,
+  categoryId = null,
   groupByProduct = false,
+  browseWhenEmpty = false,
+  largeResults = false,
+  showPriceAndBarcode = false,
+  autoFocus = false,
 }: Props) {
   const t = useT();
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<SearchProductResult[]>([]);
+  const [browse, setBrowse] = useState<SearchProductResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [loadingBrowse, setLoadingBrowse] = useState(false);
   const [searchError, setSearchError] = useState('');
+  const [focused, setFocused] = useState(false);
+  const [changing, setChanging] = useState(false);
+  const [searchKey, setSearchKey] = useState(0);
+  const focusAfterChange = useRef(false);
+
+  // Once a product is chosen, hide the search until Change — cleaner for label printing.
+  const showSearchUi = !selectedLabel || changing;
+
+  const filteredResults = useMemo(() => {
+    if (!categoryId) return results;
+    return results.filter((item) => item.categoryId === categoryId);
+  }, [categoryId, results]);
 
   const productGroups = useMemo(
-    () => (groupByProduct ? groupSearchResults(results) : []),
-    [groupByProduct, results],
+    () => (groupByProduct ? groupSearchResults(filteredResults) : []),
+    [groupByProduct, filteredResults],
   );
 
-  const runSearch = useCallback(async (query: string) => {
-    const q = query.trim();
-    if (q.length < minChars) {
-      setResults([]);
-      setSearchError('');
-      return;
-    }
+  const browseGroups = useMemo(
+    () => (groupByProduct ? groupSearchResults(browse) : []),
+    [groupByProduct, browse],
+  );
 
-    setSearching(true);
-    setSearchError('');
+  const loadBrowse = useCallback(async () => {
+    if (!browseWhenEmpty) return;
+    setLoadingBrowse(true);
     try {
-      const found = await searchProducts(q);
-      setResults(found);
-      if (!found.length) setSearchError(t('No product found for "{{query}}"', { query: q }));
-    } catch (err: unknown) {
-      setResults([]);
-      const axiosErr = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
-      const message = axiosErr?.response?.data?.error?.message || axiosErr?.message;
-      setSearchError(message ? t(message) : t('Search failed'));
+      const { shouldUseLocalCatalog, readSqliteBillingCatalog } = await import(
+        '../offline/localCatalog'
+      );
+      if (shouldUseLocalCatalog()) {
+        const page = await readSqliteBillingCatalog({
+          limit: 50,
+          categoryId: categoryId || null,
+        });
+        const rows: SearchProductResult[] = [];
+        for (const p of page?.items || []) {
+          rows.push(...productToSearchRows(p));
+        }
+        // Favorites first (billing catalog already orders by favorite)
+        setBrowse(rows.slice(0, 40));
+        return;
+      }
+      // Online / phone: light name search fallback — empty browse
+      setBrowse([]);
+    } catch {
+      setBrowse([]);
     } finally {
-      setSearching(false);
+      setLoadingBrowse(false);
     }
-  }, [minChars, t]);
+  }, [browseWhenEmpty, categoryId]);
+
+  useEffect(() => {
+    if (browseWhenEmpty) void loadBrowse();
+  }, [browseWhenEmpty, loadBrowse]);
+
+  const runSearch = useCallback(
+    async (query: string) => {
+      const q = query.trim();
+      if (q.length < minChars) {
+        setResults([]);
+        setSearchError('');
+        return;
+      }
+
+      setSearching(true);
+      setSearchError('');
+      try {
+        const found = await searchProducts(q, { categoryId });
+        setResults(found);
+        if (!found.length) setSearchError(t('No product found for "{{query}}"', { query: q }));
+      } catch (err: unknown) {
+        setResults([]);
+        const axiosErr = err as {
+          response?: { data?: { error?: { message?: string } } };
+          message?: string;
+        };
+        const message = axiosErr?.response?.data?.error?.message || axiosErr?.message;
+        setSearchError(message ? t(message) : t('Search failed'));
+      } finally {
+        setSearching(false);
+      }
+    },
+    [categoryId, minChars, t],
+  );
 
   useEffect(() => {
     if (!search.trim()) {
@@ -91,130 +220,269 @@ export default function ProductSearchField({
       setSearchError('');
       return;
     }
-    const timer = setTimeout(() => runSearch(search), 350);
+    const timer = setTimeout(() => runSearch(search), 280);
     return () => clearTimeout(timer);
   }, [search, runSearch]);
+
+  useEffect(() => {
+    if (!search.trim() || !results.length || searching) return;
+    if (categoryId && !results.some((item) => item.categoryId === categoryId)) {
+      setSearchError(t('No product found for "{{query}}"', { query: search.trim() }));
+    } else if (results.length) {
+      setSearchError('');
+    }
+  }, [categoryId, results, search, searching, t]);
 
   const handleSelect = (product: SearchProductResult) => {
     onSelect(product);
     setSearch('');
     setResults([]);
     setSearchError('');
+    setFocused(false);
+    setChanging(false);
   };
 
   const handleSelectGroup = (group: ProductGroup) => {
     handleSelect(group.variants[0]);
   };
 
-  const showResults = search.trim().length >= minChars && (searching || results.length > 0 || !!searchError);
+  const qLen = search.trim().length;
+  const showSearchResults = qLen >= minChars && (searching || filteredResults.length > 0 || !!searchError);
+  // Favorites show as soon as the search UI is open (no need to focus first).
+  const showBrowse =
+    browseWhenEmpty &&
+    qLen < minChars &&
+    !showSearchResults &&
+    (loadingBrowse || browse.length > 0);
+
+  const showPanel = showSearchResults || showBrowse;
+
+  const renderResultRow = (item: SearchProductResult, key: string, onPress: () => void, metaRight?: string) => {
+    const barcode = (item.barcodes && item.barcodes[0]) || '';
+    const variant = variantLabel(item.size, item.color);
+    return (
+      <Pressable
+        key={key}
+        onPress={onPress}
+        style={({ pressed }) => [styles.resultRow, pressed && styles.resultPressed]}>
+        <View style={styles.avatar}>
+          <Icon
+            name={item.isFavorite ? 'star' : 'package-variant'}
+            size={20}
+            color={item.isFavorite ? colors.accent : colors.primary}
+          />
+        </View>
+        <View style={styles.resultInfo}>
+          <Text style={styles.resultName} numberOfLines={2}>
+            {item.productName}
+            {variant ? ` · ${variant}` : ''}
+          </Text>
+          <Text style={styles.resultMeta} numberOfLines={1}>
+            {[item.sku, item.uom?.code, showPriceAndBarcode && barcode ? barcode : null]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+        </View>
+        {showPriceAndBarcode && Number(item.sellingPrice) > 0 ? (
+          <Text style={styles.resultPrice}>₹{item.sellingPrice}</Text>
+        ) : metaRight ? (
+          <Text style={styles.resultAdd}>{metaRight}</Text>
+        ) : null}
+      </Pressable>
+    );
+  };
 
   return (
     <View style={styles.wrap}>
+      {selectedLabel ? (
+        <View style={styles.selectedCard}>
+          <View style={styles.selectedIcon}>
+            <Icon name="check-circle" size={26} color={colors.success} />
+          </View>
+          <View style={styles.selectedText}>
+            <Text style={styles.selectedLabel}>{t('Selected product')}</Text>
+            <Text style={styles.selectedName} numberOfLines={2}>
+              {selectedLabel}
+            </Text>
+          </View>
+          <View style={styles.selectedActions}>
+            <Pressable
+              onPress={() => {
+                focusAfterChange.current = true;
+                setChanging(true);
+                setSearch('');
+                setFocused(true);
+                setSearchKey((k) => k + 1);
+              }}
+              style={styles.selectedBtn}
+              hitSlop={6}>
+              <Icon name="swap-horizontal" size={18} color={colors.primary} />
+              <Text style={styles.selectedBtnText}>{t('Change')}</Text>
+            </Pressable>
+            {onClear ? (
+              <Pressable
+                onPress={() => {
+                  setChanging(false);
+                  setSearch('');
+                  setResults([]);
+                  onClear();
+                }}
+                style={styles.selectedBtnGhost}
+                hitSlop={6}>
+                <Icon name="close" size={18} color={colors.textMuted} />
+                <Text style={styles.selectedBtnGhostText}>{t('Clear')}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
+      {showSearchUi ? (
+        <>
       <Searchbar
+        key={searchKey}
         placeholder={t(label)}
         value={search}
         onChangeText={setSearch}
         onSubmitEditing={() => runSearch(search)}
         onIconPress={() => runSearch(search)}
-        style={styles.search}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          // Delay so row press can fire first
+          setTimeout(() => setFocused(false), 180);
+        }}
+        style={[styles.search, selectedLabel ? styles.searchAfterSelected : null]}
         inputStyle={styles.searchInput}
         loading={searching}
         iconColor={colors.primary}
+        autoFocus={autoFocus || focusAfterChange.current}
+        onLayout={() => {
+          if (focusAfterChange.current) focusAfterChange.current = false;
+        }}
       />
 
-      {selectedLabel ? (
-        <View style={styles.selectedChip}>
-          <Icon name="check-circle" size={18} color={colors.secondary} />
-          <View style={styles.selectedText}>
-            <Text style={styles.selectedLabel}>{t('Selected product')}</Text>
-            <Text style={styles.selectedName} numberOfLines={1}>{selectedLabel}</Text>
-          </View>
+      {!showPanel && !browseWhenEmpty ? (
+        <View style={styles.hintRow}>
+          <Icon name="magnify" size={16} color={colors.textMuted} />
+          <Text style={styles.hintText}>
+            {t('Type at least {{count}} characters to search', { count: minChars })}
+          </Text>
+        </View>
+      ) : null}
+      {browseWhenEmpty && !showPanel && !loadingBrowse ? (
+        <View style={styles.hintRow}>
+          <Icon name="magnify" size={16} color={colors.textMuted} />
+          <Text style={styles.hintText}>
+            {t('No favorites yet — type a product name, SKU or barcode to search.')}
+          </Text>
         </View>
       ) : null}
 
-      {showResults ? (
-        <View style={styles.resultsBox}>
-          {searching ? (
+      {showPanel ? (
+        <View style={[styles.resultsBox, largeResults && styles.resultsBoxLarge]}>
+          {showBrowse && !showSearchResults ? (
+            <>
+              <View style={styles.panelHeader}>
+                <Icon name="star-outline" size={16} color={colors.accent} />
+                <Text style={styles.panelHeaderText}>{t('Favorites & quick picks')}</Text>
+              </View>
+              {loadingBrowse ? (
+                <View style={styles.resultsLoading}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={styles.resultsHint}>{t('Loading…')}</Text>
+                </View>
+              ) : groupByProduct ? (
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  style={largeResults ? styles.resultsListLarge : styles.resultsList}
+                  nestedScrollEnabled>
+                  {browseGroups.map((group) => {
+                    const first = group.variants[0];
+                    const multi = group.variants.length > 1;
+                    return renderResultRow(
+                      first,
+                      group.productId || first.variantId,
+                      () => handleSelectGroup(group),
+                      multi
+                        ? t('{{count}} options', { count: group.variants.length })
+                        : t('Select'),
+                    );
+                  })}
+                </ScrollView>
+              ) : (
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  style={largeResults ? styles.resultsListLarge : styles.resultsList}
+                  nestedScrollEnabled>
+                  {browse.map((item) =>
+                    renderResultRow(item, item.variantId, () => handleSelect(item)),
+                  )}
+                </ScrollView>
+              )}
+            </>
+          ) : searching ? (
             <View style={styles.resultsLoading}>
               <ActivityIndicator size="small" color={colors.primary} />
-              <Text variant="bodySmall" style={styles.resultsHint}>{t('Searching...')}</Text>
+              <Text style={styles.resultsHint}>{t('Searching…')}</Text>
             </View>
           ) : searchError ? (
             <View style={styles.noResult}>
               <Icon name="package-variant-closed" size={28} color={colors.textMuted} />
               <Text style={styles.noResultText}>{searchError}</Text>
+              <Text style={styles.noResultHint}>{t('Try another spelling, SKU or scan the barcode.')}</Text>
             </View>
           ) : groupByProduct ? (
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              style={styles.resultsList}
-              nestedScrollEnabled>
-              {productGroups.map((group) => {
-                const multi = group.variants.length > 1
-                  || Boolean(group.variants[0]?.size || group.variants[0]?.color);
-                const first = group.variants[0];
-                const meta = multi
-                  ? (group.variants.length > 1
-                    ? t('{{count}} sizes', { count: group.variants.length })
-                    : variantLabel(first?.size, first?.color) || t('sizes'))
-                  : first?.sku;
-                return (
-                  <Pressable
-                    key={group.productId || first.variantId}
-                    onPress={() => handleSelectGroup(group)}
-                    style={({ pressed }) => [styles.resultRow, pressed && styles.resultPressed]}>
-                    <View style={styles.avatar}>
-                      <Icon name="package-variant" size={20} color={colors.primary} />
-                    </View>
-                    <View style={styles.resultInfo}>
-                      <Text style={styles.resultName}>{group.productName}</Text>
-                      <Text style={styles.resultMeta}>
-                        {[meta, first?.uom?.code].filter(Boolean).join(' · ')}
-                      </Text>
-                    </View>
-                    <Text style={styles.resultAdd}>{multi ? t('Sizes') : t('Select')}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+            <>
+              <View style={styles.panelHeader}>
+                <Icon name="magnify" size={16} color={colors.primary} />
+                <Text style={styles.panelHeaderText}>
+                  {t('{{count}} products found', { count: productGroups.length })}
+                </Text>
+              </View>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                style={largeResults ? styles.resultsListLarge : styles.resultsList}
+                nestedScrollEnabled>
+                {productGroups.map((group) => {
+                  const first = group.variants[0];
+                  const multi = group.variants.length > 1;
+                  return renderResultRow(
+                    { ...first, productName: group.productName },
+                    group.productId || first.variantId,
+                    () => handleSelectGroup(group),
+                    multi ? t('{{count}} options', { count: group.variants.length }) : t('Select'),
+                  );
+                })}
+              </ScrollView>
+            </>
           ) : (
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              style={styles.resultsList}
-              nestedScrollEnabled>
-              {results.map((item) => (
-                <Pressable
-                  key={item.variantId}
-                  onPress={() => handleSelect(item)}
-                  style={({ pressed }) => [styles.resultRow, pressed && styles.resultPressed]}>
-                  <View style={styles.avatar}>
-                    <Icon name="package-variant" size={20} color={colors.primary} />
-                  </View>
-                  <View style={styles.resultInfo}>
-                    <Text style={styles.resultName}>
-                      {item.productName}
-                      {variantLabel(item.size, item.color) ? ` · ${variantLabel(item.size, item.color)}` : ''}
-                    </Text>
-                    <Text style={styles.resultMeta}>
-                      {item.sku}
-                      {item.uom?.code ? ` · ${item.uom.code}` : ''}
-                    </Text>
-                  </View>
-                  {item.sellingPrice != null ? (
-                    <Text style={styles.resultPrice}>₹{item.sellingPrice}</Text>
-                  ) : null}
-                </Pressable>
-              ))}
-            </ScrollView>
+            <>
+              <View style={styles.panelHeader}>
+                <Icon name="magnify" size={16} color={colors.primary} />
+                <Text style={styles.panelHeaderText}>
+                  {t('{{count}} products found', { count: filteredResults.length })}
+                </Text>
+              </View>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                style={largeResults ? styles.resultsListLarge : styles.resultsList}
+                nestedScrollEnabled>
+                {filteredResults.map((item) =>
+                  renderResultRow(item, item.variantId, () => handleSelect(item)),
+                )}
+              </ScrollView>
+            </>
           )}
         </View>
+      ) : null}
+        </>
       ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { marginBottom: spacing.md },
+  wrap: { marginBottom: spacing.sm },
   search: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
@@ -222,56 +490,108 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     elevation: 0,
   },
-  searchInput: { fontSize: 15 },
-  selectedChip: {
+  searchAfterSelected: { marginTop: spacing.sm },
+  searchInput: { fontSize: 16 },
+  hintRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: spacing.sm,
+    paddingHorizontal: 2,
+  },
+  hintText: { flex: 1, fontSize: 13, color: colors.textMuted, lineHeight: 18 },
+
+  selectedCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginTop: spacing.md,
     padding: spacing.md,
-    backgroundColor: colors.secondaryLight,
+    backgroundColor: colors.successLight,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
+    borderColor: colors.success,
+  },
+  selectedIcon: { paddingTop: 2 },
+  selectedText: { flex: 1, minWidth: 0 },
+  selectedLabel: {
+    fontSize: 11,
+    color: colors.success,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  selectedName: { fontSize: 16, color: colors.text, fontWeight: '700', marginTop: 2 },
+  selectedActions: { gap: 6, alignItems: 'stretch' },
+  selectedBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.secondary,
+    borderColor: colors.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
-  selectedText: { flex: 1 },
-  selectedLabel: { fontSize: 11, color: colors.secondaryDark, fontWeight: '600', textTransform: 'uppercase' },
-  selectedName: { fontSize: 14, color: colors.text, fontWeight: '600', marginTop: 2 },
+  selectedBtnText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  selectedBtnGhost: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 4,
+  },
+  selectedBtnGhostText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
+
   resultsBox: {
     marginTop: spacing.sm,
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
-    maxHeight: 220,
+    maxHeight: 240,
     overflow: 'hidden',
   },
+  resultsBoxLarge: { maxHeight: 480 },
   resultsList: { maxHeight: 220 },
+  resultsListLarge: { maxHeight: 440 },
+  panelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surfaceVariant,
+  },
+  panelHeaderText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
   resultsLoading: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: spacing.lg },
   resultsHint: { color: colors.textMuted },
   noResult: { alignItems: 'center', padding: spacing.xl, gap: spacing.sm },
-  noResultText: { color: colors.textMuted, textAlign: 'center' },
+  noResultText: { color: colors.text, fontWeight: '600', textAlign: 'center' },
+  noResultHint: { color: colors.textMuted, textAlign: 'center', fontSize: 12 },
   resultRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
   resultPressed: { backgroundColor: colors.primaryLight },
   avatar: {
-    width: 40,
-    height: 40,
+    width: 42,
+    height: 42,
     borderRadius: radius.md,
     backgroundColor: colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: spacing.md,
   },
-  resultInfo: { flex: 1 },
-  resultName: { fontSize: 15, fontWeight: '600', color: colors.text },
+  resultInfo: { flex: 1, minWidth: 0 },
+  resultName: { fontSize: 15, fontWeight: '700', color: colors.text },
   resultMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  resultPrice: { fontSize: 15, fontWeight: '700', color: colors.secondary },
+  resultPrice: { fontSize: 15, fontWeight: '700', color: colors.secondary, marginLeft: spacing.sm },
   resultAdd: { fontSize: 13, fontWeight: '700', color: colors.secondary, marginLeft: spacing.sm },
 });

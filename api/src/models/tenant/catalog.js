@@ -75,6 +75,7 @@ function defineProduct(sequelize) {
     is_weight_based: { type: DataTypes.BOOLEAN, defaultValue: false },
     allow_decimal_qty: { type: DataTypes.BOOLEAN, defaultValue: false },
     has_variants: { type: DataTypes.BOOLEAN, defaultValue: false },
+    is_favorite: { type: DataTypes.BOOLEAN, defaultValue: false },
     status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
     deleted_at: DataTypes.DATE,
   }, { tableName: 'products', paranoid: false });

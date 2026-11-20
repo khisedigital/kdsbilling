@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, Dialog, FAB, HelperText, Portal } from 'react-native-paper';
+import { Button, FAB, HelperText, Portal } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -225,9 +226,9 @@ export default function CustomerListScreen({ navigation, route }: Props) {
       <FAB icon="plus" style={common.fab} color={colors.textOnPrimary} onPress={openAdd} />
 
       <Portal>
-        <Dialog visible={visible} onDismiss={closeDialog} style={styles.dialog}>
-          <Dialog.Title>{mode === 'add' ? t('Add Customer') : t('Edit Customer')}</Dialog.Title>
-          <Dialog.Content>
+        <AppDialog visible={visible} onDismiss={closeDialog} style={styles.dialog}>
+          <AppDialog.Title>{mode === 'add' ? t('Add Customer') : t('Edit Customer')}</AppDialog.Title>
+          <AppDialog.Content>
             <AppTextInput
               label={t('Name *')}
               value={name}
@@ -250,8 +251,8 @@ export default function CustomerListScreen({ navigation, route }: Props) {
                 {t('Use for current bill')}
               </Button>
             ) : null}
-          </Dialog.Content>
-          <Dialog.Actions style={styles.dialogActions}>
+          </AppDialog.Content>
+          <AppDialog.Actions style={styles.dialogActions}>
             {mode === 'edit' ? (
               <Button textColor={colors.error} onPress={confirmDelete} disabled={loading}>
                 {t('Delete')}
@@ -265,8 +266,8 @@ export default function CustomerListScreen({ navigation, route }: Props) {
                 {mode === 'add' ? t('Add') : t('Save')}
               </Button>
             </View>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </View>
   );

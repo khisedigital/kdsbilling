@@ -39,7 +39,7 @@ function ProductGridTile({
   const ui = useLanguageStore((s) => s.ui);
   const english = product.productName?.trim() || '';
   const marathi = product.productNameMr?.trim() || '';
-  const sameName = !!marathi && english.localeCompare(marathi, undefined, { sensitivity: 'accent' }) === 0;
+  const sameName = !!marathi && english.toLowerCase() === marathi.toLowerCase();
   const primary = ui === 'mr' && marathi ? marathi : english;
   const secondary = !marathi || sameName ? '' : ui === 'mr' ? english : marathi;
   const size = variantLabel(product.size, product.color);
@@ -64,45 +64,60 @@ function ProductGridTile({
     else onIncrease(product.variantId);
   };
 
+  const compact = width < 120;
+
   return (
     <View style={[styles.tile, { width }, inCart && styles.tileInCart, outOfStock && !inCart && styles.tileOut]}>
+      {product.isFavorite ? (
+        <View style={[styles.favBadge, compact && styles.favBadgeCompact]} pointerEvents="none">
+          <Icon name="star" size={compact ? 10 : 12} color={colors.warning} />
+        </View>
+      ) : null}
       {canEditProduct ? (
         <Pressable
           onPress={() => onEditProduct?.(product)}
-          style={styles.editBtn}
+          style={[styles.editBtn, compact && styles.editBtnCompact]}
           hitSlop={6}
           accessibilityLabel={t('Edit {{name}}', { name: secondary ? `${primary} ${secondary}` : primary })}>
-          <Icon name="pencil" size={14} color={colors.primary} />
+          <Icon name="pencil" size={compact ? 12 : 14} color={colors.primary} />
         </Pressable>
       ) : null}
       <Pressable
         onPress={pressBody}
-        style={styles.body}
+        style={[styles.body, compact && styles.bodyCompact]}
         accessibilityLabel={
           inCart
             ? t('Add more {{name}}', { name: primary })
             : t('Add {{name}}', { name: primary })
         }>
-        <Text
-          style={[styles.name, !secondary && styles.nameSolo, canEditProduct && styles.nameWithEdit]}
-          numberOfLines={secondary ? 1 : 2}>
-          {primary}
+        {/* Fixed name block so short names keep the same card height as long ones. */}
+        <View style={[styles.nameBlock, compact && styles.nameBlockCompact]}>
+          <Text
+            style={[
+              styles.name,
+              compact && styles.nameCompact,
+              product.isFavorite && styles.nameWithFav,
+              canEditProduct && styles.nameWithEdit,
+            ]}
+            numberOfLines={2}>
+            {primary}
+          </Text>
+          <Text
+            style={[
+              styles.nameSecondary,
+              compact && styles.nameSecondaryCompact,
+              !secondary && styles.nameSecondaryPlaceholder,
+              product.isFavorite && styles.nameWithFav,
+              canEditProduct && styles.nameWithEdit,
+            ]}
+            numberOfLines={compact ? 1 : 2}>
+            {secondary || ' '}
+          </Text>
+        </View>
+        <Text style={styles.variant} numberOfLines={1}>
+          {size || (outOfStock ? t('Out of stock') : product.uom?.code || ' ')}
         </Text>
-        {secondary ? (
-          <Text style={[styles.nameSecondary, canEditProduct && styles.nameWithEdit]} numberOfLines={1}>
-            {secondary}
-          </Text>
-        ) : null}
-        {size ? (
-          <Text style={styles.variant} numberOfLines={1}>
-            {size}
-          </Text>
-        ) : (
-          <Text style={styles.variant} numberOfLines={1}>
-            {outOfStock ? t('Out of stock') : product.uom?.code || ' '}
-          </Text>
-        )}
-        <Text style={styles.price} numberOfLines={1}>
+        <Text style={[styles.price, compact && styles.priceCompact]} numberOfLines={1}>
           ₹{formatPrice(Number(product.sellingPrice))}
         </Text>
       </Pressable>
@@ -117,7 +132,7 @@ function ProductGridTile({
           <View style={styles.stepper}>
             <Pressable
               onPress={() => onDecrease(product.variantId)}
-              style={styles.stepBtn}
+              style={[styles.stepBtn, compact && styles.stepBtnCompact]}
               hitSlop={4}
               accessibilityLabel={t('Decrease')}>
               <Icon name="minus" size={16} color={colors.textOnPrimary} />
@@ -125,7 +140,7 @@ function ProductGridTile({
             <Text style={styles.stepQty} numberOfLines={1}>{qtyLabel}</Text>
             <Pressable
               onPress={() => (fromBarcode ? onAdd(product) : onIncrease(product.variantId))}
-              style={styles.stepBtn}
+              style={[styles.stepBtn, compact && styles.stepBtnCompact]}
               hitSlop={4}
               accessibilityLabel={fromBarcode ? t('Add scanned quantity') : t('Increase')}>
               <Icon name="plus" size={16} color={colors.textOnPrimary} />
@@ -138,7 +153,7 @@ function ProductGridTile({
           style={styles.addBtn}
           accessibilityLabel={t('Add {{name}}', { name: primary })}>
           <Icon name="plus" size={16} color={colors.textOnPrimary} />
-          <Text style={styles.addText}>{t('Add')}</Text>
+          {!compact ? <Text style={styles.addText}>{t('Add')}</Text> : null}
         </Pressable>
       )}
     </View>
@@ -149,6 +164,8 @@ export default memo(ProductGridTile);
 
 const styles = StyleSheet.create({
   tile: {
+    flex: 1,
+    alignSelf: 'stretch',
     backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
@@ -160,6 +177,25 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   tileOut: { opacity: 0.7 },
+  favBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    zIndex: 2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.warningLight,
+  },
+  favBadgeCompact: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    top: 3,
+    left: 3,
+  },
   editBtn: {
     position: 'absolute',
     top: 4,
@@ -172,27 +208,61 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: colors.primaryLight,
   },
+  editBtnCompact: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    top: 3,
+    right: 3,
+  },
   body: {
+    flex: 1,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
-    minHeight: 78,
+  },
+  bodyCompact: {
+    paddingHorizontal: 6,
+    paddingTop: 6,
+  },
+  nameBlock: {
+    // 2 lines primary (16) + gap + 2 lines secondary (14)
+    minHeight: 16 * 2 + 2 + 14 * 2,
+    marginBottom: 2,
+  },
+  nameBlockCompact: {
+    minHeight: 14 * 2 + 2 + 12,
   },
   name: {
     fontSize: 12,
     fontWeight: '700',
     color: colors.text,
     lineHeight: 16,
-  },
-  nameSolo: {
     minHeight: 32,
+  },
+  nameCompact: {
+    fontSize: 11,
+    lineHeight: 14,
+    minHeight: 28,
   },
   nameSecondary: {
     fontSize: 11,
     fontWeight: '500',
     color: colors.textMuted,
     lineHeight: 14,
-    marginTop: 1,
+    marginTop: 2,
+    minHeight: 28,
+  },
+  nameSecondaryCompact: {
+    fontSize: 10,
+    lineHeight: 12,
+    minHeight: 12,
+  },
+  nameSecondaryPlaceholder: {
+    opacity: 0,
+  },
+  nameWithFav: {
+    paddingLeft: 24,
   },
   nameWithEdit: {
     paddingRight: 22,
@@ -203,12 +273,16 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
     textTransform: 'uppercase',
+    minHeight: 14,
   },
   price: {
     fontSize: 15,
     fontWeight: '800',
     color: colors.text,
     marginTop: spacing.xs,
+  },
+  priceCompact: {
+    fontSize: 13,
   },
   addBtn: {
     flexDirection: 'row',
@@ -234,6 +308,10 @@ const styles = StyleSheet.create({
     height: 34,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  stepBtnCompact: {
+    width: 30,
+    height: 34,
   },
   stepQty: {
     flex: 1,

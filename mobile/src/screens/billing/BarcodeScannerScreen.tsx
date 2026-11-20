@@ -19,9 +19,26 @@ function numericScan(value: string) {
   return value.replace(/\D/g, '').slice(0, 18);
 }
 
+function openAddProductWithBarcode(
+  navigation: Props['navigation'],
+  code: string,
+) {
+  const digits = numericScan(code);
+  if (!digits) return false;
+  navigation.navigate('ProductForm', {
+    scannedBarcode: digits,
+    scanTarget: 'primary',
+    scanNonce: Date.now(),
+  }, { pop: true });
+  return true;
+}
+
 export default function BarcodeScannerScreen({ navigation, route }: Props) {
   const t = useT();
-  const capture = route.params?.purpose === 'capture';
+  const purpose = route.params?.purpose || 'bill';
+  const capture = purpose === 'capture';
+  const productList = purpose === 'productList';
+  const priceManagement = purpose === 'priceManagement';
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
   const [active, setActive] = useState(true);
@@ -58,14 +75,54 @@ export default function BarcodeScannerScreen({ navigation, route }: Props) {
 
     try {
       const results = await searchProducts(code);
-      if (!results.length) {
+      const p = results.length
+        ? (matchBarcodeProduct(results, code) || results[0])
+        : null;
+
+      if (productList) {
+        if (p?.productId) {
+          navigation.navigate('ProductDetail', { productId: p.productId }, { pop: true });
+          return;
+        }
+        if (!openAddProductWithBarcode(navigation, code)) {
+          Alert.alert(t('Barcode'), t('Scan a number barcode'), [
+            { text: t('Retry'), onPress: () => { busyRef.current = false; setActive(true); } },
+          ]);
+        }
+        return;
+      }
+
+      if (priceManagement) {
+        if (p?.productId) {
+          navigation.navigate('PriceManagement', {
+            scannedProductId: p.productId,
+            scanNonce: Date.now(),
+          }, { pop: true });
+          return;
+        }
         Alert.alert(t('Not found'), t('No product for barcode: {{code}}', { code }), [
           { text: t('Retry'), onPress: () => { busyRef.current = false; setActive(true); } },
           { text: t('Close'), onPress: () => navigation.goBack() },
         ]);
         return;
       }
-      const p = matchBarcodeProduct(results, code) || results[0];
+
+      if (!p) {
+        Alert.alert(t('Not found'), t('No product for barcode: {{code}}', { code }), [
+          {
+            text: t('Add product'),
+            onPress: () => {
+              if (!openAddProductWithBarcode(navigation, code)) {
+                busyRef.current = false;
+                setActive(true);
+              }
+            },
+          },
+          { text: t('Retry'), onPress: () => { busyRef.current = false; setActive(true); } },
+          { text: t('Close'), onPress: () => navigation.goBack() },
+        ]);
+        return;
+      }
       requestScanAdd(p);
       const qty = p.scannedQuantity && p.scannedQuantity > 0 ? p.scannedQuantity : 1;
       setNotice(`${screenProductName(p.productName, p.productNameMr)} · +${formatQuantity(qty, p.uom)}`);
@@ -77,7 +134,7 @@ export default function BarcodeScannerScreen({ navigation, route }: Props) {
         { text: t('OK'), onPress: () => { busyRef.current = false; setActive(true); } },
       ]);
     }
-  }, [capture, navigation, requestScanAdd, route.params?.productId, route.params?.scanTarget, t]);
+  }, [capture, navigation, priceManagement, productList, requestScanAdd, route.params?.productId, route.params?.scanTarget, t]);
 
   const codeScanner = useCodeScanner({
     codeTypes: ['ean-13', 'ean-8', 'code-128', 'code-39', 'qr', 'upc-a', 'upc-e'],
@@ -139,7 +196,14 @@ export default function BarcodeScannerScreen({ navigation, route }: Props) {
         <View style={styles.hintBox}>
           <Icon name="barcode-scan" size={20} color="#fff" />
           <Text style={styles.hint} numberOfLines={2}>
-            {notice || (capture ? t('Point the camera at the product barcode') : t('Scan adds the item to the bill'))}
+            {notice
+              || (capture
+                ? t('Point the camera at the product barcode')
+                : productList
+                  ? t('Scan to find a product, or add a new one')
+                  : priceManagement
+                    ? t('Scan a barcode to edit price and stock')
+                    : t('Scan adds the item to the bill'))}
           </Text>
         </View>
         <Button mode="contained" onPress={() => navigation.goBack()} style={styles.btn} buttonColor={colors.primary}>

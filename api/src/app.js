@@ -93,7 +93,7 @@ app.use(
 );
 // Must precede express.json: webhook HMAC verification needs the untouched raw body.
 app.use('/api/v1/shopify', shopifyPublicRoutes);
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(
   '/uploads',
   express.static(path.join(config.uploadPath), {

@@ -4,6 +4,7 @@ import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CommonActions, useNavigation, useNavigationState } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ConnectivityDot from '../components/ConnectivityDot';
 import { APP_DISPLAY_NAME } from '../constants/branding';
 import LanguageToggle from '../i18n/LanguageToggle';
 import { useT } from '../i18n';
@@ -81,12 +82,18 @@ export default function AppHeader({ title }: AppHeaderProps) {
 
         <View style={styles.center}>
           {isRoot ? (
-            <Text style={styles.brandTitle} numberOfLines={1}>{tenant?.name || APP_DISPLAY_NAME}</Text>
+            <View style={styles.brandRow}>
+              <Text style={styles.brandTitle} numberOfLines={1}>{tenant?.name || APP_DISPLAY_NAME}</Text>
+              <ConnectivityDot />
+            </View>
           ) : (
-            <View style={styles.titleBlockCentered}>
-              <Text style={styles.screenTitle} numberOfLines={1}>{t(title)}</Text>
+            <View style={styles.titleBlock}>
+              <View style={styles.brandRow}>
+                <Text style={styles.screenTitle} numberOfLines={1}>{t(title)}</Text>
+                <ConnectivityDot />
+              </View>
               {subtitle ? (
-                <Text style={styles.subtitleCentered} numberOfLines={1}>{subtitle}</Text>
+                <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
               ) : null}
             </View>
           )}
@@ -95,14 +102,18 @@ export default function AppHeader({ title }: AppHeaderProps) {
         <View style={styles.rightActions}>
           <TouchableOpacity
             onPress={goNewBill}
-            style={styles.newBillBtn}
+            style={pinned ? styles.newBillBtn : styles.newBillIconBtn}
             activeOpacity={0.8}
             hitSlop={6}
             accessibilityLabel={t('New Bill')}>
-            <Icon name="point-of-sale" size={18} color={colors.textOnPrimary} />
-            <Text style={styles.newBillLabel}>{t('New Bill')}</Text>
+            <Icon
+              name="point-of-sale"
+              size={pinned ? 18 : 20}
+              color={colors.textOnPrimary}
+            />
+            {pinned ? <Text style={styles.newBillLabel}>{t('New Bill')}</Text> : null}
           </TouchableOpacity>
-          <LanguageToggle />
+          <LanguageToggle iconOnly={!pinned} />
           {showHome ? (
             <TouchableOpacity
               onPress={goHome}
@@ -201,6 +212,15 @@ const styles = StyleSheet.create({
     marginRight: spacing.xs,
     gap: 6,
   },
+  newBillIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: colors.secondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 2,
+  },
   newBillLabel: {
     color: colors.textOnPrimary,
     fontSize: 13,
@@ -210,26 +230,39 @@ const styles = StyleSheet.create({
     flex: 1,
     marginHorizontal: spacing.xs,
     justifyContent: 'center',
+    alignItems: 'flex-start',
   },
-  titleBlockCentered: {
+  brandRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    maxWidth: '100%',
+    justifyContent: 'flex-start',
+  },
+  titleBlock: {
+    alignItems: 'flex-start',
+    maxWidth: '100%',
   },
   brandTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: colors.text,
     letterSpacing: -0.2,
+    flexShrink: 1,
+    textAlign: 'left',
   },
   screenTitle: {
     fontSize: 17,
     fontWeight: '700',
     color: colors.text,
     letterSpacing: -0.2,
+    flexShrink: 1,
+    textAlign: 'left',
   },
-  subtitleCentered: {
+  subtitle: {
     fontSize: 11,
     color: colors.textMuted,
     marginTop: 1,
+    textAlign: 'left',
   },
   avatar: {
     width: 36,

@@ -10,7 +10,8 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import { Button, Dialog, HelperText, Portal, Text, TextInput } from 'react-native-paper';
+import { Button, HelperText, Portal, Text, TextInput } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -1034,9 +1035,9 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       </ScrollView>
 
       <Portal>
-        <Dialog visible={supplierDialog} onDismiss={() => setSupplierDialog(false)} style={styles.dialog}>
-          <Dialog.Title>{t('Add supplier')}</Dialog.Title>
-          <Dialog.Content>
+        <AppDialog visible={supplierDialog} onDismiss={() => setSupplierDialog(false)} style={styles.dialog}>
+          <AppDialog.Title>{t('Add supplier')}</AppDialog.Title>
+          <AppDialog.Content>
             <AppTextInput
               label={t('Name *')}
               value={newSupplierName}
@@ -1054,12 +1055,12 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
               style={styles.input}
             />
             {supplierError ? <HelperText type="error">{supplierError}</HelperText> : null}
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button onPress={() => setSupplierDialog(false)} disabled={savingSupplier}>{t('Cancel')}</Button>
             <Button onPress={handleAddSupplier} loading={savingSupplier}>{t('Save')}</Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </KeyboardAvoidingView>
   );

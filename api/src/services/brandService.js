@@ -57,10 +57,10 @@ async function deleteBrand(db, id) {
   const brand = await Brand.findOne({ where: { id, deleted_at: null } });
   if (!brand) throw new AppError('Brand not found', 404, 'NOT_FOUND');
 
-  const productCount = await Product.count({ where: { brand_id: id, deleted_at: null } });
-  if (productCount > 0) {
-    throw new AppError('Brand has products. Reassign them first.', 400, 'BRAND_IN_USE');
-  }
+  await Product.update(
+    { brand_id: null },
+    { where: { brand_id: id, deleted_at: null } },
+  );
 
   await brand.update({ deleted_at: new Date(), status: 'inactive' });
   return { deleted: true };

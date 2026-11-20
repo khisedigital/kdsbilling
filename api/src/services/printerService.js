@@ -70,7 +70,26 @@ function sendEscPosToNetwork(host, port, rawText, timeoutMs = 5000) {
   });
 }
 
-async function printBillNetwork(db, tenant, billId, printerId, shopSettings = {}, publicBaseUrl = null, language = 'en') {
+function resolvePrintFormat(preferred, printerPaperSize) {
+  const raw = String(preferred || '').trim().toLowerCase();
+  if (raw === '58' || raw === '58mm' || raw.startsWith('58')) return '58';
+  if (raw === 'a4') return 'a4';
+  if (raw === '80' || raw === '80mm' || raw.startsWith('80')) return '80';
+  if (printerPaperSize === '58mm') return '58';
+  if (printerPaperSize === 'a4') return 'a4';
+  return '80';
+}
+
+async function printBillNetwork(
+  db,
+  tenant,
+  billId,
+  printerId,
+  shopSettings = {},
+  publicBaseUrl = null,
+  language = 'en',
+  preferredFormat = null,
+) {
   const printer = await db.Printer.findByPk(printerId);
   if (!printer || printer.status !== 'active') {
     throw new AppError('Printer not found', 404, 'NOT_FOUND');
@@ -84,8 +103,9 @@ async function printBillNetwork(db, tenant, billId, printerId, shopSettings = {}
   if (!host) throw new AppError('Invalid printer address', 400, 'INVALID_PRINTER');
 
   const bill = await billingService.getBill(db, billId);
-  const format = printer.paper_size === '58mm' ? '58' : printer.paper_size === 'a4' ? 'a4' : '80';
-  const printData = generatePrint(bill, tenant, format, shopSettings, publicBaseUrl, language);
+  // Prefer the cashier app Paper size setting when provided.
+  const format = resolvePrintFormat(preferredFormat, printer.paper_size);
+  const printData = await generatePrint(bill, tenant, format, shopSettings, publicBaseUrl, language);
 
   if (format === 'a4') {
     throw new AppError('A4 network print not supported. Use mobile share.', 400, 'UNSUPPORTED');

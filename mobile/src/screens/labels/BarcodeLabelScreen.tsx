@@ -9,7 +9,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Checkbox, Dialog, Portal, Text } from 'react-native-paper';
+import { Button, Checkbox, Portal, Text } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import ProductSearchField from '../../components/ProductSearchField';
@@ -53,7 +54,14 @@ import {
 import { useLanguageStore, useT } from '../../i18n';
 import { colors } from '../../theme/colors';
 import { dialogCard, radius, spacing } from '../../theme/layout';
-import { formatQuantity, getQuantityPresets, parseQuantityForUom, quantityHint, type UomInfo } from '../../utils/quantity';
+import {
+  formatQuantity,
+  formatQuantityLabel,
+  getQuantityPresets,
+  parseQuantityForUom,
+  quantityHint,
+  type UomInfo,
+} from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
 
 type ListedPrinter = {
@@ -165,13 +173,26 @@ function sameQty(a: number | null | undefined, b: number | null | undefined): bo
   return Math.abs(a - b) < 0.0001;
 }
 
+function packQtyValue(row: VariantRow): number | null {
+  const qty = row.packQuantity == null ? null : Number(row.packQuantity);
+  return qty != null && !Number.isNaN(qty) && qty > 0 ? qty : null;
+}
+
+function isMeasurableLabelUom(uom?: UomInfo | null): boolean {
+  if (!uom?.code) return false;
+  if (uom.type === 'weight' || uom.type === 'volume') return true;
+  const code = uom.code.toLowerCase();
+  return code === 'kg' || code === 'g' || code === 'ltr' || code === 'ml';
+}
+
 function rowTitle(
   row: VariantRow,
   hasVariants: boolean,
   uom: UomInfo | null | undefined,
   tr: (text: string, vars?: Record<string, string | number>) => string,
 ): string {
-  if (row.packQuantity) return formatQuantity(row.packQuantity, uom);
+  const packQty = packQtyValue(row);
+  if (packQty != null) return formatQuantity(packQty, uom);
   if (row.altIndex) {
     const base = hasVariants
       ? variantLabel(row.size, row.color) || tr('Default')
@@ -182,34 +203,40 @@ function rowTitle(
   return variantLabel(row.size, row.color) || tr('Default');
 }
 
-/** Name and size on one line, without the middle dot that prints as a period. */
-function labelProductName(name: string, size?: string | null, color?: string | null): string {
-  const label = [size, color].map((part) => (part || '').trim()).filter(Boolean).join(' ');
-  return label ? `${name.trim()} ${label}` : name.trim();
-}
-
 function sameSizeText(size: string | null | undefined, qtyText: string): boolean {
   const left = (size || '').replace(/\s+/g, '').toLowerCase();
   const right = qtyText.replace(/\s+/g, '').toLowerCase();
   if (!left || !right) return false;
-  return left === right || left.startsWith(right) || right.startsWith(left);
+  return left === right;
 }
 
 /**
- * Pack quantity on the sticker. A plain product already shows its size on the name,
- * so "1 pcs" is left off. A 500 ml pack is not repeated when that size is already in the name.
+ * Weight/qty on the sticker (`500g`, `1kg`). Pack rows always print their qty.
+ * Unit/base rows for kg/g/ltr/ml also print `1kg` — that row used to stay blank.
  */
 function itemQtyLabel(row: VariantRow, uom?: UomInfo | null): string {
-  if (!row.packQuantity || row.packQuantity <= 0) return '';
-  const text = formatQuantity(row.packQuantity, uom);
-  if (sameSizeText(row.size, text)) return '';
-  return text;
+  const packQty = packQtyValue(row);
+  if (packQty != null) return formatQuantityLabel(packQty, uom);
+  if (!isMeasurableLabelUom(uom)) return '';
+  return formatQuantityLabel(1, uom);
 }
-
+/** Name (+ color). Size goes on the qty slot when it matches pack weight. */
+function labelProductName(
+  name: string,
+  size?: string | null,
+  color?: string | null,
+  packQtyText?: string,
+): string {
+  const sizePart = (size || '').trim();
+  const colorPart = (color || '').trim();
+  const keepSize = sizePart && !(packQtyText && sameSizeText(sizePart, packQtyText));
+  const label = [keepSize ? sizePart : '', colorPart].filter(Boolean).join(' ');
+  return label ? `${name.trim()} ${label}` : name.trim();
+}
 /** 1 kg at ₹70 prints ₹35 on a 500 g label. Unit price is for one full unit. */
 function priceForQty(unitPrice: number | null | undefined, row: VariantRow): number | null {
   if (unitPrice == null || Number.isNaN(Number(unitPrice))) return null;
-  const factor = row.packQuantity && row.packQuantity > 0 ? row.packQuantity : 1;
+  const factor = packQtyValue(row) ?? 1;
   return Math.round(Number(unitPrice) * factor * 100) / 100;
 }
 
@@ -251,7 +278,7 @@ function LabelPreview({
     runs.push({ bar: false, n: quiet });
   }
 
-  const right = [qtyLabel, price].filter(Boolean).join('   ');
+  const right = [qtyLabel, price].filter(Boolean).join(' ');
 
   return (
     <View style={[styles.previewCard, { width, height }]}>
@@ -301,7 +328,10 @@ export default function BarcodeLabelScreen() {
   const useDesktop = isDesktopLabelPrintAvailable();
   const canPrint = isGapLabelPrintAvailable();
   const { width: winW } = useWindowDimensions();
-  const previewW = Math.min(winW - spacing.lg * 2, 340);
+  const isWide = winW >= 960;
+  const previewW = isWide
+    ? Math.min(320, Math.max(220, Math.floor(winW * 0.28) - 48))
+    : Math.min(winW - spacing.lg * 2, 340);
 
   const [shopName, setShopName] = useState('My Shop');
   const [labelHeightMm, setLabelHeightMm] = useState<LabelHeightMm>(28);
@@ -416,7 +446,7 @@ export default function BarcodeLabelScreen() {
           'ok',
           batchSize === 0
             ? t('Print mode: Continuous (Poshiflow-style — all copies in one job).')
-            : t('Print mode: Batched ×3 (Seznik-style — waits between every 3 stickers).'),
+            : t('Print mode: Batched ×2 (waits between every 2 stickers so barcode numbers print).'),
         );
       } catch (err) {
         showStatus('err', err instanceof Error ? t(err.message) : t('Could not save print mode.'));
@@ -581,15 +611,48 @@ export default function BarcodeLabelScreen() {
     return rows.find((r) => r.rowKey === previewRowKey) || printableRows[0] || rows[0];
   }, [rows, previewRowKey, printableRows]);
 
-  const previewName = useMemo(() => {
-    if (!productMeta || !previewRow) return t('Product');
-    return labelProductName(productMeta.productName, previewRow.size, previewRow.color);
-  }, [productMeta, previewRow, t]);
-
   const previewQty = useMemo(() => {
     if (!previewRow) return '';
     return itemQtyLabel(previewRow, productMeta?.uom);
   }, [productMeta, previewRow]);
+
+  const previewName = useMemo(() => {
+    if (!productMeta || !previewRow) return t('Product');
+    return labelProductName(
+      productMeta.productName,
+      previewRow.size,
+      previewRow.color,
+      previewQty,
+    );
+  }, [productMeta, previewRow, previewQty, t]);
+
+  /** Every pack weight chip: presets plus any custom / saved quantity barcodes. */
+  const weightChips = useMemo(() => {
+    if (!productMeta || productMeta.hasVariants) return [];
+    const byQty = new Map<number, { quantity: number; label: string }>();
+    for (const preset of packPresets(productMeta.uom)) {
+      byQty.set(preset.quantity, { quantity: preset.quantity, label: preset.label });
+    }
+    for (const row of rows) {
+      if (!row.packQuantity || !(row.packQuantity > 0)) continue;
+      if ([...byQty.keys()].some((q) => sameQty(q, row.packQuantity))) continue;
+      byQty.set(row.packQuantity, {
+        quantity: row.packQuantity,
+        label: formatQuantityLabel(row.packQuantity, productMeta.uom),
+      });
+    }
+    return [...byQty.values()].sort((a, b) => a.quantity - b.quantity);
+  }, [productMeta, rows]);
+
+  /** Selected pack weights that will print (each gets its own sticker weight). */
+  const selectedWeightsLabel = useMemo(() => {
+    if (!productMeta) return '';
+    const labels = printableRows
+      .map((row) => itemQtyLabel(row, productMeta.uom))
+      .filter(Boolean);
+    // Unique, keep first-seen order
+    return [...new Set(labels)].join(' · ');
+  }, [productMeta, printableRows]);
 
   const previewSellPrice = useMemo(() => {
     if (!previewRow) return '';
@@ -659,6 +722,11 @@ export default function BarcodeLabelScreen() {
     const existing = rows.find((row) => sameQty(row.packQuantity, qty));
     if (existing) {
       const printable = existing.status === 'available' && Boolean(existing.barcode);
+      // Tap again to unselect — keep every other selected weight as-is.
+      if (existing.selected) {
+        updateRow(existing.rowKey, { selected: false });
+        return;
+      }
       updateRow(existing.rowKey, { selected: printable });
       setPreviewRowKey(existing.rowKey);
       return;
@@ -745,9 +813,11 @@ export default function BarcodeLabelScreen() {
       }
 
       const current = await getLabelPrinterSettings();
-      const known = current.labelBatchByPrinter?.[printer.address];
+      const knownRaw = current.labelBatchByPrinter?.[printer.address];
       const batchForPrinter =
-        known === 0 || known === 3 ? known : suggestLabelBatchSize(printer.address || printer.name);
+        knownRaw === 0 || knownRaw === 2 || Number(knownRaw) === 3
+          ? (Number(knownRaw) === 3 ? 2 : (knownRaw as LabelBatchSize))
+          : suggestLabelBatchSize(printer.address || printer.name);
       const byPrinter = {
         ...(current.labelBatchByPrinter || {}),
         [printer.address]: batchForPrinter,
@@ -764,8 +834,8 @@ export default function BarcodeLabelScreen() {
       applyDesktopLabelPrinter(next);
       setPrinterOpen(false);
       const modeNote =
-        batchForPrinter === 3
-          ? t('Print mode set to Batched ×3 (Seznik-style).')
+        batchForPrinter === 2
+          ? t('Print mode set to Batched ×2.')
           : t('Print mode set to Continuous (Poshiflow-style).');
       if (printer.rawFriendly === false) {
         showStatus(
@@ -791,10 +861,11 @@ export default function BarcodeLabelScreen() {
     const barcode = (row.barcode || '').trim();
     if (!barcode) throw new Error(t('Barcode missing for {{name}}', { name: variantLabel(row.size, row.color) || row.sku }));
     const sell = priceForQty(row.sellingPrice, row);
+    const detail = itemQtyLabel(row, productMeta.uom);
     return {
       shopName,
-      productName: labelProductName(productMeta.productName, row.size, row.color),
-      detail: itemQtyLabel(row, productMeta.uom),
+      productName: labelProductName(productMeta.productName, row.size, row.color, detail),
+      detail,
       barcode,
       mrp: '',
       // Selling price for this pack qty — prints after quantity on the label.
@@ -927,202 +998,245 @@ export default function BarcodeLabelScreen() {
       : productMeta.productName)
     : undefined;
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}>
-        {status ? (
-          <Pressable
-            onPress={() => setStatus(null)}
-            style={[styles.banner, status.type === 'ok' ? styles.bannerOk : styles.bannerErr]}>
-            <Text style={styles.bannerText}>{status.text}</Text>
-            <Icon name="close" size={16} color={colors.textMuted} />
-          </Pressable>
-        ) : null}
+  const settingsColumn = (
+    <>
+      <View style={[styles.previewBlock, isWide && styles.previewBlockWide]}>
+        <LabelPreview
+          shopName={shopName}
+          productName={previewName}
+          qtyLabel={previewQty}
+          price={previewSellPrice}
+          barcode={previewRow?.barcode || ''}
+          width={previewW}
+          height={previewH}
+        />
+        <Text style={styles.previewCaption}>
+          {t('{{width}}×{{height}} mm · preview only (no barcode is auto-generated)', {
+            width: LABEL_WIDTH_MM,
+            height: labelHeightMm,
+          })}
+        </Text>
+      </View>
 
-        <View style={styles.previewBlock}>
-          <LabelPreview
-            shopName={shopName}
-            productName={previewName}
-            qtyLabel={previewQty}
-            price={previewSellPrice}
-            barcode={previewRow?.barcode || ''}
-            width={previewW}
-            height={previewH}
-          />
-          <Text style={styles.previewCaption}>
-            {t('{{width}}×{{height}} mm · preview only (no barcode is auto-generated)', {
-              width: LABEL_WIDTH_MM,
-              height: labelHeightMm,
-            })}
-          </Text>
+      <View style={styles.block}>
+        <Text style={styles.columnHeading}>{t('Label settings')}</Text>
+        <Text style={styles.blockTitle}>{t('Label size')}</Text>
+        <Text style={styles.muted}>
+          {t('Must match the roll (measure one sticker). Wrong size cuts labels after a few prints and can hide the barcode number.')}
+        </Text>
+        <View style={styles.sizeRow}>
+          {LABEL_HEIGHT_OPTIONS.map((heightMm) => {
+            const active = labelHeightMm === heightMm;
+            return (
+              <Pressable
+                key={heightMm}
+                onPress={() => persistLabelHeight(heightMm)}
+                style={[styles.sizeChip, active && styles.sizeChipOn]}>
+                <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
+                  {t('{{width}}×{{height}} mm', { width: LABEL_WIDTH_MM, height: heightMm })}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
-
-        <View style={styles.block}>
-          <Text style={styles.blockTitle}>{t('Label size')}</Text>
-          <Text style={styles.muted}>
-            {t('Must match the roll (measure one sticker). Wrong size cuts labels after a few prints and can hide the barcode number.')}
-          </Text>
-          <View style={styles.sizeRow}>
-            {LABEL_HEIGHT_OPTIONS.map((heightMm) => {
-              const active = labelHeightMm === heightMm;
-              return (
-                <Pressable
-                  key={heightMm}
-                  onPress={() => persistLabelHeight(heightMm)}
-                  style={[styles.sizeChip, active && styles.sizeChipOn]}>
-                  <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
-                    {t('{{width}}×{{height}} mm', { width: LABEL_WIDTH_MM, height: heightMm })}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Text style={[styles.blockTitle, { marginTop: spacing.md }]}>{t('Print mode')}</Text>
-          <Text style={styles.muted}>
-            {t('Poshiflow → Continuous. Seznik → Batched ×3 (saved per printer). Batched waits for the printer to finish each burst of 3 so the buffer does not overrun.')}
+        <Text style={[styles.blockTitle, { marginTop: spacing.md }]}>{t('Print mode')}</Text>
+        <Text style={styles.muted}>
+          {t('Poshiflow → Continuous. Seznik → Batched ×2 (saved per printer). Two stickers per burst keeps the barcode number on every label.')}
           </Text>
           <View style={styles.sizeRow}>
             {(
               [
                 { value: 0 as LabelBatchSize, label: 'Continuous' },
-                { value: 3 as LabelBatchSize, label: 'Batched ×3' },
+                { value: 2 as LabelBatchSize, label: 'Batched ×2' },
               ] as const
             ).map((opt) => {
-              const active = labelBatchSize === opt.value;
-              return (
-                <Pressable
-                  key={opt.label}
-                  onPress={() => persistLabelBatchSize(opt.value)}
-                  style={[styles.sizeChip, active && styles.sizeChipOn]}>
-                  <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
-                    {t(opt.label)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Button
-            mode="outlined"
-            icon="target"
-            onPress={runCalibrate}
-            loading={calibrating}
-            disabled={!connected || calibrating || printing}
-            style={styles.calibrateBtn}>
-            {calibrating ? t('Calibrating…') : t('Calibrate gap (fix cut/drift)')}
-          </Button>
+            const active = labelBatchSize === opt.value;
+            return (
+              <Pressable
+                key={opt.label}
+                onPress={() => persistLabelBatchSize(opt.value)}
+                style={[styles.sizeChip, active && styles.sizeChipOn]}>
+                <Text style={[styles.sizeChipText, active && styles.sizeChipTextOn]}>
+                  {t(opt.label)}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
+        <Button
+          mode="outlined"
+          icon="target"
+          onPress={runCalibrate}
+          loading={calibrating}
+          disabled={!connected || calibrating || printing}
+          style={styles.calibrateBtn}>
+          {calibrating ? t('Calibrating…') : t('Calibrate gap (fix cut/drift)')}
+        </Button>
+      </View>
 
-        <View style={styles.block}>
-          <Text style={styles.blockTitle}>{t('1 · Product')}</Text>
-          <ProductSearchField
-            groupByProduct
-            onSelect={onSelectProduct}
-            selectedLabel={selectedLabel}
+      <Pressable
+        onPress={openPrinter}
+        disabled={printing || connecting}
+        style={[
+          styles.printerCard,
+          connected && styles.printerCardOn,
+          (printing || connecting) && styles.dim,
+        ]}>
+        <View style={styles.printerIconWrap}>
+          <Icon
+            name={connected ? 'printer-check' : useDesktop ? 'usb' : 'bluetooth'}
+            size={22}
+            color={connected ? colors.success : colors.primary}
           />
-          {productMeta ? (
-            <View style={styles.productActions}>
-              <Text style={styles.metaLine}>
-                {productMeta.hasVariants
-                  ? (rows.length === 1
-                    ? t('{{count}} active variant · each needs its own barcode', { count: rows.length })
-                    : t('{{count}} active variants · each needs its own barcode', { count: rows.length }))
-                  : t('Single product · uses its variant barcode')}
-              </Text>
-              <Pressable onPress={clearProduct} hitSlop={8}>
-                <Text style={styles.link}>{t('Clear')}</Text>
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.printerTitle}>
+            {connected ? t('Label printer ready') : t('Label printer')}
+          </Text>
+          <Text style={styles.printerName} numberOfLines={1}>
+            {printerName === 'Tap to select' || printerName === 'Select label printer' || printerName === 'Printer'
+              ? t(printerName)
+              : printerName}
+          </Text>
+        </View>
+        {connecting ? (
+          <ActivityIndicator color={colors.primary} />
+        ) : (
+          <Icon name="chevron-right" size={20} color={colors.textMuted} />
+        )}
+      </Pressable>
+
+      {lastJob ? (
+        <Button
+          mode="text"
+          icon="printer-outline"
+          onPress={onReprint}
+          disabled={printing || connecting}
+          style={styles.reprintBtn}>
+          {t('Reprint last labels')}
+        </Button>
+      ) : null}
+    </>
+  );
+
+  const productColumn = (
+    <>
+      <View style={styles.block}>
+        <Text style={styles.columnHeading}>{t('Product selection')}</Text>
+        {!selectedLabel ? (
+          <Text style={styles.productIntro}>
+            {t('Search name, SKU or barcode — then tap a result.')}
+          </Text>
+        ) : null}
+        <ProductSearchField
+          groupByProduct
+          showPriceAndBarcode
+          minChars={1}
+          label="Type name, SKU or barcode…"
+          onSelect={onSelectProduct}
+          selectedLabel={selectedLabel}
+          onClear={clearProduct}
+        />
+        {productMeta ? (
+          <Text style={styles.metaLine}>
+            {productMeta.hasVariants
+              ? (rows.length === 1
+                ? t('{{count}} active variant · each needs its own barcode', { count: rows.length })
+                : t('{{count}} active variants · each needs its own barcode', { count: rows.length }))
+              : t('Next: pick pack weights below, then print stickers.')}
+          </Text>
+        ) : null}
+        {loadingProduct ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.muted}>{t('Loading barcodes…')}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {rows.length ? (
+        <View style={styles.block}>
+          <View style={styles.tableHeader}>
+            <Text style={styles.blockTitle}>{productMeta?.hasVariants ? t('Variants') : t('Quantity')}</Text>
+            <View style={styles.headerActions}>
+              <Pressable onPress={selectAllPrintable} disabled={printing || generating}>
+                <Text style={styles.link}>{t('Select all')}</Text>
+              </Pressable>
+              <Text style={styles.dot}>·</Text>
+              <Pressable onPress={selectNone} disabled={printing || generating}>
+                <Text style={styles.link}>{t('Select none')}</Text>
               </Pressable>
             </View>
-          ) : (
-            <Text style={styles.muted}>{t('Search by name, SKU or barcode')}</Text>
-          )}
-          {loadingProduct ? (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color={colors.primary} />
-              <Text style={styles.muted}>{t('Loading barcodes…')}</Text>
-            </View>
+          </View>
+
+          {missingCount > 0 || letterCount > 0 ? (
+            <Button
+              mode="outlined"
+              icon="barcode"
+              onPress={onGenerateMissing}
+              loading={generating}
+              disabled={generating || printing}
+              style={styles.generateBtn}>
+              {letterCount > 0 && missingCount === 0
+                ? t('Convert to number barcodes ({{count}})', { count: letterCount })
+                : t('Generate number barcodes ({{count}})', { count: missingCount + letterCount })}
+            </Button>
           ) : null}
-        </View>
 
-        {rows.length ? (
-          <View style={styles.block}>
-            <View style={styles.tableHeader}>
-              <Text style={styles.blockTitle}>{productMeta?.hasVariants ? t('2 · Variants') : t('2 · Quantity')}</Text>
-              <View style={styles.headerActions}>
-                <Pressable onPress={selectAllPrintable} disabled={printing || generating}>
-                  <Text style={styles.link}>{t('Select all')}</Text>
-                </Pressable>
-                <Text style={styles.dot}>·</Text>
-                <Pressable onPress={selectNone} disabled={printing || generating}>
-                  <Text style={styles.link}>{t('Select none')}</Text>
-                </Pressable>
+          {productMeta && !productMeta.hasVariants ? (
+            <View style={styles.packBlock}>
+              <Text style={styles.tableHint}>
+                {t('Tap each weight to include it. Selected weights each print on their own label. Labels is how many stickers.')}
+              </Text>
+              <View style={styles.sizeRow}>
+                {weightChips.map((chip) => {
+                  const existing = rows.find((row) => sameQty(row.packQuantity, chip.quantity));
+                  const on = Boolean(existing?.selected);
+                  return (
+                    <Pressable
+                      key={chip.label}
+                      onPress={() => addPackQuantity(chip.quantity)}
+                      disabled={addingPack || printing || generating}
+                      style={[styles.sizeChip, on && styles.sizeChipOn]}>
+                      <Text style={[styles.sizeChipText, on && styles.sizeChipTextOn]}>{t(chip.label)}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {selectedWeightsLabel ? (
+                <Text style={styles.selectedWeights}>
+                  {t('Print weights: {{weights}}', { weights: selectedWeightsLabel })}
+                </Text>
+              ) : (
+                <Text style={styles.selectedWeightsMuted}>{t('No pack weight selected yet')}</Text>
+              )}
+              <View style={styles.packAddRow}>
+                <AppTextInput
+                  value={packDraft}
+                  onChangeText={setPackDraft}
+                  placeholder={productMeta.uom ? t(quantityHint(productMeta.uom)) : t('Quantity')}
+                  mode="outlined"
+                  dense
+                  disabled={addingPack || printing || generating}
+                  style={styles.packInput}
+                  onSubmitEditing={addCustomPack}
+                />
+                <Button
+                  mode="contained"
+                  onPress={addCustomPack}
+                  loading={addingPack}
+                  disabled={addingPack || printing || generating}>
+                  {t('Add qty')}
+                </Button>
               </View>
             </View>
+          ) : (
+            <Text style={styles.tableHint}>
+              {t('Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.')}
+            </Text>
+          )}
 
-            {missingCount > 0 || letterCount > 0 ? (
-              <Button
-                mode="outlined"
-                icon="barcode"
-                onPress={onGenerateMissing}
-                loading={generating}
-                disabled={generating || printing}
-                style={styles.generateBtn}>
-                {letterCount > 0 && missingCount === 0
-                  ? t('Convert to number barcodes ({{count}})', { count: letterCount })
-                  : t('Generate number barcodes ({{count}})', { count: missingCount + letterCount })}
-              </Button>
-            ) : null}
-
-            {productMeta && !productMeta.hasVariants ? (
-              <View style={styles.packBlock}>
-                <Text style={styles.tableHint}>
-                  {t('Tap a quantity to print that pack. Labels is how many stickers. Printing does not change stock.')}
-                </Text>
-                <View style={styles.sizeRow}>
-                  {packPresets(productMeta.uom).map((preset) => {
-                    const existing = rows.find((row) => sameQty(row.packQuantity, preset.quantity));
-                    const on = Boolean(existing?.selected);
-                    return (
-                      <Pressable
-                        key={preset.label}
-                        onPress={() => addPackQuantity(preset.quantity)}
-                        disabled={addingPack || printing || generating}
-                        style={[styles.sizeChip, on && styles.sizeChipOn]}>
-                        <Text style={[styles.sizeChipText, on && styles.sizeChipTextOn]}>{t(preset.label)}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-                <View style={styles.packAddRow}>
-                  <AppTextInput
-                    value={packDraft}
-                    onChangeText={setPackDraft}
-                    placeholder={productMeta.uom ? t(quantityHint(productMeta.uom)) : t('Quantity')}
-                    mode="outlined"
-                    dense
-                    disabled={addingPack || printing || generating}
-                    style={styles.packInput}
-                    onSubmitEditing={addCustomPack}
-                  />
-                  <Button
-                    mode="contained"
-                    onPress={addCustomPack}
-                    loading={addingPack}
-                    disabled={addingPack || printing || generating}>
-                    {t('Add qty')}
-                  </Button>
-                </View>
-              </View>
-            ) : (
-              <Text style={styles.tableHint}>
-                {t('Labels print only for selected variants with Available barcodes. Printing never changes stock or prices.')}
-              </Text>
-            )}
-
+          <View style={[styles.variantGrid, isWide && styles.variantGridWide]}>
             {rows.map((row) => {
               const meta = statusMeta(row.status);
               const name = productMeta
@@ -1134,6 +1248,7 @@ export default function BarcodeLabelScreen() {
                   key={row.rowKey}
                   style={[
                     styles.variantCard,
+                    isWide && styles.variantCardHalf,
                     previewRowKey === row.rowKey && styles.variantCardActive,
                   ]}>
                   <Pressable onPress={() => setPreviewRowKey(row.rowKey)} style={styles.variantTop}>
@@ -1147,12 +1262,11 @@ export default function BarcodeLabelScreen() {
                       }}
                     />
                     <View style={styles.flex}>
-                      <Text style={styles.variantName}>{name}</Text>
-                      <Text style={styles.variantSku}>SKU {row.sku}</Text>
-                      <Text style={styles.variantPrice}>
-                        {t('MRP')} {row.mrp != null && row.mrp > 0 ? formatMoney(priceForQty(row.mrp, row)) : '—'}
-                        {'  ·  '}
+                      <Text style={styles.variantName} numberOfLines={2}>{name}</Text>
+                      <Text style={styles.variantSku} numberOfLines={1}>SKU {row.sku}</Text>
+                      <Text style={styles.variantPrice} numberOfLines={1}>
                         {t('Sell')} {formatMoney(priceForQty(row.sellingPrice, row))}
+                        {row.mrp != null && row.mrp > 0 ? ` · ${t('MRP')} ${formatMoney(priceForQty(row.mrp, row))}` : ''}
                       </Text>
                       <Text style={styles.variantBarcode} numberOfLines={1}>
                         {row.barcode || t('No barcode')}
@@ -1163,7 +1277,7 @@ export default function BarcodeLabelScreen() {
                       <Text style={[styles.statusText, { color: meta.color }]}>{t(meta.label)}</Text>
                     </View>
                   </Pressable>
-                  <View style={styles.qtyRow}>
+                  <View style={[styles.qtyRow, isWide && styles.qtyRowCompact]}>
                     <Text style={styles.qtyLabel}>{t('Labels')}</Text>
                     <AppTextInput
                       value={row.labelQty}
@@ -1177,71 +1291,69 @@ export default function BarcodeLabelScreen() {
                     />
                   </View>
                   {row.status === 'missing' ? (
-                    <Text style={styles.warnLine}>{t('Generate a number barcode before printing this row.')}</Text>
+                    <Text style={[styles.warnLine, isWide && styles.warnLineCompact]}>
+                      {t('Generate a number barcode before printing this row.')}
+                    </Text>
                   ) : null}
                   {row.barcodeType === 'code128' ? (
-                    <Text style={styles.warnLine}>
-                      {t('Letter barcode — scanners cannot read it. Convert to a number barcode, then print again.')}
+                    <Text style={[styles.warnLine, isWide && styles.warnLineCompact]}>
+                      {t('Letter barcode — convert to number barcode.')}
                     </Text>
                   ) : null}
                   {row.status === 'duplicate' ? (
-                    <Text style={styles.warnLine}>
-                      {t('Duplicate barcode detected — fix the assignment before printing.')}
+                    <Text style={[styles.warnLine, isWide && styles.warnLineCompact]}>
+                      {t('Duplicate barcode — fix before printing.')}
                     </Text>
                   ) : null}
                 </View>
               );
             })}
+          </View>
 
-            <View style={styles.totalRow}>
+          <View style={styles.totalRow}>
+            <View style={styles.flex}>
               <Text style={styles.totalLabel}>{t('Total labels')}</Text>
-              <Text style={styles.totalValue}>{totalLabels}</Text>
+              {selectedWeightsLabel ? (
+                <Text style={styles.totalWeights} numberOfLines={2}>
+                  {selectedWeightsLabel}
+                </Text>
+              ) : null}
             </View>
+            <Text style={styles.totalValue}>{totalLabels}</Text>
           </View>
+        </View>
+      ) : null}
+    </>
+  );
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView
+        contentContainerStyle={[styles.content, isWide && styles.contentWide]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}>
+        {status ? (
+          <Pressable
+            onPress={() => setStatus(null)}
+            style={[styles.banner, status.type === 'ok' ? styles.bannerOk : styles.bannerErr]}>
+            <Text style={styles.bannerText}>{status.text}</Text>
+            <Icon name="close" size={16} color={colors.textMuted} />
+          </Pressable>
         ) : null}
 
-        <Pressable
-          onPress={openPrinter}
-          disabled={printing || connecting}
-          style={[
-            styles.printerCard,
-            connected && styles.printerCardOn,
-            (printing || connecting) && styles.dim,
-          ]}>
-          <View style={styles.printerIconWrap}>
-            <Icon
-              name={connected ? 'printer-check' : useDesktop ? 'usb' : 'bluetooth'}
-              size={22}
-              color={connected ? colors.success : colors.primary}
-            />
+        {isWide ? (
+          <View style={styles.splitRow}>
+            <View style={styles.settingsCol}>{settingsColumn}</View>
+            <View style={styles.productCol}>{productColumn}</View>
           </View>
-          <View style={styles.flex}>
-            <Text style={styles.printerTitle}>
-              {connected ? t('Label printer ready') : t('3 · Label printer')}
-            </Text>
-            <Text style={styles.printerName} numberOfLines={1}>
-              {printerName === 'Tap to select' || printerName === 'Select label printer' || printerName === 'Printer'
-                ? t(printerName)
-                : printerName}
-            </Text>
-          </View>
-          {connecting ? (
-            <ActivityIndicator color={colors.primary} />
-          ) : (
-            <Icon name="chevron-right" size={20} color={colors.textMuted} />
-          )}
-        </Pressable>
-
-        {lastJob ? (
-          <Button
-            mode="text"
-            icon="printer-outline"
-            onPress={onReprint}
-            disabled={printing || connecting}
-            style={styles.reprintBtn}>
-            {t('Reprint last labels')}
-          </Button>
-        ) : null}
+        ) : (
+          <>
+            {settingsColumn}
+            {productColumn}
+          </>
+        )}
 
         <View style={{ height: 110 }} />
       </ScrollView>
@@ -1261,12 +1373,12 @@ export default function BarcodeLabelScreen() {
       </View>
 
       <Portal>
-        <Dialog
+        <AppDialog
           visible={printerOpen}
           onDismiss={() => !connecting && setPrinterOpen(false)}
           style={styles.dialog}>
-          <Dialog.Title>{t('Label printer')}</Dialog.Title>
-          <Dialog.Content>
+          <AppDialog.Title>{t('Label printer')}</AppDialog.Title>
+          <AppDialog.Content>
             <Text style={styles.muted}>
               {useDesktop
                 ? t('Choose the sticker / gap-label printer only. Billing uses a separate printer under Billing Printer. On Windows, the queue must use driver “Generic / Text Only” (not the DeTong/Xprinter graphics driver) or labels cut wrong / print blank.')
@@ -1323,13 +1435,13 @@ export default function BarcodeLabelScreen() {
               style={styles.refresh}>
               {t('Refresh')}
             </Button>
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button disabled={connecting} onPress={() => setPrinterOpen(false)}>
               {t('Close')}
             </Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </KeyboardAvoidingView>
   );
@@ -1338,6 +1450,28 @@ export default function BarcodeLabelScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.lg },
+  contentWide: { paddingHorizontal: spacing.xl, maxWidth: 1400, width: '100%', alignSelf: 'center' },
+  splitRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.lg,
+  },
+  settingsCol: {
+    width: '36%',
+    maxWidth: 420,
+    flexShrink: 0,
+  },
+  productCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  columnHeading: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.text,
+    marginBottom: spacing.sm,
+    letterSpacing: 0.2,
+  },
   flex: { flex: 1, minWidth: 0 },
   muted: { fontSize: 13, fontWeight: '400', color: colors.textMuted },
   dim: { opacity: 0.55 },
@@ -1358,6 +1492,15 @@ const styles = StyleSheet.create({
   bannerText: { flex: 1, fontSize: 13, fontWeight: '400', color: colors.text },
 
   previewBlock: { alignItems: 'center', marginBottom: spacing.lg },
+  previewBlockWide: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
   sizeRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1446,8 +1589,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     letterSpacing: 0.2,
   },
-  metaLine: { flex: 1, fontSize: 12, fontWeight: '400', color: colors.textMuted, lineHeight: 18 },
-  productActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm },
+  metaLine: { fontSize: 12, fontWeight: '500', color: colors.textMuted, lineHeight: 18, marginTop: spacing.sm },
+  productIntro: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 17,
+    marginBottom: spacing.sm,
+  },
   loadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1465,6 +1613,14 @@ const styles = StyleSheet.create({
   generateBtn: { marginBottom: spacing.sm, borderRadius: radius.md },
   tableHint: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 17 },
 
+  variantGrid: {
+    flexDirection: 'column',
+  },
+  variantGridWide: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
   variantCard: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -1473,19 +1629,26 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     backgroundColor: colors.surface,
   },
+  variantCardHalf: {
+    width: '48.5%',
+    flexGrow: 1,
+    flexBasis: '47%',
+    maxWidth: '49%',
+    marginBottom: 0,
+  },
   variantCardActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
-  variantTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
-  variantName: { fontSize: 15, fontWeight: '700', color: colors.text },
-  variantSku: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  variantPrice: { fontSize: 12, color: colors.textSecondary, marginTop: 4, fontWeight: '600' },
-  variantBarcode: { fontSize: 11, color: colors.secondary, marginTop: 2, fontWeight: '600' },
+  variantTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 2 },
+  variantName: { fontSize: 14, fontWeight: '700', color: colors.text },
+  variantSku: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  variantPrice: { fontSize: 11, color: colors.textSecondary, marginTop: 3, fontWeight: '600' },
+  variantBarcode: { fontSize: 10, color: colors.secondary, marginTop: 2, fontWeight: '600' },
   statusPill: {
     borderRadius: radius.sm,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
     alignSelf: 'flex-start',
   },
-  statusText: { fontSize: 11, fontWeight: '700' },
+  statusText: { fontSize: 10, fontWeight: '700' },
   qtyRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1493,6 +1656,14 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.sm,
     paddingLeft: 40,
+  },
+  qtyRowCompact: {
+    paddingLeft: 8,
+    marginTop: 6,
+  },
+  warnLineCompact: {
+    marginLeft: 8,
+    marginTop: 4,
   },
   packBlock: { marginBottom: spacing.sm },
   packAddRow: {
@@ -1502,6 +1673,18 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   packInput: { flex: 1, backgroundColor: colors.surface },
+  selectedWeights: {
+    marginTop: spacing.sm,
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  selectedWeightsMuted: {
+    marginTop: spacing.sm,
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
   qtyLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
   qtyInput: { width: 88, backgroundColor: colors.surface },
   warnLine: { marginTop: 6, marginLeft: 40, fontSize: 11, color: colors.error, fontWeight: '600' },
@@ -1516,6 +1699,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
   totalLabel: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  totalWeights: { marginTop: 2, fontSize: 12, fontWeight: '700', color: colors.primary },
   totalValue: { fontSize: 20, fontWeight: '800', color: colors.primary },
 
   printerCard: {

@@ -48,3 +48,12 @@ export function navigateMainScreen<K extends keyof MainStackParamList>(
     }),
   );
 }
+
+/** Desktop UI automation / CDP tours. */
+declare global {
+  // eslint-disable-next-line no-var
+  var __kdsNavigateMain: typeof navigateMainScreen | undefined;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.__kdsNavigateMain = navigateMainScreen;
+}

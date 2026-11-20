@@ -15,13 +15,22 @@ import { radius, spacing, typography } from '../../theme/layout';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'BarcodeScanner'>;
 
+function numericScan(value: string) {
+  return value.replace(/\D/g, '').slice(0, 18);
+}
+
 /**
  * Desktop: USB / Bluetooth-HID barcode scanners type the code followed by Enter,
  * so scanning is a focused text field instead of the camera.
  */
-export default function BarcodeScannerScreen({ navigation }: Props) {
+export default function BarcodeScannerScreen({ navigation, route }: Props) {
   const t = useT();
+  const purpose = route.params?.purpose || 'bill';
+  const capture = purpose === 'capture';
+  const productList = purpose === 'productList';
+  const priceManagement = purpose === 'priceManagement';
   const [code, setCode] = useState('');
+  const [lastMiss, setLastMiss] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -36,21 +45,70 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
     refocus();
   }, [refocus]);
 
+  const openAddWithBarcode = useCallback((raw: string) => {
+    const digits = numericScan(raw);
+    if (!digits) {
+      setMessage(t('Scan a number barcode'));
+      return false;
+    }
+    navigation.navigate('ProductForm', {
+      ...(route.params?.productId ? { productId: route.params.productId } : {}),
+      scannedBarcode: digits,
+      scanTarget: route.params?.scanTarget || 'primary',
+      scanNonce: Date.now(),
+    }, { merge: true, pop: true });
+    return true;
+  }, [navigation, route.params?.productId, route.params?.scanTarget, t]);
+
   const handleSubmit = useCallback(async () => {
     const value = code.trim();
     if (!value || busy) return;
     setBusy(true);
     setMessage(null);
     try {
+      if (capture) {
+        openAddWithBarcode(value);
+        return;
+      }
+
       const results = await searchProducts(value);
-      if (!results.length) {
+      const product = results.length
+        ? (matchBarcodeProduct(results, value) || results[0])
+        : null;
+
+      if (productList) {
+        if (product?.productId) {
+          navigation.navigate('ProductDetail', { productId: product.productId }, { pop: true });
+          return;
+        }
+        openAddWithBarcode(value);
+        return;
+      }
+
+      if (priceManagement) {
+        if (product?.productId) {
+          navigation.navigate('PriceManagement', {
+            scannedProductId: product.productId,
+            scanNonce: Date.now(),
+          }, { pop: true });
+          return;
+        }
         setNotice(null);
         setMessage(t('No product for barcode: {{code}}', { code: value }));
+        setLastMiss(value);
         setCode('');
         refocus();
         return;
       }
-      const product = matchBarcodeProduct(results, value) || results[0];
+
+      if (!product) {
+        setNotice(null);
+        setMessage(t('No product for barcode: {{code}}', { code: value }));
+        setLastMiss(value);
+        setCode('');
+        refocus();
+        return;
+      }
       requestScanAdd(product);
       const qty = product.scannedQuantity && product.scannedQuantity > 0 ? product.scannedQuantity : 1;
       setMessage(null);
@@ -63,7 +121,32 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, code, refocus, requestScanAdd, t]);
+  }, [
+    busy,
+    capture,
+    code,
+    navigation,
+    openAddWithBarcode,
+    priceManagement,
+    productList,
+    refocus,
+    requestScanAdd,
+    t,
+  ]);
+
+  const subtitle = capture
+    ? t('Point the camera at the product barcode')
+    : productList
+      ? t('Scan to find a product, or add a new one')
+      : priceManagement
+        ? t('Scan a barcode to edit price and stock')
+        : t('Each scan adds the item to the bill automatically. Scan the next item, or close when done.');
+
+  const primaryLabel = capture || productList
+    ? (productList && !capture ? t('Find / add') : t('Use barcode'))
+    : priceManagement
+      ? t('Find product')
+      : t('Add to bill');
 
   return (
     <View style={styles.container}>
@@ -72,9 +155,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
           <Icon name="barcode-scan" size={44} color={colors.primary} />
         </View>
         <Text style={styles.title}>{t('Scan barcode')}</Text>
-        <Text style={styles.sub}>
-          {t('Each scan adds the item to the bill automatically. Scan the next item, or close when done.')}
-        </Text>
+        <Text style={styles.sub}>{subtitle}</Text>
 
         <AppTextInput
           ref={inputRef}
@@ -92,7 +173,16 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
         />
 
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-        {message ? <Text style={styles.error}>{message}</Text> : null}
+        {message ? (
+          <View style={styles.messageBlock}>
+            <Text style={styles.error}>{message}</Text>
+            {!capture && !productList && lastMiss ? (
+              <Button mode="text" onPress={() => openAddWithBarcode(lastMiss)} compact>
+                {t('Add product')}
+              </Button>
+            ) : null}
+          </View>
+        ) : null}
 
         <View style={styles.actions}>
           <Button mode="outlined" onPress={() => navigation.goBack()} style={styles.btn}>
@@ -106,7 +196,7 @@ export default function BarcodeScannerScreen({ navigation }: Props) {
             buttonColor={colors.primary}
             style={styles.btn}
           >
-            {t('Add to bill')}
+            {primaryLabel}
           </Button>
         </View>
       </View>
@@ -145,7 +235,8 @@ const styles = StyleSheet.create({
   sub: { ...typography.bodySm, textAlign: 'center', marginBottom: spacing.xl },
   input: { alignSelf: 'stretch', backgroundColor: colors.surface },
   notice: { color: colors.success, marginTop: spacing.md, textAlign: 'center', fontWeight: '700' },
-  error: { color: colors.error, marginTop: spacing.md, textAlign: 'center' },
+  messageBlock: { marginTop: spacing.md, alignItems: 'center', gap: spacing.xs },
+  error: { color: colors.error, textAlign: 'center' },
   actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.xl, alignSelf: 'stretch' },
   btn: { flex: 1 },
 });

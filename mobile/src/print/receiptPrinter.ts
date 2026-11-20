@@ -1,22 +1,67 @@
 import api from '../services/api';
 import { fetchBill, type BillDetail } from '../services/businessService';
+import { getShopSettingsForPrint } from '../offline/shopCache';
 import { getShopSettings, shopTextForBill } from '../services/shopSettingsService';
-import { getPrinterSettings, IS_DESKTOP, type PrinterSettings } from '../store/printerStore';
+import {
+  getPrinterSettings,
+  IS_DESKTOP,
+  peekPrinterSettings,
+  resolvePaperSize,
+  type PrinterSettings,
+} from '../store/printerStore';
 import { APP_DISPLAY_NAME } from '../constants/branding';
 import { billT } from '../i18n';
 import { useLanguageStore } from '../i18n/languageStore';
 import { A4_CHARS_PER_LINE, buildReceiptPayload } from './buildReceipt';
-import { receiptCharsForPaper } from './escpos';
-import { printViaA4, printViaBluetooth, printViaNetwork, printViaSystem } from './PrintService';
+import { delay, estimatePrintFlushMs, receiptCharsForPaper } from './escpos';
+import {
+  printViaA4,
+  printViaBluetooth,
+  printViaNetwork,
+  printViaSystem,
+  primeSystemPrinter,
+  prewarmIndicFont,
+} from './PrintService';
+
+/** Wake the configured system printer as soon as the user taps Print. */
+export function wakePrinterOnClick(): void {
+  void prewarmIndicFont();
+  const peek = peekPrinterSettings();
+  if (peek?.type === 'system' && peek.systemPrinterName) {
+    primeSystemPrinter(peek.systemPrinterName);
+  }
+}
 
 export type PrintReceiptResult = {
   ok: true;
   mode: 'bluetooth' | 'network' | 'server' | 'system';
 };
 
+/** One POS job at a time — overlapping sends look like “prints header, stops, starts over”. */
+let printChain: Promise<unknown> = Promise.resolve();
+
+async function withPrintLock<T>(fn: () => Promise<T>, holdMs = 0): Promise<T> {
+  const previous = printChain;
+  let release!: () => void;
+  printChain = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => null);
+  try {
+    const result = await fn();
+    // Keep the lock until the head finishes — a second send's "clear jobs" used to
+    // kill the first slip mid-header, then reprint from the shop name.
+    if (holdMs > 0) await delay(holdMs);
+    return result;
+  } finally {
+    release();
+  }
+}
+
 function paperFormat(settings: PrinterSettings): '58' | '80' | 'a4' {
-  if (settings.paperSize === '58') return '58';
-  return settings.paperSize === 'a4' && IS_DESKTOP ? 'a4' : '80';
+  const size = resolvePaperSize(settings.paperSize);
+  if (size === 'a4') return IS_DESKTOP ? 'a4' : '80';
+  return size;
 }
 
 /**
@@ -28,60 +73,81 @@ async function sendPayloadToPrinter(
   billId: string | null,
   bill: BillDetail,
 ): Promise<PrintReceiptResult> {
-  const settings = await getPrinterSettings();
+  // Start CUPS revive + shop load in parallel with settings — don't wait serially.
+  wakePrinterOnClick();
+  const settingsPromise = getPrinterSettings();
+  const shopPromise = getShopSettingsForPrint().catch(() => null);
+  const [settings, shop] = await Promise.all([settingsPromise, shopPromise]);
+  if (settings.type === 'system') primeSystemPrinter(settings.systemPrinterName);
   const format = paperFormat(settings);
-  const shop = await getShopSettings().catch(() => null);
   const payload = buildReceiptPayload(bill, shop, format);
   const text = payload.raw || payload.lines?.join('\n') || '';
-  const width = payload.charsPerLine || (format === '58' ? 30 : 48);
+  // Desktop system/network raw already serializes in main; don't hold the Print
+  // button for several seconds after the job is accepted.
+  const holdMs =
+    format === 'a4' || settings.type === 'system' || settings.type === 'network'
+      ? 0
+      : estimatePrintFlushMs(text);
 
-  // A4 → office / inkjet / laser via HTML (system dialog or named printer).
-  if (format === 'a4') {
-    if (!payload.html) throw new Error('A4 print data was empty.');
-    await printViaA4(payload.html, `Receipt-${billId || 'draft'}`, {
-      printerName: settings.type === 'system' ? settings.systemPrinterName : undefined,
-    });
-    return { ok: true, mode: 'system' };
-  }
-
-  const roll: '58' | '80' = format === '58' ? '58' : '80';
-
-  if (settings.type === 'bluetooth') {
-    if (!settings.bluetoothAddress) {
-      throw new Error('Select a Bluetooth printer in Printer Settings first.');
-    }
-    if (!text.trim()) throw new Error('Print data was empty. Try again.');
-    await printViaBluetooth(settings.bluetoothAddress, text, width);
-    return { ok: true, mode: 'bluetooth' };
-  }
-
-  if (settings.type === 'system') {
-    if (!text.trim()) throw new Error('Print data was empty. Try again.');
-    // Desktop: raw ESC/POS to the POS queue. Browser: HTML fallback.
-    await printViaSystem(settings.systemPrinterName || '', text, width, roll);
-    return { ok: true, mode: 'system' };
-  }
-
-  if (settings.type === 'network') {
-    if (settings.networkHost) {
-      if (!text.trim()) throw new Error('Print data was empty. Try again.');
-      await printViaNetwork(settings.networkHost, settings.networkPort || 9100, text, width);
-      return { ok: true, mode: 'network' };
-    }
-    if (settings.serverPrinterId) {
-      if (!billId) {
-        throw new Error('Server printer needs a saved bill. Use Bluetooth/Network IP or Complete first.');
-      }
-      await api.post(`/bills/${billId}/print-network`, {
-        printerId: settings.serverPrinterId,
-        language: useLanguageStore.getState().bill,
+  const run = async (): Promise<PrintReceiptResult> => {
+    // A4 → office / inkjet / laser via HTML (system dialog or named printer).
+    if (format === 'a4') {
+      if (!payload.html) throw new Error('A4 print data was empty.');
+      await printViaA4(payload.html, `Receipt-${billId || 'draft'}`, {
+        printerName: settings.type === 'system' ? settings.systemPrinterName : undefined,
       });
-      return { ok: true, mode: 'server' };
+      return { ok: true, mode: 'system' };
     }
-    throw new Error('Configure network printer IP in Printer Settings.');
-  }
 
-  throw new Error('Configure a printer in Printer Settings first.');
+    const roll: '58' | '80' = format === '58' ? '58' : '80';
+    // Force width from the chosen roll (32 for 58mm, 48 for 80mm) — never a stale value.
+    const rollWidth = receiptCharsForPaper(roll);
+
+    if (settings.type === 'bluetooth') {
+      if (!settings.bluetoothAddress) {
+        throw new Error('Select a Bluetooth printer in Printer Settings first.');
+      }
+      if (!text.trim()) throw new Error('Print data was empty. Try again.');
+      await printViaBluetooth(settings.bluetoothAddress, text, rollWidth, roll);
+      return { ok: true, mode: 'bluetooth' };
+    }
+
+    if (settings.type === 'system') {
+      if (!text.trim()) throw new Error('Print data was empty. Try again.');
+      // Desktop: raw ESC/POS — main-process FIFO prints every click in order.
+      await printViaSystem(settings.systemPrinterName || '', text, rollWidth, roll);
+      return { ok: true, mode: 'system' };
+    }
+
+    if (settings.type === 'network') {
+      if (settings.networkHost) {
+        if (!text.trim()) throw new Error('Print data was empty. Try again.');
+        await printViaNetwork(settings.networkHost, settings.networkPort || 9100, text, rollWidth, roll);
+        return { ok: true, mode: 'network' };
+      }
+      if (settings.serverPrinterId) {
+        if (!billId) {
+          throw new Error('Server printer needs a saved bill. Use Bluetooth/Network IP or Complete first.');
+        }
+        await api.post(`/bills/${billId}/print-network`, {
+          printerId: settings.serverPrinterId,
+          language: useLanguageStore.getState().bill,
+          format,
+        });
+        return { ok: true, mode: 'server' };
+      }
+      throw new Error('Configure network printer IP in Printer Settings.');
+    }
+
+    throw new Error('Configure a printer in Printer Settings first.');
+  };
+
+  // Desktop system/network: do not hold the renderer lock across the whole USB
+  // wait — every Print click must reach the main-process FIFO. BLE still locks.
+  if (settings.type === 'system' || settings.type === 'network') {
+    return run();
+  }
+  return withPrintLock(run, holdMs);
 }
 
 /**
@@ -140,6 +206,8 @@ function buildTestThermalSample(opts: {
   if (phone) lines.push(`<C>${word('Ph')}: ${phone}</C>`);
   lines.push(dash);
   lines.push(`<C>${word('TEST PRINT')}</C>`);
+  // Build stamp — if the slip still says "30 cols" the old app is still running.
+  lines.push(`<C>${width <= 32 ? '58mm' : '80mm'} · ${width} cols · v28</C>`);
   lines.push(dash);
   lines.push(`${word('Date')}: ${stamp}`);
   lines.push(eq);
@@ -194,25 +262,36 @@ function buildTestA4Html(opts: {
 }
 
 export async function testPrint(): Promise<void> {
-  const settings = await getPrinterSettings();
+  wakePrinterOnClick();
+  const settingsPromise = getPrinterSettings();
+  const shopPromise = getShopSettings().catch(() => null);
+  const [settings, shop] = await Promise.all([settingsPromise, shopPromise]);
+  if (settings.type === 'system') primeSystemPrinter(settings.systemPrinterName);
   let shopName = APP_DISPLAY_NAME;
   let address = '';
   let city = '';
   let phone = '';
-  try {
-    const shop = await getShopSettings();
+  if (shop) {
     const bill = useLanguageStore.getState().bill;
     const text = shopTextForBill(shop, bill);
     shopName = text.shopName || shopName;
     address = text.address || '';
     city = bill === 'mr' && shop.addressMr?.trim() ? '' : shop.city || '';
     phone = shop.phone || '';
-  } catch {
-    // Fall back to app name if shop settings unavailable
   }
 
   const format = paperFormat(settings);
+  const paper = format === '58' ? ('58' as const) : format === '80' ? ('80' as const) : null;
+  const width = paper ? receiptCharsForPaper(paper) : 32;
+  const sample = paper
+    ? buildTestThermalSample({ shopName, address, city, phone, width })
+    : '';
+  const holdMs =
+    !paper || settings.type === 'system' || settings.type === 'network'
+      ? 0
+      : estimatePrintFlushMs(sample);
 
+  return withPrintLock(async () => {
   if (format === 'a4') {
     const sampleHtml = buildTestA4Html({ shopName, address, city, phone });
     await printViaA4(sampleHtml, `${shopName}-Test`, {
@@ -221,20 +300,16 @@ export async function testPrint(): Promise<void> {
     return;
   }
 
-  const width = receiptCharsForPaper(format);
-  const sample = buildTestThermalSample({ shopName, address, city, phone, width });
-  const paper = format === '58' ? ('58' as const) : ('80' as const);
-
   if (settings.type === 'bluetooth') {
     if (!settings.bluetoothAddress) {
       throw new Error('Select a Bluetooth printer first, then try Test Print.');
     }
-    await printViaBluetooth(settings.bluetoothAddress, sample, width);
+    await printViaBluetooth(settings.bluetoothAddress, sample, width, paper!);
     return;
   }
 
   if (settings.type === 'system') {
-    await printViaSystem(settings.systemPrinterName || '', sample, width, paper);
+    await printViaSystem(settings.systemPrinterName || '', sample, width, paper!);
     return;
   }
 
@@ -242,9 +317,10 @@ export async function testPrint(): Promise<void> {
     if (!settings.networkHost) {
       throw new Error('Enter the network printer IP first, then try Test Print.');
     }
-    await printViaNetwork(settings.networkHost, settings.networkPort || 9100, sample, width);
+    await printViaNetwork(settings.networkHost, settings.networkPort || 9100, sample, width, paper!);
     return;
   }
 
   throw new Error('Configure printer in settings first');
+  }, holdMs);
 }

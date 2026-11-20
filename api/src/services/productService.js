@@ -28,8 +28,8 @@ function cleanNameMr(value) {
 }
 
 const productIncludes = (db) => [
-  { model: db.Category, as: 'category', attributes: ['id', 'name'] },
-  { model: db.Brand, as: 'brand', attributes: ['id', 'name'] },
+  { model: db.Category, as: 'category', attributes: ['id', 'name', 'name_mr'] },
+  { model: db.Brand, as: 'brand', attributes: ['id', 'name', 'name_mr'] },
   { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
   { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
   {
@@ -48,8 +48,8 @@ const productIncludes = (db) => [
 
 /** Lighter includes for list views (skip images). */
 const productListIncludes = (db) => [
-  { model: db.Category, as: 'category', attributes: ['id', 'name'] },
-  { model: db.Brand, as: 'brand', attributes: ['id', 'name'] },
+  { model: db.Category, as: 'category', attributes: ['id', 'name', 'name_mr'] },
+  { model: db.Brand, as: 'brand', attributes: ['id', 'name', 'name_mr'] },
   { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
   { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
   {
@@ -61,6 +61,40 @@ const productListIncludes = (db) => [
       { model: db.Barcode, as: 'barcodes', attributes: ['id', 'barcode', 'is_primary', 'quantity'] },
     ],
   },
+];
+
+/**
+ * Billing / POS catalog download — smallest payload that still supports
+ * search, barcodes, prices, favorites, and stock on tiles.
+ */
+const productPosListIncludes = (db) => [
+  { model: db.Category, as: 'category', attributes: ['id', 'name', 'name_mr'] },
+  { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
+  {
+    model: db.ProductVariant,
+    as: 'variants',
+    // separate:true so LIMIT applies to products, not joined variant rows.
+    // product_id required so Sequelize can nest variants under products.
+    attributes: [
+      'id', 'product_id', 'sku', 'size', 'color',
+      'cost_price', 'selling_price', 'mrp', 'status',
+    ],
+    where: { deleted_at: null },
+    required: false,
+    separate: true,
+    include: [
+      {
+        model: db.Barcode,
+        as: 'barcodes',
+        attributes: ['id', 'variant_id', 'barcode', 'is_primary', 'quantity'],
+      },
+    ],
+  },
+];
+
+const PRODUCT_POS_ATTRIBUTES = [
+  'id', 'name', 'name_mr', 'category_id', 'uom_id',
+  'is_weight_based', 'allow_decimal_qty', 'is_favorite', 'status',
 ];
 
 /** Primary first, then plain barcodes, then quantity barcodes. */
@@ -214,35 +248,217 @@ async function redistributeVariantStock(db, {
   }
 }
 
+/** Escape % and _ so user input is treated literally in LIKE. */
+function escapeLike(value) {
+  return String(value || '').replace(/([\\%_])/g, '\\$1');
+}
+
+function searchTokens(search) {
+  return String(search || '')
+    .trim()
+    .split(/[\s,;/|_+-]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 1)
+    .slice(0, 8);
+}
+
+/**
+ * Match full phrase OR every word in any order (so "Sugar loose" finds "Sugar (Loose)").
+ */
+function buildProductTextSearchOr(q) {
+  const phrase = escapeLike(q);
+  const or = [
+    { name: { [Op.like]: `%${phrase}%` } },
+    { name_mr: { [Op.like]: `%${phrase}%` } },
+    { tax_code: { [Op.like]: `%${phrase}%` } },
+  ];
+  const tokens = searchTokens(q).map(escapeLike).filter(Boolean);
+  if (tokens.length > 1) {
+    or.push({
+      [Op.and]: tokens.map((token) => ({ name: { [Op.like]: `%${token}%` } })),
+    });
+    or.push({
+      [Op.and]: tokens.map((token) => ({ name_mr: { [Op.like]: `%${token}%` } })),
+    });
+  }
+  return or;
+}
+
+async function productIdsMatchingBarcodeOrSku(db, search) {
+  const q = String(search || '').trim();
+  if (!q) return [];
+  const { Barcode, ProductVariant } = db;
+  const ids = new Set();
+
+  // Exact barcode first (scanner / full EAN paste).
+  const exact = await Barcode.findAll({
+    where: { barcode: q },
+    attributes: ['variant_id'],
+    include: [{
+      model: ProductVariant,
+      as: 'variant',
+      attributes: ['product_id'],
+      where: { deleted_at: null },
+      required: true,
+    }],
+    limit: 50,
+  });
+  for (const row of exact) {
+    if (row.variant?.product_id) ids.add(row.variant.product_id);
+  }
+
+  // Partial barcode when exact miss (typed fragment).
+  if (!ids.size) {
+    const partial = await Barcode.findAll({
+      where: { barcode: { [Op.like]: `%${escapeLike(q)}%` } },
+      attributes: ['variant_id'],
+      include: [{
+        model: ProductVariant,
+        as: 'variant',
+        attributes: ['product_id'],
+        where: { deleted_at: null },
+        required: true,
+      }],
+      limit: 100,
+    });
+    for (const row of partial) {
+      if (row.variant?.product_id) ids.add(row.variant.product_id);
+    }
+  }
+
+  const skuHits = await ProductVariant.findAll({
+    where: {
+      deleted_at: null,
+      sku: { [Op.like]: `%${escapeLike(q)}%` },
+    },
+    attributes: ['product_id'],
+    limit: 100,
+  });
+  for (const row of skuHits) {
+    if (row.product_id) ids.add(row.product_id);
+  }
+
+  return [...ids];
+}
+
+/** Category / brand ids whose English or Marathi name matches the search. */
+async function categoryAndBrandIdsMatchingSearch(db, search) {
+  const q = String(search || '').trim();
+  if (!q) return { categoryIds: [], brandIds: [] };
+  const like = `%${escapeLike(q)}%`;
+
+  async function findIds(Model) {
+    try {
+      const rows = await Model.findAll({
+        where: {
+          deleted_at: null,
+          [Op.or]: [
+            { name: { [Op.like]: like } },
+            { name_mr: { [Op.like]: like } },
+          ],
+        },
+        attributes: ['id'],
+        limit: 100,
+      });
+      return rows.map((row) => row.id);
+    } catch {
+      // Older tenant DBs may not have name_mr yet.
+      const rows = await Model.findAll({
+        where: { deleted_at: null, name: { [Op.like]: like } },
+        attributes: ['id'],
+        limit: 100,
+      });
+      return rows.map((row) => row.id);
+    }
+  }
+
+  const [categoryIds, brandIds] = await Promise.all([
+    findIds(db.Category),
+    findIds(db.Brand),
+  ]);
+  return { categoryIds, brandIds };
+}
+
 async function listProducts(db, query, branchId = null) {
   const { Product } = db;
   const { page, limit, offset } = getPagination(query);
   const where = { deleted_at: null };
+  const leanPos = String(query.view || '').toLowerCase() === 'pos'
+    || query.lean === '1'
+    || query.lean === 'true';
 
   if (query.status) where.status = query.status;
   if (query.categoryId) where.category_id = query.categoryId;
   if (query.brandId) where.brand_id = query.brandId;
   if (query.search) {
-    where[Op.or] = [
-      { name: { [Op.like]: `%${query.search}%` } },
-      { name_mr: { [Op.like]: `%${query.search}%` } },
-      { tax_code: { [Op.like]: `%${query.search}%` } },
-    ];
+    const q = String(query.search).trim();
+    const or = buildProductTextSearchOr(q);
+    const [matchedIds, { categoryIds, brandIds }] = await Promise.all([
+      productIdsMatchingBarcodeOrSku(db, q),
+      categoryAndBrandIdsMatchingSearch(db, q),
+    ]);
+    if (matchedIds.length) {
+      or.push({ id: { [Op.in]: matchedIds } });
+    }
+    if (categoryIds.length) {
+      or.push({ category_id: { [Op.in]: categoryIds } });
+    }
+    if (brandIds.length) {
+      or.push({ brand_id: { [Op.in]: brandIds } });
+    }
+    where[Op.or] = or;
   }
 
-  const { rows, count } = await Product.findAndCountAll({
-    where,
-    include: productListIncludes(db),
-    order: [['created_at', 'DESC']],
-    limit,
-    offset,
-    distinct: true,
-  });
+  const includes = leanPos ? productPosListIncludes(db) : productListIncludes(db);
+  const hasFavorite = await productsHaveFavoriteColumn(Product);
+  const order = hasFavorite
+    ? [['is_favorite', 'DESC'], ['name', 'ASC'], ['created_at', 'DESC']]
+    : [['name', 'ASC'], ['created_at', 'DESC']];
+  const leanAttributes = leanPos
+    ? PRODUCT_POS_ATTRIBUTES.filter((col) => hasFavorite || col !== 'is_favorite')
+    : undefined;
 
+  // Count without nested JOINs — findAndCountAll+distinct was a major list bottleneck.
+  let rows;
+  try {
+    rows = await Product.findAll({
+      where,
+      attributes: leanAttributes,
+      include: includes,
+      order,
+      limit,
+      offset,
+    });
+  } catch (err) {
+    // Older production / lean payload mismatch — retry the standard list shape.
+    if (!leanPos) throw err;
+    rows = await Product.findAll({
+      where,
+      include: productListIncludes(db),
+      order: [['name', 'ASC'], ['created_at', 'DESC']],
+      limit,
+      offset,
+    });
+  }
+  const count = await Product.count({ where });
   const items = await attachProductStock(db, rows, branchId);
   return paginatedResponse(items, count, { page, limit });
 }
 
+/** Cached per process so listProducts does not describeTable on every request. */
+const favoriteColumnCache = new WeakMap();
+async function productsHaveFavoriteColumn(Product) {
+  if (favoriteColumnCache.has(Product)) return favoriteColumnCache.get(Product);
+  try {
+    const table = await Product.describe();
+    const has = !!table.is_favorite;
+    favoriteColumnCache.set(Product, has);
+    return has;
+  } catch {
+    favoriteColumnCache.set(Product, false);
+    return false;
+  }
+}
 async function attachProductStock(db, products, branchId) {
   if (!products?.length) return products || [];
 
@@ -386,6 +602,7 @@ async function createProduct(db, data, options = {}) {
         is_weight_based: data.isWeightBased ?? (uom.type === 'weight' || uom.type === 'volume'),
         allow_decimal_qty: data.allowDecimalQty ?? uom.type !== 'count',
         has_variants: Boolean(variants?.length > 1 || (variants?.length === 1 && (variants[0].size || variants[0].color))),
+        ...(data.isFavorite !== undefined ? { is_favorite: !!data.isFavorite } : {}),
         status: data.status || 'active',
       },
       { transaction }
@@ -438,7 +655,22 @@ async function createProduct(db, data, options = {}) {
     }
 
     await transaction.commit();
-    return getProduct(db, product.id, branchId);
+    // Bulk master import skips the full hydrate query (N extra round-trips).
+    if (options.skipHydrate) {
+      return { id: product.id, name: product.name };
+    }
+    const created = await getProduct(db, product.id, branchId);
+    // Shop-created products enrich the shared master catalog when missing.
+    if (!options.skipMasterSync && options.tenant?.business_type_id) {
+      try {
+        const catalogMasterService = require('./catalogMasterService');
+        await catalogMasterService.ensureTenantProductInMaster(options.tenant, created);
+      } catch (err) {
+        // Tenant save already succeeded — master mirror must not fail the request.
+        console.warn('[catalog] master mirror failed:', err.message || err);
+      }
+    }
+    return created;
   } catch (err) {
     await transaction.rollback();
     throw err;
@@ -892,6 +1124,7 @@ async function updateProduct(db, id, data, options = {}) {
       tax_code: data.taxCode !== undefined ? data.taxCode : product.tax_code,
       is_weight_based: nextIsWeightBased,
       allow_decimal_qty: nextAllowDecimal,
+      ...(data.isFavorite !== undefined ? { is_favorite: !!data.isFavorite } : {}),
       status: data.status ?? product.status,
     }, { transaction });
 
@@ -1021,6 +1254,7 @@ async function searchProducts(db, query, branchId = null) {
 
   const limit = parseInt(query.limit, 10) || 20;
   const productWhere = { deleted_at: null, status: 'active' };
+  if (query.categoryId) productWhere.category_id = query.categoryId;
   const variantBase = { deleted_at: null, status: 'active' };
 
   const barcodeExact = await Barcode.findOne({
@@ -1088,16 +1322,36 @@ async function searchProducts(db, query, branchId = null) {
     if (results.length) return attachStockQty(db, results, branchId);
   }
 
+  const phrase = escapeLike(q);
+  const tokens = searchTokens(q).map(escapeLike).filter(Boolean);
+  const textOr = [
+    { sku: { [Op.like]: `%${phrase}%` } },
+    { size: { [Op.like]: `%${phrase}%` } },
+    { color: { [Op.like]: `%${phrase}%` } },
+    { '$product.name$': { [Op.like]: `%${phrase}%` } },
+    { '$product.name_mr$': { [Op.like]: `%${phrase}%` } },
+  ];
+  if (tokens.length > 1) {
+    textOr.push({
+      [Op.and]: tokens.map((token) => ({ '$product.name$': { [Op.like]: `%${token}%` } })),
+    });
+    textOr.push({
+      [Op.and]: tokens.map((token) => ({ '$product.name_mr$': { [Op.like]: `%${token}%` } })),
+    });
+  }
+
+  const { categoryIds, brandIds } = await categoryAndBrandIdsMatchingSearch(db, q);
+  if (categoryIds.length) {
+    textOr.push({ '$product.category_id$': { [Op.in]: categoryIds } });
+  }
+  if (brandIds.length) {
+    textOr.push({ '$product.brand_id$': { [Op.in]: brandIds } });
+  }
+
   const variants = await ProductVariant.findAll({
     where: {
       ...variantBase,
-      [Op.or]: [
-        { sku: { [Op.like]: `%${q}%` } },
-        { size: { [Op.like]: `%${q}%` } },
-        { color: { [Op.like]: `%${q}%` } },
-        { '$product.name$': { [Op.like]: `%${q}%` } },
-        { '$product.name_mr$': { [Op.like]: `%${q}%` } },
-      ],
+      [Op.or]: textOr,
     },
     include: [
       {
@@ -1125,21 +1379,33 @@ async function formatSearchResult(db, variant, productOverride = null) {
   let product = productOverride || variant.product || null;
   if (!product) {
     product = await db.Product.findByPk(variant.product_id, {
-      include: [{ model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] }],
+      include: [
+        { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
+        { model: db.Category, as: 'category', attributes: ['id', 'name', 'name_mr'] },
+      ],
     });
-  } else if (!product.uom && product.uom_id) {
-    product.uom = await db.UnitOfMeasure.findByPk(product.uom_id, {
-      attributes: ['id', 'code', 'name', 'type'],
-    });
+  } else {
+    if (!product.uom && product.uom_id) {
+      product.uom = await db.UnitOfMeasure.findByPk(product.uom_id, {
+        attributes: ['id', 'code', 'name', 'type'],
+      });
+    }
+    if (!product.category && product.category_id && db.Category) {
+      product.category = await db.Category.findByPk(product.category_id, {
+        attributes: ['id', 'name', 'name_mr'],
+      });
+    }
   }
 
   const uom = variant.uom || product?.uom || null;
+  const category = product.category || null;
 
   return {
     variantId: variant.id,
     productId: product.id,
     productName: product.name,
     productNameMr: product.name_mr || null,
+    isFavorite: !!product.is_favorite,
     sku: variant.sku,
     size: variant.size,
     color: variant.color,
@@ -1158,6 +1424,9 @@ async function formatSearchResult(db, variant, productOverride = null) {
     isWeightBased: product.is_weight_based,
     allowDecimalQty: product.allow_decimal_qty,
     stockQty: 0,
+    categoryId: category?.id || product.category_id || null,
+    categoryName: category?.name || null,
+    categoryNameMr: category?.name_mr || null,
   };
 }
 
@@ -1182,7 +1451,7 @@ async function attachStockQty(db, results, branchId) {
   }));
 }
 
-async function bulkImport(db, rows) {
+async function bulkImport(db, rows, options = {}) {
   if (!Array.isArray(rows) || !rows.length) {
     throw new AppError('Import rows array is required', 400, 'VALIDATION_ERROR');
   }
@@ -1231,6 +1500,9 @@ async function bulkImport(db, rows) {
         sellingPrice: row.sellingPrice,
         mrp: row.mrp,
         variants: row.variants,
+      }, {
+        tenant: options.tenant || null,
+        skipMasterSync: !!options.skipMasterSync,
       });
 
       results.success += 1;
@@ -1613,6 +1885,46 @@ async function bulkUpdateVariantPricing(db, branchId, userId, items) {
   return { updated: results.length, items: results };
 }
 
+async function setProductFavorite(db, id, isFavorite) {
+  const { Product } = db;
+  const product = await Product.findOne({ where: { id, deleted_at: null } });
+  if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
+  await product.update({ is_favorite: !!isFavorite });
+  return {
+    id: product.id,
+    is_favorite: !!product.is_favorite,
+    isFavorite: !!product.is_favorite,
+  };
+}
+
+/**
+ * Mark every matching product as favorite (or not). Requires a category filter
+ * so shops cannot accidentally star the whole catalog.
+ */
+async function setProductsFavoriteBulk(db, { categoryId, brandId, isFavorite } = {}) {
+  if (!categoryId) {
+    throw new AppError('Category is required to favorite products in bulk', 400, 'VALIDATION_ERROR');
+  }
+  const { Product } = db;
+  const where = {
+    deleted_at: null,
+    category_id: categoryId,
+  };
+  if (brandId) where.brand_id = brandId;
+
+  const [updated] = await Product.update(
+    { is_favorite: !!isFavorite },
+    { where },
+  );
+
+  return {
+    updated: updated || 0,
+    categoryId,
+    brandId: brandId || null,
+    isFavorite: !!isFavorite,
+  };
+}
+
 module.exports = {
   generateBarcodes,
   ensureQuantityBarcodes,
@@ -1621,6 +1933,8 @@ module.exports = {
   getProduct,
   createProduct,
   updateProduct,
+  setProductFavorite,
+  setProductsFavoriteBulk,
   deleteProduct,
   deleteAllProducts,
   searchProducts,

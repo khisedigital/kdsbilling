@@ -11,7 +11,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Button, Dialog, HelperText, Portal, Text } from 'react-native-paper';
+import { Button, HelperText, Portal, Text } from 'react-native-paper';
+import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -472,9 +473,9 @@ export default function DailyClosingScreen({}: Props) {
       </ScrollView>
 
       <Portal>
-        <Dialog visible={confirmOpen} onDismiss={() => !saving && setConfirmOpen(false)} style={styles.dialog}>
-          <Dialog.Title>{t('Confirm close register')}</Dialog.Title>
-          <Dialog.Content>
+        <AppDialog visible={confirmOpen} onDismiss={() => !saving && setConfirmOpen(false)} style={styles.dialog}>
+          <AppDialog.Title>{t('Confirm close register')}</AppDialog.Title>
+          <AppDialog.Content>
             <Text style={styles.confirmLine}>{t('Expected cash')}: {rupee(expectedCash)}</Text>
             <Text style={styles.confirmLine}>{t('Cash counted')}: {rupee(actualCash)}</Text>
             <Text style={[styles.confirmDiff, { color: statusColor }]}>
@@ -486,14 +487,14 @@ export default function DailyClosingScreen({}: Props) {
             <Text style={styles.confirmWarn}>
               {t('After closing, today\'s register cannot be edited.')}
             </Text>
-          </Dialog.Content>
-          <Dialog.Actions>
+          </AppDialog.Content>
+          <AppDialog.Actions>
             <Button onPress={() => setConfirmOpen(false)} disabled={saving}>{t('Cancel')}</Button>
             <Button mode="contained" onPress={submitClosing} loading={saving}>
               {t('Confirm & close')}
             </Button>
-          </Dialog.Actions>
-        </Dialog>
+          </AppDialog.Actions>
+        </AppDialog>
       </Portal>
     </KeyboardAvoidingView>
   );

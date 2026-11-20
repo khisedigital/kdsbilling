@@ -1,7 +1,7 @@
 {
   "name": "kdspoz-retail-desktop",
   "productName": "KDSPOZ Retail",
-  "version": "1.2.14",
+  "version": "1.2.53",
   "description": "KDSPOZ Retail billing for Windows and macOS",
   "author": "Khise Digital Solution Pvt Ltd <info@khisedigital.in>",
   "homepage": "https://khisedigital.info",
@@ -32,6 +32,7 @@
       "main.js",
       "preload.js",
       "rawPrint.js",
+      "db/**/*",
       "app/**/*"
     ],
     "mac": {

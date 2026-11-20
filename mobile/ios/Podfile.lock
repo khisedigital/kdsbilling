@@ -2391,7 +2391,7 @@ SPEC CHECKSUMS:
   react-native-blob-util: 13e70f811eb34f14864622c4afa37cc20fe8100e
   react-native-image-picker: 23540feacc79c63c60857f318fdfa8477c26e70a
   react-native-safe-area-context: fb5c8ee9f6dd62ef710611b3d370c501f42a4ac0
-  react-native-thermal-receipt-printer: 5afde20cb25ef08104e2d63ee8933ec6105eb2b7
+  react-native-thermal-receipt-printer: b7e8ca6fed063c85a8c9255f81d319bb14a24663
   React-NativeModulesApple: a092d89b58f635ebfab88048b0eda9fb516819fd
   React-networking: 968bbbe73590149feb1e72b2af4f6a68e4796ece
   React-oscompat: 0b72a7e926954a0415ccd83e0748b6561fe45367
@@ -2435,6 +2435,6 @@ SPEC CHECKSUMS:
   VisionCamera: b51af005669c6642dd1b4fca434eda4c1778de87
   Yoga: fe50ab299e578f397fef753cf309c6703a4db29b
 
-PODFILE CHECKSUM: 8f1280efc0450332b2c589edef144af2dc08cdeb
+PODFILE CHECKSUM: 955a4af41563562d54401fadb6985d710a0aa821
 
 COCOAPODS: 1.16.2

@@ -57,52 +57,243 @@ async function syncMasterUnitsToTenantDb(db) {
   return { synced: masterUnits.length };
 }
 
-async function preloadCatalogToTenantDb(db, businessTypeId) {
-  if (!businessTypeId) return { categories: 0, brands: 0, products: 0 };
+/**
+ * Upsert master categories + brands into the tenant DB (by English name).
+ * Updates Marathi name / description from master when present.
+ * Does not delete tenant-only rows.
+ */
+async function tableHasColumn(sequelize, tableName, columnName) {
+  try {
+    const [rows] = await sequelize.query(`SHOW COLUMNS FROM \`${tableName}\` LIKE :column`, {
+      replacements: { column: columnName },
+    });
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
+  }
+}
 
-  const { MasterCategory, MasterBrand, MasterProduct } = getMasterModels();
+async function syncMasterCategoriesAndBrandsToTenantDb(db, businessTypeId, options = {}) {
+  const relinkProducts = options.relinkProducts === true;
+  if (!businessTypeId) {
+    return {
+      categories: 0,
+      brands: 0,
+      categoriesCreated: 0,
+      brandsCreated: 0,
+      categoriesUpdated: 0,
+      brandsUpdated: 0,
+      productsRelinked: 0,
+      nameMrSupported: false,
+    };
+  }
+
+  const { MasterCategory, MasterBrand } = getMasterModels();
+  const { Category, Brand } = db;
+  const categoryNameMrSupported = await tableHasColumn(db.sequelize, 'categories', 'name_mr');
+  const brandNameMrSupported = await tableHasColumn(db.sequelize, 'brands', 'name_mr');
+  const nameMrSupported = categoryNameMrSupported || brandNameMrSupported;
+
   const categories = await MasterCategory.findAll({
     where: { business_type_id: businessTypeId, status: 'active' },
-    order: [['sort_order', 'ASC']],
+    order: [['sort_order', 'ASC'], ['name', 'ASC']],
   });
   const brands = await MasterBrand.findAll({
     where: { business_type_id: businessTypeId, status: 'active' },
-    order: [['sort_order', 'ASC']],
-  });
-  const products = await MasterProduct.findAll({
-    where: { business_type_id: businessTypeId, status: 'active' },
-    order: [['sort_order', 'ASC']],
+    order: [['sort_order', 'ASC'], ['name', 'ASC']],
   });
 
-  const { Category, Brand, UnitOfMeasure } = db;
+  let categoriesCreated = 0;
+  let categoriesUpdated = 0;
+  let brandsCreated = 0;
+  let brandsUpdated = 0;
   const categoryByMasterId = {};
   const brandByMasterId = {};
 
   for (const mc of categories) {
     const row = mc.toJSON ? mc.toJSON() : mc;
-    let tenantCat = await Category.findOne({ where: { name: row.name, deleted_at: null } });
+    const name = String(row.name || '').trim();
+    if (!name) continue;
+
+    // utf8mb4_*_ci collations make equality case-insensitive
+    let tenantCat = await Category.findOne({
+      where: { deleted_at: null, name },
+    });
+
+    const nameMr = categoryNameMrSupported && row.name_mr
+      ? String(row.name_mr).trim() || null
+      : null;
     if (!tenantCat) {
-      tenantCat = await Category.create({
-        name: row.name,
-        description: row.description,
+      const payload = {
+        name,
+        description: row.description || null,
         status: 'active',
-      });
+      };
+      if (categoryNameMrSupported) payload.name_mr = nameMr;
+      tenantCat = await Category.create(payload);
+      categoriesCreated += 1;
+    } else {
+      const updates = {};
+      if (categoryNameMrSupported && nameMr && tenantCat.name_mr !== nameMr) updates.name_mr = nameMr;
+      if (row.description != null && tenantCat.description !== row.description) {
+        updates.description = row.description;
+      }
+      if (tenantCat.status !== 'active') updates.status = 'active';
+      if (Object.keys(updates).length) {
+        await tenantCat.update(updates);
+        categoriesUpdated += 1;
+      }
     }
     categoryByMasterId[row.id] = tenantCat.id;
   }
 
   for (const mb of brands) {
     const row = mb.toJSON ? mb.toJSON() : mb;
-    let tenantBrand = await Brand.findOne({ where: { name: row.name, deleted_at: null } });
+    const name = String(row.name || '').trim();
+    if (!name) continue;
+
+    let tenantBrand = await Brand.findOne({
+      where: { deleted_at: null, name },
+    });
+    const nameMr = brandNameMrSupported && row.name_mr
+      ? String(row.name_mr).trim() || null
+      : null;
     if (!tenantBrand) {
-      tenantBrand = await Brand.create({
-        name: row.name,
-        description: row.description,
+      const payload = {
+        name,
+        description: row.description || null,
         status: 'active',
-      });
+      };
+      if (brandNameMrSupported) payload.name_mr = nameMr;
+      tenantBrand = await Brand.create(payload);
+      brandsCreated += 1;
+    } else {
+      const updates = {};
+      if (brandNameMrSupported && nameMr && tenantBrand.name_mr !== nameMr) updates.name_mr = nameMr;
+      if (row.description != null && tenantBrand.description !== row.description) {
+        updates.description = row.description;
+      }
+      if (tenantBrand.status !== 'active') updates.status = 'active';
+      if (Object.keys(updates).length) {
+        await tenantBrand.update(updates);
+        brandsUpdated += 1;
+      }
     }
     brandByMasterId[row.id] = tenantBrand.id;
   }
+
+  // Always fill missing Marathi names (cheap missing-only updates). Full category/brand
+  // relink stays opt-in — it was too heavy for every screen open.
+  const productsRelinked = await relinkTenantProductsFromMaster(
+    db,
+    businessTypeId,
+    categoryByMasterId,
+    brandByMasterId,
+    { categoriesAndBrands: relinkProducts, nameMr: true },
+  );
+
+  return {
+    categories: categories.length,
+    brands: brands.length,
+    categoriesCreated,
+    brandsCreated,
+    categoriesUpdated,
+    brandsUpdated,
+    productsRelinked,
+    nameMrSupported,
+    categoryByMasterId,
+    brandByMasterId,
+  };
+}
+
+/**
+ * Match tenant products to master by English name and set category_id / brand_id / name_mr.
+ */
+async function relinkTenantProductsFromMaster(
+  db,
+  businessTypeId,
+  categoryByMasterId,
+  brandByMasterId,
+  options = {},
+) {
+  const fillCategoriesAndBrands = options.categoriesAndBrands === true;
+  const fillNameMr = options.nameMr !== false;
+  if (!fillCategoriesAndBrands && !fillNameMr) return 0;
+
+  const { MasterProduct } = getMasterModels();
+  const masters = await MasterProduct.findAll({
+    where: { business_type_id: businessTypeId, status: 'active' },
+    attributes: ['id', 'name', 'name_mr', 'category_id', 'brand_id'],
+  });
+  if (!masters.length) return 0;
+
+  const tenantProducts = await db.Product.findAll({
+    where: { deleted_at: null },
+    attributes: ['id', 'name', 'name_mr', 'category_id', 'brand_id'],
+  });
+  if (!tenantProducts.length) return 0;
+
+  const byName = new Map();
+  for (const product of tenantProducts) {
+    const key = String(product.name || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(product);
+  }
+
+  let relinked = 0;
+  const pending = [];
+
+  for (const master of masters) {
+    const row = master.toJSON ? master.toJSON() : master;
+    const key = String(row.name || '').trim().toLowerCase();
+    if (!key) continue;
+    const matches = byName.get(key);
+    if (!matches?.length) continue;
+
+    const nextCategoryId = row.category_id ? categoryByMasterId[row.category_id] || null : null;
+    const nextBrandId = row.brand_id ? brandByMasterId[row.brand_id] || null : null;
+    const nextNameMr = row.name_mr ? String(row.name_mr).trim() || null : null;
+    if (!nextCategoryId && !nextBrandId && !nextNameMr) continue;
+
+    for (const product of matches) {
+      const updates = {};
+      // Only fill missing links / Marathi — avoid rewriting the whole catalog every sync.
+      if (fillCategoriesAndBrands && nextCategoryId && !product.category_id) {
+        updates.category_id = nextCategoryId;
+      }
+      if (fillCategoriesAndBrands && nextBrandId && !product.brand_id) {
+        updates.brand_id = nextBrandId;
+      }
+      if (fillNameMr && nextNameMr && !product.name_mr) {
+        updates.name_mr = nextNameMr;
+      }
+      if (!Object.keys(updates).length) continue;
+      pending.push(product.update(updates).catch(() => null));
+      relinked += 1;
+      if (pending.length >= 100) {
+        await Promise.all(pending.splice(0, pending.length));
+      }
+    }
+  }
+
+  if (pending.length) await Promise.all(pending);
+  return relinked;
+}
+
+async function preloadCatalogToTenantDb(db, businessTypeId) {
+  if (!businessTypeId) return { categories: 0, brands: 0, products: 0 };
+
+  const { MasterProduct } = getMasterModels();
+  const products = await MasterProduct.findAll({
+    where: { business_type_id: businessTypeId, status: 'active' },
+    order: [['sort_order', 'ASC']],
+  });
+
+  const { UnitOfMeasure } = db;
+  const sync = await syncMasterCategoriesAndBrandsToTenantDb(db, businessTypeId);
+  const categoryByMasterId = sync.categoryByMasterId || {};
+  const brandByMasterId = sync.brandByMasterId || {};
 
   let productCount = 0;
   for (const mp of products) {
@@ -130,7 +321,11 @@ async function preloadCatalogToTenantDb(db, businessTypeId) {
     productCount += 1;
   }
 
-  return { categories: categories.length, brands: brands.length, products: productCount };
+  return {
+    categories: sync.categories,
+    brands: sync.brands,
+    products: productCount,
+  };
 }
 
 async function preloadCatalogToTenant(tenantId, businessTypeId) {
@@ -167,6 +362,7 @@ module.exports = {
   syncMasterUnitsToTenantDb,
   syncMasterUnitsToTenant,
   syncMasterUnitsToAllTenants,
+  syncMasterCategoriesAndBrandsToTenantDb,
   preloadCatalogToTenantDb,
   preloadCatalogToTenant,
 };

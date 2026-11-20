@@ -7,7 +7,9 @@ import {
 } from './labelPrinterNative';
 import {
   buildGapLabelEscPos,
+  buildGapLabelTspl,
   buildLabelCalibrateEscPos,
+  buildLabelCalibrateTspl,
   LABEL_HEIGHT_MM as ESC_LABEL_HEIGHT_MM,
   LABEL_HEIGHT_OPTIONS as ESC_LABEL_HEIGHT_OPTIONS,
   LABEL_WIDTH_MM as ESC_LABEL_WIDTH_MM,
@@ -25,6 +27,27 @@ export const DEMO_BARCODE = '2000000000008';
 
 export type { GapLabelContent, LabelHeightMm };
 export { normalizeLabelHeightMm };
+
+/**
+ * TSC / similar desktop label heads speak TSPL, not ESC/POS.
+ * DeTong / Seznik / Xprinter gap heads stay on ESC/POS raster.
+ */
+export function labelPrinterUsesTspl(printerName?: string | null): boolean {
+  const n = String(printerName || '').toLowerCase().replace(/[_-]+/g, ' ');
+  if (!n) return false;
+  if (/\b(detong|seznik|xprinter|poshiflow|haoyin|microlan|rongta)\b/.test(n)) return false;
+  return (
+    /\btsc\b/.test(n) ||
+    /\bte\s?244\b/.test(n) ||
+    /\bte\s?210\b/.test(n) ||
+    /\bte\s?310\b/.test(n) ||
+    /\bttp\s?244\b/.test(n) ||
+    /\bttp\s?247\b/.test(n) ||
+    /\bda\s?210\b/.test(n) ||
+    /\bda\s?310\b/.test(n) ||
+    /\btspl\b/.test(n)
+  );
+}
 
 /**
  * A small head (Seznik-class) holds about three full sticker pictures.
@@ -61,7 +84,7 @@ export function isGapLabelPrintAvailable(): boolean {
 
 async function printDesktopGapLabel(label: GapLabelContent, copies: number): Promise<void> {
   // Label printer only — never reads billing / receipt printer settings.
-  // ESC/POS is what these heads actually print. Each send is at most two stickers.
+  // ESC/POS for DeTong-class heads; TSPL for TSC TE244 and similar.
   const settings = await getLabelPrinterSettings();
   const heightMm = normalizeLabelHeightMm(settings.labelHeightMm);
   const count = Math.max(1, Math.min(999, Math.floor(copies) || 1));
@@ -69,26 +92,47 @@ async function printDesktopGapLabel(label: GapLabelContent, copies: number): Pro
     './PrintService'
   );
 
+  const targetName =
+    settings.type === 'system'
+      ? settings.systemPrinterName?.trim()
+      : settings.type === 'network'
+        ? settings.networkHost?.trim()
+        : settings.bluetoothName?.trim() || settings.bluetoothAddress?.trim();
+  const useTspl = labelPrinterUsesTspl(
+    settings.systemPrinterName || settings.bluetoothName || targetName,
+  );
+
   const deliver = async (bytes: number[]) => {
+    // Always mark as label so the bill FIFO does not apply receipt head-settle waits.
     if (settings.type === 'network') {
       const host = settings.networkHost?.trim();
       if (!host) throw new Error('Select a network label printer on the Barcode label screen.');
-      await printBytesViaNetwork(host, settings.networkPort || 9100, bytes);
+      await printBytesViaNetwork(host, settings.networkPort || 9100, bytes, 1, 0, 'label');
       return;
     }
     if (settings.type === 'bluetooth') {
       const address = settings.bluetoothAddress?.trim();
       if (!address) throw new Error('Select a Bluetooth label printer on the Barcode label screen.');
-      await printBytesViaBluetooth(address, bytes);
+      await printBytesViaBluetooth(address, bytes, 1, 0, 'label');
       return;
     }
     const printerName = settings.systemPrinterName?.trim();
     if (!printerName) {
       throw new Error('Select your USB label printer on the Barcode label screen, then print.');
     }
-    await printBytesViaSystem(printerName, bytes);
+    await printBytesViaSystem(printerName, bytes, 1, 0, 'label');
   };
 
+  if (useTspl) {
+    // TSC TE244: one TSPL job with PRINT 1,N. Batched ×2 CLS jobs re-trigger the
+    // gap sensor mid-roll and tear stickers in half.
+    await deliver(buildGapLabelTspl(label, count, heightMm));
+    // Let the head finish before the next product queues another SIZE/CLS.
+    await sleep(Math.min(12000, Math.max(900, count * 850)));
+    return;
+  }
+
+  // DeTong / Seznik: bursts of 2 + pause (small ESC/POS buffer).
   await sendPaced(count, async (n) => {
     await deliver(buildGapLabelEscPos(label, n, heightMm));
   });
@@ -132,23 +176,27 @@ export async function calibrateGapLabelPrinter(): Promise<void> {
     throw new Error('Connect the label printer first, then calibrate.');
   }
   const settings = await getLabelPrinterSettings();
-  const bytes = buildLabelCalibrateEscPos();
+  const heightMm = normalizeLabelHeightMm(settings.labelHeightMm);
+  const useTspl = labelPrinterUsesTspl(
+    settings.systemPrinterName || settings.bluetoothName || settings.networkHost,
+  );
+  const bytes = useTspl ? buildLabelCalibrateTspl(heightMm) : buildLabelCalibrateEscPos();
   const { printBytesViaBluetooth, printBytesViaNetwork, printBytesViaSystem } = await import(
     './PrintService'
   );
   if (settings.type === 'network') {
     const host = settings.networkHost?.trim();
     if (!host) throw new Error('Select a network label printer first.');
-    await printBytesViaNetwork(host, settings.networkPort || 9100, bytes);
+    await printBytesViaNetwork(host, settings.networkPort || 9100, bytes, 1, 0, 'label');
     return;
   }
   if (settings.type === 'bluetooth') {
     const address = settings.bluetoothAddress?.trim();
     if (!address) throw new Error('Select a Bluetooth label printer first.');
-    await printBytesViaBluetooth(address, bytes);
+    await printBytesViaBluetooth(address, bytes, 1, 0, 'label');
     return;
   }
   const printerName = settings.systemPrinterName?.trim();
   if (!printerName) throw new Error('Select your USB label printer first.');
-  await printBytesViaSystem(printerName, bytes);
+  await printBytesViaSystem(printerName, bytes, 1, 0, 'label');
 }

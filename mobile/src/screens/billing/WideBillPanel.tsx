@@ -12,16 +12,21 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { CommonActions, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { MainStackParamList } from '../../navigation/MainNavigator';
 import { useT } from '../../i18n';
 import { useLanguageStore } from '../../i18n/languageStore';
-import { printDraftReceipt } from '../../print/receiptPrinter';
+import { wakePrinterOnClick } from '../../print/receiptPrinter';
+import { enqueueDraftPrint } from '../../print/printRequestQueue';
+import { previewBillSmart } from '../../offline/billPreview';
+import { isOfflineNow, useConnectivityStore } from '../../offline/connectivityStore';
+import { createSale } from '../../offline/saleService';
 import {
-  createBill,
   createCustomer,
   deleteHeldBill,
   fetchCustomers,
   holdBill,
-  previewBill,
   type BillDetail,
 } from '../../services/businessService';
 import { useCartStore, type CartItem } from '../../store/cartStore';
@@ -29,7 +34,7 @@ import { colors } from '../../theme/colors';
 import { radius, shadow, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
 import { totalSaving } from '../../utils/billSaving';
-import { screenProductName } from '../../utils/productName';
+import { printedCartLineName, screenProductName } from '../../utils/productName';
 import { variantLabel } from '../../utils/variantLabel';
 
 type DiscountMode = 'amount' | 'percent';
@@ -85,7 +90,9 @@ function money(n: number) {
 
 export default function WideBillPanel() {
   const t = useT();
+  const navigation = useNavigation<NativeStackNavigationProp<MainStackParamList>>();
   useLanguageStore((s) => s.ui);
+  const online = useConnectivityStore((s) => s.online);
   const items = useCartStore((s) => s.items);
   const updateQty = useCartStore((s) => s.updateQty);
   const updatePrice = useCartStore((s) => s.updatePrice);
@@ -134,6 +141,8 @@ export default function WideBillPanel() {
   const requestId = useRef(0);
   const splitExtraRef = useRef(splitExtra);
   splitExtraRef.current = splitExtra;
+  const checkoutLock = useRef(false);
+  const printInflight = useRef(0);
 
   const totalDue = round2(exactTotal + roundOffAmount);
   const nearestTarget = nearestRupee(exactTotal);
@@ -198,7 +207,7 @@ export default function WideBillPanel() {
     setLoadingPreview(true);
     setError('');
     try {
-      const result = (await previewBill({
+      const result = (await previewBillSmart({
         items: items.map((item) => ({
           variantId: item.variantId,
           quantity: item.quantity,
@@ -208,7 +217,9 @@ export default function WideBillPanel() {
           discountPercent: item.discountPercent,
           isCustom: item.isCustom === true,
           productName: item.productName,
+          productNameMr: item.productNameMr ?? null,
         })),
+        language: useLanguageStore.getState().bill,
         billDiscountAmount,
         billDiscountPercent,
         offerId,
@@ -230,9 +241,23 @@ export default function WideBillPanel() {
     }
   }, [items, billDiscountAmount, billDiscountPercent, offerId, syncPrimaryAmount]);
 
+  const billLanguage = useLanguageStore((s) => s.bill);
+
   useEffect(() => {
     loadPreview();
-  }, [loadPreview]);
+  }, [loadPreview, billLanguage]);
+
+  useEffect(() => {
+    if (online) return;
+    if (payMode === 'credit' || payMode === 'store_credit') setPayMode('cash');
+    setSplitExtra((prev) =>
+      prev.map((p) =>
+        p.mode === 'credit' || p.mode === 'store_credit'
+          ? { ...p, mode: 'upi' }
+          : p,
+      ),
+    );
+  }, [online, payMode]);
 
   useEffect(() => {
     if (view !== 'customer') return;
@@ -512,7 +537,8 @@ export default function WideBillPanel() {
         const cart = items.find((i) => i.variantId === line.variantId);
         return {
           id: `item-${idx}`,
-          product_name: line.productName,
+          product_name: printedCartLineName(cart, line.productName),
+          product_name_mr: cart?.productNameMr ?? null,
           sku: '',
           variant_id: line.variantId,
           quantity: line.quantity,
@@ -520,32 +546,49 @@ export default function WideBillPanel() {
           mrp: cart?.mrp ?? null,
           discount_amount: line.discountAmount || 0,
           line_total: line.lineTotal,
+          variant: cart
+            ? {
+              size: cart.size,
+              color: cart.color,
+              product: {
+                name: cart.productName,
+                name_mr: cart.productNameMr ?? null,
+              },
+            }
+            : null,
         };
       }),
       payments: paidRows,
     };
   };
 
-  const handlePrint = async () => {
+  const handlePrint = () => {
+    // Push onto the print queue synchronously — rapid taps must not be lost.
     setError('');
     const draft = buildDraftBill();
     if (!draft) {
       setError(t('Bill not ready to print'));
       return;
     }
+    wakePrinterOnClick();
+    printInflight.current += 1;
     setPrinting(true);
-    try {
-      await printDraftReceipt(draft);
-    } catch (err) {
-      Alert.alert(t('Print failed'), apiError(err, 'Could not print receipt.'));
-    } finally {
-      setPrinting(false);
-    }
+    void enqueueDraftPrint(draft)
+      .catch((err) => {
+        Alert.alert(t('Print failed'), apiError(err, 'Could not print receipt.'));
+      })
+      .finally(() => {
+        printInflight.current = Math.max(0, printInflight.current - 1);
+        if (printInflight.current === 0) setPrinting(false);
+      });
   };
 
   const handlePay = async () => {
+    if (checkoutLock.current) return;
+    checkoutLock.current = true;
     setError('');
     if (!preview) {
+      checkoutLock.current = false;
       setError(t('Bill not ready'));
       return;
     }
@@ -553,18 +596,21 @@ export default function WideBillPanel() {
       (p) => parseFloat(p.amount) > 0 && (p.mode === 'credit' || p.mode === 'store_credit'),
     );
     if (needsCustomer && !customerId) {
+      checkoutLock.current = false;
       setError(t('Select a customer for credit or wallet'));
       setView('customer');
       return;
     }
     if (totalPaid < totalDue - 0.01) {
+      checkoutLock.current = false;
       setError(t('Need {{amount}} more', { amount: money(balance) }));
       return;
     }
     setSaving(true);
     try {
-      await createBill({
+      await createSale({
         customerId,
+        customerName,
         items: items.map((item) => ({
           variantId: item.variantId,
           quantity: item.quantity,
@@ -574,7 +620,9 @@ export default function WideBillPanel() {
           discountPercent: item.discountPercent,
           isCustom: item.isCustom === true,
           productName: item.productName,
+          productNameMr: item.productNameMr ?? null,
         })),
+        language: useLanguageStore.getState().bill,
         billDiscountAmount,
         billDiscountPercent,
         offerId,
@@ -594,10 +642,17 @@ export default function WideBillPanel() {
         }
       }
       clearCart();
-      setNotice(change > 0.01
-        ? t('Sale saved · return {{amount}}', { amount: money(change) })
-        : t('Sale saved'));
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 1,
+          routes: [
+            { name: 'Dashboard' },
+            { name: 'Billing', params: { fresh: true } },
+          ],
+        }),
+      );
     } catch (err) {
+      checkoutLock.current = false;
       setError(apiError(err, 'Payment failed'));
     } finally {
       setSaving(false);
@@ -964,9 +1019,15 @@ export default function WideBillPanel() {
             <View style={styles.fill}>
               <View style={styles.tableHeader}>
                 <Text style={[styles.th, styles.colProduct]}>{t('Product')}</Text>
-                <Text style={[styles.th, styles.colRateHead]}>{t('Rate')}</Text>
-                <Text style={[styles.th, styles.colQtyHead]}>{t('Qty')}</Text>
-                <Text style={[styles.th, styles.colAmountHead]}>{t('Amount')}</Text>
+                <View style={styles.colRateHead}>
+                  <Text style={[styles.th, styles.thEnd]}>{t('Rate')}</Text>
+                </View>
+                <View style={styles.colQtyHead}>
+                  <Text style={[styles.th, styles.thCenter]}>{t('Qty')}</Text>
+                </View>
+                <View style={styles.colAmountHead}>
+                  <Text style={[styles.th, styles.thEnd]}>{t('Amount')}</Text>
+                </View>
                 <View style={styles.thRemove} />
               </View>
               <FlatList
@@ -1039,16 +1100,19 @@ export default function WideBillPanel() {
                 <View style={styles.payModes}>
                   {PAYMENT_MODES.map((mode) => {
                     const on = payMode === mode.id;
+                    const needsNet = mode.id === 'credit' || mode.id === 'store_credit';
+                    const disabled = needsNet && !online;
                     return (
                       <Pressable
                         key={mode.id}
+                        disabled={disabled}
                         onPress={() => {
                           setPayMode(mode.id);
                           setSplitExtra((prev) =>
                             prev.map((p) => (p.mode === mode.id ? { ...p, mode: defaultSplitMode(mode.id) } : p)),
                           );
                         }}
-                        style={[styles.payMode, on && styles.payModeOn]}>
+                        style={[styles.payMode, on && styles.payModeOn, disabled && { opacity: 0.4 }]}>
                         <Icon name={mode.icon} size={16} color={on ? colors.primary : colors.textMuted} />
                         <Text style={[styles.payModeText, on && styles.payModeTextOn]}>{t(mode.label)}</Text>
                       </Pressable>
@@ -1134,15 +1198,20 @@ export default function WideBillPanel() {
               <View style={styles.payActions}>
                 <Pressable
                   onPress={handlePrint}
-                  disabled={!preview || saving || printing}
-                  style={[styles.printBtn, (!preview || saving || printing) && styles.disabled]}>
-                  <Icon name="printer" size={16} color={colors.primary} />
+                  // Stay clickable while printing — disabled dropped taps (5 clicks → 2 slips).
+                  disabled={!preview || saving}
+                  style={[styles.printBtn, (!preview || saving) && styles.disabled]}>
+                  {printing ? (
+                    <ActivityIndicator color={colors.primary} size="small" />
+                  ) : (
+                    <Icon name="printer" size={16} color={colors.primary} />
+                  )}
                   <Text style={styles.printBtnText}>{printing ? t('Printing…') : t('Print')}</Text>
                 </Pressable>
                 <Pressable
                   onPress={handlePay}
-                  disabled={!preview || saving || printing || loadingPreview}
-                  style={[styles.saveBtn, (!preview || saving || printing || loadingPreview) && styles.disabled]}>
+                  disabled={!preview || saving || loadingPreview}
+                  style={[styles.saveBtn, (!preview || saving || loadingPreview) && styles.disabled]}>
                   {saving ? (
                     <ActivityIndicator color={colors.textOnPrimary} />
                   ) : (
@@ -1297,9 +1366,11 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   colProduct: { flex: 1.4, minWidth: 0 },
-  colRateHead: { width: 104, textAlign: 'right' },
-  colQtyHead: { width: 128, textAlign: 'center' },
-  colAmountHead: { width: 78, textAlign: 'right' },
+  colRateHead: { width: 104, alignItems: 'flex-end', justifyContent: 'center' },
+  colQtyHead: { width: 128, alignItems: 'center', justifyContent: 'center' },
+  colAmountHead: { width: 78, alignItems: 'flex-end', justifyContent: 'center' },
+  thEnd: { textAlign: 'right', width: '100%' },
+  thCenter: { textAlign: 'center', width: '100%' },
   rateCell: {
     width: 104,
     flexDirection: 'row',
@@ -1397,10 +1468,24 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xs,
     gap: 2,
   },
-  sumRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  sumLbl: { fontSize: 11, color: colors.textMuted },
-  sumVal: { fontSize: 11, fontWeight: '700', color: colors.text },
-  discVal: { fontSize: 11, fontWeight: '700', color: colors.secondary },
+  sumRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sumLbl: { flex: 1, fontSize: 11, color: colors.textMuted, paddingRight: spacing.sm },
+  sumVal: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.text,
+    minWidth: 84,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  discVal: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.secondary,
+    minWidth: 84,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   dueRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1411,13 +1496,22 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
   dueLbl: {
+    flex: 1,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.3,
     textTransform: 'uppercase',
     color: colors.textMuted,
+    paddingRight: spacing.sm,
   },
-  dueAmt: { fontSize: 22, fontWeight: '800', color: colors.primary, letterSpacing: -0.3 },
+  dueAmt: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: colors.primary,
+    letterSpacing: -0.3,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   saveRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1429,14 +1523,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.successLight,
   },
   saveLbl: {
+    flex: 1,
     fontSize: 12,
     fontWeight: '700',
     color: colors.secondaryDark,
+    paddingRight: spacing.sm,
   },
   saveVal: {
     fontSize: 14,
     fontWeight: '800',
     color: colors.secondaryDark,
+    minWidth: 84,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
   },
   payScroll: { maxHeight: 160, flexGrow: 0 },
   payScrollContent: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, paddingBottom: 2 },

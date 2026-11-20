@@ -10,6 +10,8 @@ import * as shopSettingsService from '../../services/shopSettingsService';
 import { pickImage } from '../../utils/pickImage';
 import { useAuthStore } from '../../store/authStore';
 import { colors } from '../../theme/colors';
+import { useAutoMarathi } from '../../hooks/useAutoMarathi';
+import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { common, radius, spacing, typography } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
 import { normalizeMobile } from '../../utils/phone';
@@ -18,6 +20,7 @@ type Props = NativeStackScreenProps<MainStackParamList, 'ShopSettings'>;
 
 export default function ShopSettingsScreen({}: Props) {
   const t = useT();
+  const keyboardOverlap = useKeyboardOverlap();
   const billLanguage = useLanguageStore((s) => s.bill);
   const setBillLanguage = useLanguageStore((s) => s.setBill);
   const updateTenant = useAuthStore((s) => s.updateTenant);
@@ -26,6 +29,17 @@ export default function ShopSettingsScreen({}: Props) {
   const [shopNameMr, setShopNameMr] = useState('');
   const [address, setAddress] = useState('');
   const [addressMr, setAddressMr] = useState('');
+  const { translating: translatingShopMr, onMarathiChange: onShopNameMrChange } = useAutoMarathi(
+    shopName,
+    shopNameMr,
+    setShopNameMr,
+  );
+  const { translating: translatingAddrMr, onMarathiChange: onAddressMrChange } = useAutoMarathi(
+    address,
+    addressMr,
+    setAddressMr,
+    { delayMs: 700 },
+  );
   const [city, setCity] = useState('');
   const [gstin, setGstin] = useState('');
   const [phone, setPhone] = useState('');
@@ -159,7 +173,10 @@ export default function ShopSettingsScreen({}: Props) {
   const previewLogo = shopSettingsService.resolveUploadUrl(logoUrl);
 
   return (
-    <ScrollView style={common.screen} contentContainerStyle={common.screenPad} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      style={common.screen}
+      contentContainerStyle={[common.screenPad, keyboardOverlap > 0 && { paddingBottom: keyboardOverlap + spacing.xl }]}
+      keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>{t('Shop & Bill Settings')}</Text>
       <Text style={styles.subtitle}>{t('These details appear on printed bills')}</Text>
 
@@ -219,19 +236,19 @@ export default function ShopSettingsScreen({}: Props) {
           {t('Used on bills and labels when bill language is Marathi. Leave blank to keep the English name and address.')}
         </Text>
         <AppTextInput
-          label={t('Shop name (Marathi)')}
+          label={translatingShopMr ? t('Shop name (Marathi) · translating…') : t('Shop name (Marathi)')}
           mode="outlined"
           value={shopNameMr}
-          onChangeText={setShopNameMr}
+          onChangeText={onShopNameMrChange}
           placeholder={t('दुकानाचे नाव')}
           maxLength={150}
           style={styles.input}
         />
         <AppTextInput
-          label={t('Address (Marathi)')}
+          label={translatingAddrMr ? t('Address (Marathi) · translating…') : t('Address (Marathi)')}
           mode="outlined"
           value={addressMr}
-          onChangeText={setAddressMr}
+          onChangeText={onAddressMrChange}
           placeholder={t('पत्ता')}
           multiline
           maxLength={500}

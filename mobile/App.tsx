@@ -9,12 +9,22 @@ import { navigationRef } from './src/navigation/navigationRef';
 import { theme } from './src/theme';
 import { initApiClient } from './src/services/api';
 import { useLanguageStore } from './src/i18n';
+import { installBarcodeScannerGuard } from './src/utils/scannerGuard';
+import { getPrinterSettings } from './src/store/printerStore';
+import { prewarmIndicFont } from './src/print/PrintService';
 
 function App() {
   const [apiReady, setApiReady] = useState(false);
 
+  useEffect(() => installBarcodeScannerGuard(), []);
+
   useEffect(() => {
-    Promise.all([initApiClient(), useLanguageStore.getState().hydrate()]).finally(() => setApiReady(true));
+    Promise.all([initApiClient(), useLanguageStore.getState().hydrate()]).finally(() => {
+      setApiReady(true);
+      // Hot-cache printer settings + Devanagari font so first Print is not cold.
+      void getPrinterSettings().catch(() => undefined);
+      void prewarmIndicFont();
+    });
   }, []);
 
   if (!apiReady) {

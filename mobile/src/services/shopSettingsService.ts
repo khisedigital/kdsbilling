@@ -1,5 +1,6 @@
 import api from './api';
 import { getCachedApiUrl } from '../config/api';
+import { cacheShopSettings } from '../offline/shopCache';
 
 export interface ShopSettings {
   shopName: string;
@@ -49,14 +50,62 @@ export function resolveUploadUrl(pathOrUrl: string | null | undefined): string |
   return pathOrUrl.startsWith('/') ? `${apiBase}${pathOrUrl}` : `${apiBase}/${pathOrUrl}`;
 }
 
-export async function getShopSettings(): Promise<ShopSettings> {
+let memoryShopSettings: ShopSettings | null = null;
+
+export async function getShopSettings(opts?: { forceNetwork?: boolean }): Promise<ShopSettings> {
+  if (!opts?.forceNetwork) {
+    try {
+      const { isFullyLocalMode } = await import('../offline/localApi');
+      const { readCachedShopSettings } = await import('../offline/shopCache');
+      if (isFullyLocalMode()) {
+        const cached = await readCachedShopSettings();
+        if (cached) {
+          memoryShopSettings = cached;
+          return cached;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
   const { data } = await api.get('/shop-settings');
-  return data.data;
+  const settings = data.data as ShopSettings;
+  memoryShopSettings = settings;
+  void cacheShopSettings(settings);
+  return settings;
+}
+
+/** Sync peek for UI that already hydrated shop once. */
+export function peekShopSettings(): ShopSettings | null {
+  return memoryShopSettings;
 }
 
 export async function updateShopSettings(payload: ShopSettingsUpdate): Promise<ShopSettings> {
+  try {
+    const { isFullyLocalMode, localEnqueueSync } = await import('../offline/localApi');
+    const { readCachedShopSettings, cacheShopSettings: cacheLocal } = await import(
+      '../offline/shopCache'
+    );
+    if (isFullyLocalMode()) {
+      const prev = (await readCachedShopSettings()) || (memoryShopSettings as ShopSettings) || ({} as ShopSettings);
+      const settings = { ...prev, ...payload } as ShopSettings;
+      memoryShopSettings = settings;
+      await cacheLocal(settings);
+      await localEnqueueSync({
+        entityType: 'shop_settings',
+        entityId: '1',
+        op: 'update',
+        payload: settings,
+      });
+      return settings;
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.patch('/shop-settings', payload);
-  return data.data;
+  const settings = data.data as ShopSettings;
+  void cacheShopSettings(settings);
+  return settings;
 }
 
 export async function uploadShopLogo(
@@ -81,10 +130,14 @@ export async function uploadShopLogo(
     transformRequest: [(body) => body],
     timeout: 60000,
   });
-  return data.data;
+  const settings = data.data as ShopSettings;
+  void cacheShopSettings(settings);
+  return settings;
 }
 
 export async function removeShopLogo(): Promise<ShopSettings> {
   const { data } = await api.delete('/shop-settings/logo');
-  return data.data;
+  const settings = data.data as ShopSettings;
+  void cacheShopSettings(settings);
+  return settings;
 }

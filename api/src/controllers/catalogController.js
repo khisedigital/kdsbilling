@@ -72,6 +72,7 @@ async function createProduct(req, res) {
   const data = await productService.createProduct(req.db, req.body, {
     branchId: req.auth?.branchId,
     userId: req.auth?.sub,
+    tenant: req.tenant || null,
   });
   res.status(201).json({ success: true, data });
 }
@@ -80,6 +81,34 @@ async function updateProduct(req, res) {
   const data = await productService.updateProduct(req.db, req.params.id, req.body, {
     branchId: req.auth?.branchId,
     userId: req.auth?.sub,
+  });
+  res.json({ success: true, data });
+}
+
+async function setProductFavorite(req, res) {
+  const favorite = req.body?.isFavorite ?? req.body?.favorite ?? req.body?.is_favorite;
+  if (favorite === undefined) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'isFavorite is required' },
+    });
+  }
+  const data = await productService.setProductFavorite(req.db, req.params.id, !!favorite);
+  res.json({ success: true, data });
+}
+
+async function setProductsFavoriteBulk(req, res) {
+  const favorite = req.body?.isFavorite ?? req.body?.favorite ?? req.body?.is_favorite;
+  if (favorite === undefined) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'isFavorite is required' },
+    });
+  }
+  const data = await productService.setProductsFavoriteBulk(req.db, {
+    categoryId: req.body?.categoryId || req.body?.category_id || null,
+    brandId: req.body?.brandId || req.body?.brand_id || null,
+    isFavorite: !!favorite,
   });
   res.json({ success: true, data });
 }
@@ -126,7 +155,9 @@ async function quantityBarcodes(req, res) {
 }
 
 async function bulkImport(req, res) {
-  const data = await productService.bulkImport(req.db, req.body.rows);
+  const data = await productService.bulkImport(req.db, req.body.rows, {
+    tenant: req.tenant || null,
+  });
   res.json({ success: true, data });
 }
 
@@ -214,6 +245,31 @@ async function importFromMasterCatalog(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function syncCatalogFromMaster(req, res) {
+  const masterPreloadService = require('../services/masterPreloadService');
+  const businessTypeId = req.tenant?.business_type_id || null;
+  const relinkProducts = req.body?.relinkProducts === true || req.body?.relink === true;
+  const data = await masterPreloadService.syncMasterCategoriesAndBrandsToTenantDb(
+    req.db,
+    businessTypeId,
+    { relinkProducts },
+  );
+  // Don't leak internal id maps to clients
+  res.json({
+    success: true,
+    data: {
+      categories: data.categories,
+      brands: data.brands,
+      categoriesCreated: data.categoriesCreated,
+      brandsCreated: data.brandsCreated,
+      categoriesUpdated: data.categoriesUpdated,
+      brandsUpdated: data.brandsUpdated,
+      productsRelinked: data.productsRelinked || 0,
+      nameMrSupported: data.nameMrSupported !== false,
+    },
+  });
+}
+
 module.exports = {
   listCategories,
   createCategory,
@@ -229,6 +285,8 @@ module.exports = {
   getProduct,
   createProduct,
   updateProduct,
+  setProductFavorite,
+  setProductsFavoriteBulk,
   bulkUpdateVariantPricing,
   deleteProduct,
   deleteAllProducts,
@@ -247,4 +305,5 @@ module.exports = {
   searchOpenFoodFacts,
   importOpenFoodFacts,
   importFromMasterCatalog,
+  syncCatalogFromMaster,
 };

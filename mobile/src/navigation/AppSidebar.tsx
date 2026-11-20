@@ -15,7 +15,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useNavigationState } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { APP_DISPLAY_NAME } from '../constants/branding';
-import { useT } from '../i18n';
+import { useLanguageStore, useT } from '../i18n';
 import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/colors';
 import { radius, spacing } from '../theme/layout';
@@ -100,6 +100,7 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
   const insets = useSafeAreaInsets();
   const isOpen = useDrawerStore((s) => s.isOpen);
   const close = useDrawerStore((s) => s.close);
+  const uiLang = useLanguageStore((s) => s.ui);
   const user = useAuthStore((s) => s.user);
   const tenant = useAuthStore((s) => s.tenant);
   const logout = useAuthStore((s) => s.logout);
@@ -256,7 +257,7 @@ export default function AppSidebar({ pinned = false }: { pinned?: boolean }) {
                   {items.map((item) => (
                     <SidebarItem
                       key={`${section.title}-${item.label}`}
-                      label={t(item.label)}
+                      label={uiLang === 'mr' && item.labelMr ? item.labelMr : t(item.label)}
                       icon={item.icon}
                       highlight={isMenuItemActive(item, currentName, currentParams)}
                       onPress={() => navigateTo(item.screen, item.params)}

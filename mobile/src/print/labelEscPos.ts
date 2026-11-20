@@ -298,13 +298,19 @@ function drawSnappedText(
   return textW;
 }
 
-function pieceWidth(ctx: CanvasRenderingContext2D, text: string, scaleX: number, size: number): number {
+function pieceWidth(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  scaleX: number,
+  size: number,
+  gap = 1,
+): number {
   if (!text) return 0;
   if (hasDevanagari(text)) {
     setPrinterFont(ctx, size, false);
     return Math.ceil(ctx.measureText(text).width);
   }
-  return thermalWidth(text, scaleX, 2);
+  return thermalWidth(text, scaleX, gap);
 }
 
 function drawPiece(
@@ -316,18 +322,19 @@ function drawPiece(
   scaleY: number,
   maxWidth: number,
   align: 'left' | 'center' | 'right',
+  gap = 1,
 ): void {
   if (!text) return;
   if (hasDevanagari(text)) {
     drawSnappedText(ctx, text, x, top, thermalHeight(scaleY), maxWidth, align);
     return;
   }
-  const drawn = clipThermal(text, maxWidth, scaleX, 2);
-  const width = thermalWidth(drawn, scaleX, 2);
+  const drawn = clipThermal(text, maxWidth, scaleX, gap);
+  const width = thermalWidth(drawn, scaleX, gap);
   let left = Math.round(x);
   if (align === 'center') left = Math.round(x - width / 2);
   if (align === 'right') left = Math.round(x - width);
-  drawThermalText(ctx, drawn, left, top, scaleX, scaleY, 2);
+  drawThermalText(ctx, drawn, left, top, scaleX, scaleY, gap);
 }
 
 /**
@@ -355,9 +362,12 @@ export function renderGapLabelCanvas(
   /**
    * Shop is double-height thermal dots (16×24). Product, price, and barcode
    * digits are 16×16. Every stroke is a whole printer dot.
+   * Left pad is generous — many 50mm heads clip the first ~1–2mm.
    */
-  const padX = 8;
+  const padLeft = 16;
+  const padRight = 10;
   const padY = 8;
+  const bodyGap = 1;
   const shopSX = 2;
   const shopSY = 3;
   const bodySX = 2;
@@ -371,43 +381,44 @@ export function renderGapLabelCanvas(
 
   const shopSource = (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase());
   const productSource = content.productName.trim() || 'Product';
-  const qtyText = content.detail.trim();
-  const priceText = (content.price || content.mrp || '').trim();
+  // Stickers: "500g" not "500 g" (space cell + letter gap looked like a huge hole).
+  const qtyText = content.detail.trim().replace(/\s+/g, '');
+  const priceText = (content.price || content.mrp || '').trim().replace(/\s+/g, '');
 
-  drawPiece(ctx, shopSource, width / 2, y, shopSX, shopSY, width - padX * 2, 'center');
+  drawPiece(ctx, shopSource, width / 2, y, shopSX, shopSY, width - padLeft - padRight, 'center', bodyGap);
   y += shopH + 4;
 
   const rowTop = y;
-  const priceW = pieceWidth(ctx, priceText, bodySX, bodyH);
-  const qtyW = pieceWidth(ctx, qtyText, bodySX, bodyH);
-  const between = qtyText && priceText ? 8 : 0;
-  let rightEdge = width - padX;
+  const priceW = pieceWidth(ctx, priceText, bodySX, bodyH, bodyGap);
+  const qtyW = pieceWidth(ctx, qtyText, bodySX, bodyH, bodyGap);
+  const between = qtyText && priceText ? 4 : 0;
+  let rightEdge = width - padRight;
   if (priceText) {
-    drawPiece(ctx, priceText, rightEdge, rowTop, bodySX, bodySY, priceW + 4, 'right');
+    drawPiece(ctx, priceText, rightEdge, rowTop, bodySX, bodySY, priceW + 2, 'right', bodyGap);
     rightEdge -= priceW + between;
   }
   if (qtyText) {
-    drawPiece(ctx, qtyText, rightEdge, rowTop, bodySX, bodySY, qtyW + 4, 'right');
-    rightEdge -= qtyW + 8;
+    drawPiece(ctx, qtyText, rightEdge, rowTop, bodySX, bodySY, qtyW + 2, 'right', bodyGap);
+    rightEdge -= qtyW + 4;
   }
-  const leftMax = Math.max(48, rightEdge - padX);
-  drawPiece(ctx, productSource, padX, rowTop, bodySX, bodySY, leftMax, 'left');
+  const leftMax = Math.max(64, rightEdge - padLeft);
+  drawPiece(ctx, productSource, padLeft, rowTop, bodySX, bodySY, leftMax, 'left', bodyGap);
   y = rowTop + bodyH + 3;
 
   ctx.fillStyle = '#000';
-  ctx.fillRect(padX, Math.round(y), width - padX * 2, 1);
+  ctx.fillRect(padLeft, Math.round(y), width - padLeft - padRight, 1);
   y += 4;
 
   const code = content.barcode.trim().replace(/\s+/g, '') || '2000000000008';
   const barTop = Math.min(Math.floor(y), Math.max(0, height - footerReserve - 24));
   const barBottom = Math.min(height - footerReserve, Math.max(barTop + 24, height - footerReserve));
   const barH = Math.max(22, barBottom - barTop);
-  drawBarcodeBars(ctx, code, padX, barTop, width - padX * 2, barH);
+  drawBarcodeBars(ctx, code, padLeft, barTop, width - padLeft - padRight, barH);
 
   const digitTop = barTop + barH + 3;
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, Math.max(0, digitTop), width, height - Math.max(0, digitTop));
-  const digitMax = width - padX * 2;
+  const digitMax = width - padLeft - padRight;
   let digitScale = 2;
   let digitGap = 2;
   if (thermalWidth(code, digitScale, digitGap) > digitMax) digitGap = 1;
@@ -440,7 +451,7 @@ function fitToPrinterWidth(source: HTMLCanvasElement, maxWidthPx: number): HTMLC
 /** ESC/POS / TSPL raster from canvas pixels. */
 function canvasToRaster(
   canvas: HTMLCanvasElement,
-  opts?: { trim?: boolean },
+  opts?: { trim?: boolean; /** Only very dark pixels become ink (cuts gray halos). */ blackUnder?: number },
 ): { widthBytes: number; height: number; data: Uint8Array } {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not read the label image.');
@@ -449,6 +460,7 @@ function canvasToRaster(
   const widthBytes = Math.ceil(width / 8);
   const data = new Uint8Array(widthBytes * height);
   const px = image.data;
+  const blackUnder = opts?.blackUnder ?? 128;
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const i = (y * width + x) * 4;
@@ -456,12 +468,26 @@ function canvasToRaster(
       if (alpha < 128) continue;
       const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
       // Strict cut keeps white barcode gaps open (soft threshold filled them in).
-      if (lum >= 128) continue;
+      if (lum >= blackUnder) continue;
       data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
     }
   }
   const raster = { widthBytes, height, data };
   return opts?.trim === false ? raster : trimTrailingWhite(raster, 4);
+}
+
+/**
+ * TE244 TSPL BITMAP uses the opposite polarity of ESC/POS GS v 0:
+ * 0 = print black, 1 = white. Without invert, the whole text band prints as a
+ * dark block behind shop / product / price.
+ */
+function canvasToTsplBitmap(
+  canvas: HTMLCanvasElement,
+): { widthBytes: number; height: number; data: Uint8Array } {
+  const raster = canvasToRaster(canvas, { trim: false, blackUnder: 100 });
+  const data = new Uint8Array(raster.data.length);
+  for (let i = 0; i < raster.data.length; i += 1) data[i] = (~raster.data[i]) & 0xff;
+  return { widthBytes: raster.widthBytes, height: raster.height, data };
 }
 
 /** Drop empty rows under the digits so GS FF seeks the gap (full white bottom drifts). */
@@ -646,9 +672,12 @@ const TSPL_PAGE_WIDTH = LABEL_WIDTH_MM * 8;
 type TsplFont = { id: string; w: number; h: number };
 
 function tsplFont(heightMm: LabelHeightMm, role: 'shop' | 'body'): TsplFont {
-  if (heightMm <= 25) return { id: '3', w: 16, h: 24 };
+  // Font 4 (24×32) reads clearly on TE244; font 3 was too small.
+  if (heightMm <= 25) {
+    return role === 'shop' ? { id: '4', w: 24, h: 32 } : { id: '3', w: 16, h: 24 };
+  }
   if (role === 'shop') return { id: '4', w: 24, h: 32 };
-  return { id: '3', w: 16, h: 24 };
+  return { id: '4', w: 24, h: 32 };
 }
 
 function tsplAscii(text: string, maxChars: number): string {
@@ -659,9 +688,10 @@ function tsplAscii(text: string, maxChars: number): string {
   return `${raw.slice(0, maxChars - 2)}..`;
 }
 
-/** Printer-drawn bars + human-readable digits. Narrow gaps stay open at density 5. */
+/** Printer-drawn bars + human-readable digits under the text band. */
 function tsplBarcodeLine(code: string, y: number, maxHeight: number, pageW: number): string {
-  const height = Math.max(36, Math.min(110, Math.floor(maxHeight)));
+  // Keep bars inside SIZE — oversized BARCODE + HRI spills into the next sticker (looks “cut”).
+  const height = Math.max(28, Math.min(90, Math.floor(maxHeight)));
   const value = code.replace(/\s+/g, '') || '2000000000008';
   if (isValidEan13(value)) {
     const narrow = 2;
@@ -682,18 +712,42 @@ function tsplBarcodeLine(code: string, y: number, maxHeight: number, pageW: numb
   return `BARCODE ${x},${y},"128",${height},1,0,${narrow},${wide},"${safe}"`;
 }
 
+/** TE244 / TSPL setup — tear mode + one SIZE/GAP per job so the sensor does not re-cut mid-run. */
+function tsplJobHeader(heightMm: LabelHeightMm): string[] {
+  const hMm = normalizeLabelHeightMm(heightMm);
+  return [
+    `SIZE ${LABEL_WIDTH_MM} mm,${hMm} mm`,
+    // 3 mm gap is typical for 50×28 retail rolls; 2 mm often drifts and tears mid-label.
+    'GAP 3 mm,0 mm',
+    'OFFSET 0 mm',
+    'DIRECTION 1',
+    'REFERENCE 0,0',
+    'SET PEEL OFF',
+    'SET CUTTER OFF',
+    'SET TEAR ON',
+    'SET RIBBON OFF',
+    // Mid heat — 12 was too dark / heavy on the head; 5 was too light.
+    'DENSITY 8',
+    'SPEED 3',
+    'CLS',
+  ];
+}
+
 /**
  * Shop + product + price only. The barcode is a TSPL BARCODE command under this band,
  * so Marathi text can be a picture without turning the bars into a dark dither.
  */
-function renderLabelTextBand(content: GapLabelContent): HTMLCanvasElement {
-  const width = PRINTER_WIDTH_PX;
-  const padX = 8;
-  const shopSize = 22;
-  const productSize = 20;
-  const qtySize = 18;
-  const priceSize = 22;
-  const height = 4 + shopSize + 6 + Math.max(productSize, qtySize, priceSize) + 6;
+function renderLabelTextBand(content: GapLabelContent, pageW = TSPL_PAGE_WIDTH): HTMLCanvasElement {
+  // Match TSPL SIZE width (50×8=400), not the 384-dot ESC/POS head width.
+  const width = Math.max(8, Math.floor(pageW / 8) * 8);
+  const padLeft = 12;
+  const padRight = 8;
+  // Larger px + thicken — Marathi bitmap was too light/small on TE244.
+  const shopSize = 26;
+  const productSize = 22;
+  const qtySize = 20;
+  const priceSize = 24;
+  const height = 4 + shopSize + 4 + Math.max(productSize, qtySize, priceSize) + 6;
   const canvas = requireCanvas();
   canvas.width = width;
   canvas.height = height;
@@ -706,44 +760,45 @@ function renderLabelTextBand(content: GapLabelContent): HTMLCanvasElement {
 
   const shopSource = (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase());
   const productSource = content.productName.trim() || 'Product';
-  const qtyText = content.detail.trim();
-  const priceText = (content.price || content.mrp || '').trim();
+  const qtyText = content.detail.trim().replace(/\s+/g, '');
+  const priceText = (content.price || content.mrp || '').trim().replace(/\s+/g, '');
 
-  setPrinterFont(ctx, shopSize, false);
+  setPrinterFont(ctx, shopSize, true);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  const shop = ellipsize(ctx, shopSource, width - padX * 2);
-  drawCleanText(ctx, shop, width / 2, 4);
+  const shop = ellipsize(ctx, shopSource, width - padLeft - padRight);
+  drawCleanText(ctx, shop, width / 2, 3);
 
-  const nameY = 4 + shopSize + 6 + productSize;
-  setPrinterFont(ctx, qtySize, false);
+  const nameY = 3 + shopSize + 4 + productSize;
+  setPrinterFont(ctx, qtySize, true);
   const qtyW = qtyText ? ctx.measureText(qtyText).width : 0;
-  setPrinterFont(ctx, priceSize, false);
+  setPrinterFont(ctx, priceSize, true);
   const priceW = priceText ? ctx.measureText(priceText).width : 0;
-  const between = qtyText && priceText ? 8 : 0;
+  const between = qtyText && priceText ? 4 : 0;
   const rightWidth = qtyW + between + priceW;
-  const leftMax = Math.max(width * 0.28, width - padX * 2 - rightWidth - 8);
-  setPrinterFont(ctx, productSize, false);
+  const leftMax = Math.max(width * 0.34, width - padLeft - padRight - rightWidth - 6);
+  setPrinterFont(ctx, productSize, true);
   const productText = ellipsize(ctx, productSource, leftMax);
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  setPrinterFont(ctx, productSize, false);
-  drawCleanText(ctx, productText, padX, nameY);
+  setPrinterFont(ctx, productSize, true);
+  drawCleanText(ctx, productText, padLeft, nameY);
   if (qtyText || priceText) {
     ctx.textAlign = 'right';
-    let x = width - padX;
+    let x = width - padRight;
     if (priceText) {
-      setPrinterFont(ctx, priceSize, false);
+      setPrinterFont(ctx, priceSize, true);
       drawCleanText(ctx, priceText, x, nameY);
       x -= priceW + between;
     }
     if (qtyText) {
-      setPrinterFont(ctx, qtySize, false);
+      setPrinterFont(ctx, qtySize, true);
       drawCleanText(ctx, qtyText, x, nameY);
     }
   }
-  hardenToMono(ctx, width, height, { thicken: false });
+  // Thicken Indic strokes so they survive thermal + TSPL invert.
+  hardenToMono(ctx, width, height, { thicken: true });
   return canvas;
 }
 
@@ -766,56 +821,60 @@ export function buildGapLabelTspl(
     `${content.shopName} ${content.productName} ${content.detail} ${content.price} ${content.mrp}`,
   );
   const code = content.barcode.trim().replace(/\s+/g, '') || '2000000000008';
-  const header = [
-    `SIZE ${LABEL_WIDTH_MM} mm,${hMm} mm`,
-    'GAP 2 mm,0 mm',
-    'DENSITY 5',
-    'SPEED 4',
-    'DIRECTION 1',
-    'REFERENCE 0,0',
-    'CLS',
-  ];
+  const header = tsplJobHeader(hMm);
 
-  const hri = 22;
-  const margin = 10;
+  // HRI digits under BARCODE (readable=1) need ~20 dots; keep a small bottom pad.
+  const hri = 20;
+  const bottomPad = 8;
   let barcodeY = 70;
 
   if (!indic) {
     const shopFont = tsplFont(hMm, 'shop');
     const bodyFont = tsplFont(hMm, 'body');
+    // Slight vertical scale on shop for punchier type without overflowing width.
+    const shopMulY = hMm >= 28 ? 1 : 1;
     const shop = tsplAscii(
       (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase()),
       Math.floor((pageW - 16) / shopFont.w),
     );
-    const shopX = Math.max(8, Math.floor((pageW - shop.length * shopFont.w) / 2));
-    const shopY = 6;
-    const bodyY = shopY + shopFont.h + 4;
-    const maxRightDots = Math.floor(pageW * 0.46);
-    const price = tsplAscii((content.price || content.mrp || '').trim(), Math.floor(maxRightDots / bodyFont.w));
-    const priceDots = price.length * bodyFont.w;
-    const qtyBudget = Math.floor((maxRightDots - priceDots - (price ? bodyFont.w : 0)) / bodyFont.w);
-    const qty = qtyBudget > 1 ? tsplAscii(content.detail.trim(), qtyBudget) : '';
+    const leftInset = 10;
+    const rightInset = 8;
+    const shopX = Math.max(leftInset, Math.floor((pageW - shop.length * shopFont.w) / 2));
+    const shopY = 2;
+    const bodyY = shopY + shopFont.h * shopMulY + 2;
+    const maxRightChars = Math.floor((pageW * 0.42) / bodyFont.w);
+    const detailRaw = content.detail.trim().replace(/\s+/g, '');
+    const priceRaw = (content.price || content.mrp || '').trim().replace(/\s+/g, '');
+    // Keep weight first — price can shorten; empty qty looked like weight was deleted.
+    const qty = detailRaw
+      ? tsplAscii(detailRaw, Math.min(detailRaw.length, Math.max(3, maxRightChars - (priceRaw ? 4 : 0))))
+      : '';
+    const priceBudget = Math.max(0, maxRightChars - qty.length - (qty && priceRaw ? 1 : 0));
+    const price = priceRaw && priceBudget > 0 ? tsplAscii(priceRaw, priceBudget) : '';
     const right = [qty, price].filter(Boolean).join(' ');
     const rightW = right.length * bodyFont.w;
-    const rightX = Math.max(8, pageW - 8 - rightW);
-    const leftMax = Math.max(4, Math.floor(((right ? rightX - 8 : pageW - 8) - 8) / bodyFont.w));
+    const rightX = Math.max(leftInset, pageW - rightInset - rightW);
+    const leftMax = Math.max(
+      4,
+      Math.floor(((right ? rightX - 6 : pageW - rightInset) - leftInset) / bodyFont.w),
+    );
     const left = tsplAscii(content.productName.trim() || 'Product', leftMax);
-    header.push(`TEXT ${shopX},${shopY},"${shopFont.id}",0,1,1,"${shop}"`);
-    header.push(`TEXT 8,${bodyY},"${bodyFont.id}",0,1,1,"${left}"`);
+    header.push(`TEXT ${shopX},${shopY},"${shopFont.id}",0,1,${shopMulY},"${shop}"`);
+    header.push(`TEXT ${leftInset},${bodyY},"${bodyFont.id}",0,1,1,"${left}"`);
     if (right) header.push(`TEXT ${rightX},${bodyY},"${bodyFont.id}",0,1,1,"${right}"`);
-    barcodeY = bodyY + bodyFont.h + 6;
-    const barH = pageH - barcodeY - hri - margin;
+    barcodeY = bodyY + bodyFont.h + 4;
+    const barH = Math.max(28, pageH - barcodeY - hri - bottomPad);
     header.push(tsplBarcodeLine(code, barcodeY, barH, pageW));
     header.push(`PRINT 1,${count}`);
     return Array.from(encodeAscii(`${header.join('\r\n')}\r\n`));
   }
 
-  const band = renderLabelTextBand(content);
-  const raster = canvasToRaster(band, { trim: false });
+  const band = renderLabelTextBand(content, pageW);
+  const raster = canvasToTsplBitmap(band);
   const bandX = Math.max(0, Math.floor((pageW - band.width) / 2));
-  const bandY = 4;
-  barcodeY = bandY + raster.height + 6;
-  const barH = pageH - barcodeY - hri - margin;
+  const bandY = 2;
+  barcodeY = bandY + raster.height + 4;
+  const barH = Math.max(28, pageH - barcodeY - hri - bottomPad);
   const preamble = encodeAscii(
     `${header.join('\r\n')}\r\nBITMAP ${bandX},${bandY},${raster.widthBytes},${raster.height},0,`,
   );
@@ -834,14 +893,7 @@ export function buildLabelCalibrateTspl(heightMm: LabelHeightMm = LABEL_HEIGHT_M
   const hMm = normalizeLabelHeightMm(heightMm);
   return Array.from(
     encodeAscii(
-      [
-        `SIZE ${LABEL_WIDTH_MM} mm,${hMm} mm`,
-        'GAP 2 mm,0 mm',
-        'DENSITY 5',
-        'CLS',
-        'PRINT 1,3',
-        '',
-      ].join('\r\n'),
+      [...tsplJobHeader(hMm), 'PRINT 1,3', ''].join('\r\n'),
     ),
   );
 }

@@ -1,12 +1,15 @@
 import React, { useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Menu, Text } from 'react-native-paper';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useLanguageStore, type AppLanguage } from './languageStore';
 import { colors } from '../theme/colors';
 
 type Props = {
   /** toolbar sits on the white header; onPrimary sits on the blue login screen. */
   tone?: 'toolbar' | 'onPrimary';
+  /** Mobile top bar: translate icon only (menu still lists English / Marathi). */
+  iconOnly?: boolean;
 };
 
 const OPTIONS: Array<{ id: AppLanguage; label: string }> = [
@@ -14,7 +17,7 @@ const OPTIONS: Array<{ id: AppLanguage; label: string }> = [
   { id: 'mr', label: 'मराठी' },
 ];
 
-export default function LanguageToggle({ tone = 'toolbar' }: Props) {
+export default function LanguageToggle({ tone = 'toolbar', iconOnly = false }: Props) {
   const ui = useLanguageStore((s) => s.ui);
   const setUi = useLanguageStore((s) => s.setUi);
   const onBlue = tone === 'onPrimary';
@@ -28,7 +31,7 @@ export default function LanguageToggle({ tone = 'toolbar' }: Props) {
   };
 
   return (
-    <View ref={anchorRef} collapsable={false} style={styles.anchor}>
+    <View ref={anchorRef} collapsable={false} style={[styles.anchor, iconOnly && styles.anchorIcon]}>
       <Menu
         visible={open}
         onDismiss={() => setOpen(false)}
@@ -37,15 +40,35 @@ export default function LanguageToggle({ tone = 'toolbar' }: Props) {
             onPress={() => setOpen(true)}
             accessibilityRole="button"
             accessibilityLabel={ui === 'en' ? 'Language: English' : 'Language: Marathi'}
-            style={[styles.trigger, onBlue ? styles.triggerOnPrimary : styles.triggerToolbar]}>
-            <Text
-              style={[styles.triggerLabel, onBlue ? styles.triggerLabelOnPrimary : styles.triggerLabelToolbar]}
-              numberOfLines={1}>
-              {selected.label}
-            </Text>
-            <Text style={[styles.chevron, onBlue ? styles.triggerLabelOnPrimary : styles.chevronToolbar]}>
-              ▾
-            </Text>
+            style={[
+              iconOnly ? styles.triggerIcon : styles.trigger,
+              onBlue ? styles.triggerOnPrimary : styles.triggerToolbar,
+            ]}>
+            {iconOnly ? (
+              <Icon
+                name="translate"
+                size={20}
+                color={onBlue ? colors.textOnPrimary : colors.primary}
+              />
+            ) : (
+              <>
+                <Text
+                  style={[
+                    styles.triggerLabel,
+                    onBlue ? styles.triggerLabelOnPrimary : styles.triggerLabelToolbar,
+                  ]}
+                  numberOfLines={1}>
+                  {selected.label}
+                </Text>
+                <Text
+                  style={[
+                    styles.chevron,
+                    onBlue ? styles.triggerLabelOnPrimary : styles.chevronToolbar,
+                  ]}>
+                  ▾
+                </Text>
+              </>
+            )}
           </Pressable>
         }
         contentStyle={styles.menu}>
@@ -70,6 +93,9 @@ const styles = StyleSheet.create({
   anchor: {
     marginRight: 4,
   },
+  anchorIcon: {
+    marginRight: 2,
+  },
   trigger: {
     minHeight: 32,
     minWidth: 108,
@@ -79,6 +105,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 6,
+  },
+  triggerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   triggerToolbar: {
     backgroundColor: colors.background,

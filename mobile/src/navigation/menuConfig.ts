@@ -5,6 +5,8 @@ export type MenuScreen = keyof MainStackParamList;
 
 export interface MenuItem {
   label: string;
+  /** Marathi sidebar label when it should differ from t(label). */
+  labelMr?: string;
   icon: string;
   screen: MenuScreen;
   params?: MainStackParamList[MenuScreen];
@@ -17,9 +19,6 @@ export interface MenuSection {
   title: string;
   items: MenuItem[];
 }
-
-/** Gap-label: Android Microlan Bluetooth, or desktop USB ESC/POS. */
-const LABEL_PLATFORMS: MenuItem['platforms'] = ['android', 'web'];
 
 const rawMenuSections: MenuSection[] = [
   {
@@ -34,9 +33,9 @@ const rawMenuSections: MenuSection[] = [
   {
     title: 'Catalog',
     items: [
-      { label: 'Products', icon: 'package-variant', screen: 'ProductList' },
+      { label: 'Products', labelMr: 'विक्रीच्या वस्तू', icon: 'package-variant', screen: 'ProductList' },
       { label: 'Price Management', icon: 'currency-inr', screen: 'PriceManagement' },
-      { label: 'Categories', icon: 'shape-outline', screen: 'CategoryList' },
+      { label: 'Categories', labelMr: 'वस्तूंचे प्रकार', icon: 'shape-outline', screen: 'CategoryList' },
       { label: 'Brands', icon: 'tag-outline', screen: 'BrandList' },
     ],
   },
@@ -64,10 +63,15 @@ const rawMenuSections: MenuSection[] = [
     items: [
       { label: 'My Profile', icon: 'account-circle-outline', screen: 'Profile' },
       { label: 'Shop & Bill Settings', icon: 'storefront-outline', screen: 'ShopSettings' },
+      {
+        label: 'Sync Data',
+        labelMr: 'डेटा सिंक',
+        icon: 'cloud-sync-outline',
+        screen: 'SyncData',
+        platforms: ['macos', 'windows', 'web'],
+      },
       { label: 'Billing Printer', icon: 'printer-outline', screen: 'PrinterSettings' },
-      { label: 'Barcode label', icon: 'barcode', screen: 'BarcodeLabel', platforms: LABEL_PLATFORMS },
-      // Hidden for now — older Android gap-label screen; Barcode label covers desktop + Android.
-      // { label: 'Print Label', icon: 'barcode', screen: 'PrintLabel', platforms: ['android'] },
+      { label: 'Barcode label', icon: 'barcode', screen: 'BarcodeLabel' },
       { label: 'Integrations', icon: 'puzzle-outline', screen: 'Integrations' },
     ],
   },

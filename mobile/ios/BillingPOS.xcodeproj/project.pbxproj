@@ -269,11 +269,19 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"$(PODS_ROOT)/../../node_modules/react-native-thermal-receipt-printer/ios/PrinterSDK\"",
+				);
 				MARKETING_VERSION = 1.2.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-lPrinterSDK",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.khisedigital.kdspozretails;
 				PRODUCT_NAME = KDSPOZRetail;
@@ -300,11 +308,19 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"$(PODS_ROOT)/../../node_modules/react-native-thermal-receipt-printer/ios/PrinterSDK\"",
+				);
 				MARKETING_VERSION = 1.2.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-lPrinterSDK",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.khisedigital.kdspozretails;
 				PRODUCT_NAME = KDSPOZRetail;

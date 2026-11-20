@@ -1,5 +1,7 @@
 import type { DailyClosingRecord } from '../services/businessService';
-import { printViaA4 } from './PrintService';
+import { getPrinterSettings, IS_DESKTOP, resolvePaperSize } from '../store/printerStore';
+import { printViaA4, printViaBluetooth, printViaNetwork, printViaSystem } from './PrintService';
+import { receiptCharsForPaper } from './escpos';
 
 function money(value: string | number | null | undefined) {
   const n = parseFloat(String(value ?? 0));
@@ -100,11 +102,104 @@ export function buildClosingReportHtml(opts: {
 </html>`;
 }
 
+function buildClosingReportThermal(opts: {
+  shopName: string;
+  branchName?: string;
+  closing: DailyClosingRecord;
+  width: number;
+}): string {
+  const { shopName, branchName, closing, width } = opts;
+  const details = closing.details || {};
+  const payments = details.payments || { cash: 0, upi: 0, card: 0, other: 0 };
+  const variance = money(closing.variance);
+  const status =
+    Math.abs(variance) < 0.01 ? 'Cash matched' : variance < 0 ? 'Cash shortage' : 'Cash excess';
+  const rule = '='.repeat(width);
+  const dash = '-'.repeat(width);
+  const line = (label: string, value: string) => {
+    const left = label.slice(0, Math.max(8, width - value.length - 1));
+    const gap = Math.max(1, width - left.length - value.length);
+    return `${left}${' '.repeat(gap)}${value}`.slice(0, width);
+  };
+
+  const lines = [
+    rule,
+    `<CB>${shopName.slice(0, width)}</CB>`,
+    rule,
+    `Close Register`.slice(0, width),
+    `${branchName || 'Branch'}`.slice(0, width),
+    `${closing.closing_date}`.slice(0, width),
+    `By ${closing.creator?.name || 'Staff'}`.slice(0, width),
+    dash,
+    status.slice(0, width),
+    line('Expected', rupee(closing.expected_cash)),
+    line('Counted', rupee(closing.actual_cash)),
+    line('Diff', `${variance >= 0 ? '+' : ''}${rupee(variance)}`),
+    dash,
+    line('Total sales', rupee(closing.total_sales)),
+    line('Cash sales', rupee(payments.cash ?? details.cashSales)),
+    line('UPI', rupee(payments.upi)),
+    line('Card', rupee(payments.card)),
+    line('Other', rupee(payments.other)),
+    dash,
+    line('Opening', rupee(closing.opening_cash)),
+    line('+ Cash sales', rupee(details.cashSales)),
+    line('+ Cash added', rupee(details.cashAdded)),
+    line('- Refunds', rupee(details.cashRefunds)),
+    line('- Expenses', rupee(details.cashExpenses ?? closing.total_expenses)),
+    line('Expected', rupee(closing.expected_cash)),
+  ];
+
+  if (details.varianceReason) {
+    lines.push(dash, 'Why cash differed:', String(details.varianceReason).slice(0, width * 2));
+  }
+  const notes = details.remarks || closing.notes;
+  if (notes) {
+    lines.push(dash, 'Remarks:', String(notes).slice(0, width * 2));
+  }
+  lines.push(rule);
+  return lines.join('\n');
+}
+
 export async function printClosingReport(opts: {
   shopName: string;
   branchName?: string;
   closing: DailyClosingRecord;
 }) {
-  const html = buildClosingReportHtml(opts);
-  await printViaA4(html, `Close-Register-${opts.closing.closing_date}`);
+  const settings = await getPrinterSettings();
+  const paper = resolvePaperSize(settings.paperSize);
+  const preferA4 = paper === 'a4';
+
+  if (preferA4 && IS_DESKTOP) {
+    const html = buildClosingReportHtml(opts);
+    await printViaA4(html, `Close-Register-${opts.closing.closing_date}`, {
+      printerName: settings.type === 'system' ? settings.systemPrinterName : undefined,
+    });
+    return;
+  }
+
+  const roll: '58' | '80' = paper === '58' ? '58' : '80';
+  const width = receiptCharsForPaper(roll);
+  const text = buildClosingReportThermal({ ...opts, width });
+
+  if (settings.type === 'bluetooth') {
+    if (!settings.bluetoothAddress) {
+      throw new Error('Select a Bluetooth printer in Printer Settings first.');
+    }
+    await printViaBluetooth(settings.bluetoothAddress, text, width, roll);
+    return;
+  }
+  if (settings.type === 'network') {
+    if (!settings.networkHost) {
+      throw new Error('Configure network printer IP in Printer Settings.');
+    }
+    await printViaNetwork(settings.networkHost, settings.networkPort || 9100, text, width, roll);
+    return;
+  }
+  if (settings.type === 'system' && IS_DESKTOP) {
+    await printViaSystem(settings.systemPrinterName || '', text, width, roll);
+    return;
+  }
+
+  throw new Error('Choose a Bluetooth or Wi-Fi printer for closing reports on this device.');
 }

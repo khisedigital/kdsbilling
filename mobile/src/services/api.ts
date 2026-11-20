@@ -4,7 +4,8 @@ import { APP_DISPLAY_NAME } from '../constants/branding';
 
 const api = axios.create({
   baseURL: getCachedApiUrl(),
-  timeout: 15000,
+  // Master catalog import can pull thousands of rows; 15s was too low and surfaced as "Cannot connect".
+  timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -53,8 +54,14 @@ api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     if (!error.response) {
-      error.message =
-        `Cannot connect to the ${APP_DISPLAY_NAME} server. Check your internet connection and try again.`;
+      const code = (error as AxiosError).code || '';
+      if (code === 'ECONNABORTED' || /timeout/i.test(error.message || '')) {
+        error.message =
+          `Request timed out contacting the ${APP_DISPLAY_NAME} server. Try again, or narrow the search.`;
+      } else {
+        error.message =
+          `Cannot connect to the ${APP_DISPLAY_NAME} server. Check your internet connection and try again.`;
+      }
       return Promise.reject(error);
     }
 

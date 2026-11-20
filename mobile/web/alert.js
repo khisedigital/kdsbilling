@@ -62,7 +62,8 @@ export function AlertHost() {
 
   return (
     <Modal transparent visible animationType="fade" onRequestClose={() => close(null)}>
-      <View style={styles.backdrop}>
+      {/* Above react-native-paper Portal/Modal (edit dialogs), otherwise Delete confirm never shows */}
+      <View style={[styles.backdrop, styles.overlay]}>
         <View style={styles.box} accessibilityRole="alert">
           {current.title ? <Text style={styles.title}>{current.title}</Text> : null}
           {current.message ? <Text style={styles.message}>{current.message}</Text> : null}
@@ -102,6 +103,14 @@ export function AlertHost() {
 }
 
 const styles = StyleSheet.create({
+  overlay: {
+    position: 'fixed',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 100000,
+  },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 27, 72, 0.45)',

@@ -17,17 +17,20 @@ export function sanitizeEscPosText(text: string): string {
 /**
  * Paper column count for a roll size. 80mm must use 48 (Font A @ 203 dpi),
  * not 42 — 42 leaves a large empty strip on the right.
- * 58mm / 2″ uses 30 cols so a small left margin fits inside the 384-dot area
- * (80→58 converter paper offset).
+ * 58mm / 2″ native head = 384 dots → 32 cols (full width).
  */
 export function receiptCharsForPaper(format: '58' | '80' | string): number {
-  if (format === '80') return 48;
-  if (format === '58') return 30;
-  return 30;
+  const raw = String(format || '').trim().toLowerCase();
+  if (raw === '80' || raw === '80mm' || raw.startsWith('80')) return 48;
+  if (raw === '58' || raw === '58mm' || raw.startsWith('58')) return 32;
+  return 32;
 }
 
-/** ~3 mm left inset for 58 mm / converter (8 dots/mm × 3). */
-export const MARGIN_58_LEFT_DOTS = 24;
+/**
+ * Legacy converter inset (80→58 paper guide). Native 58 mm portables must use 0 —
+ * GS L with a non-zero margin prints as "8a8a…" junk on many of those heads.
+ */
+export const MARGIN_58_LEFT_DOTS = 0;
 
 /**
  * Flatten to plain ASCII receipt text (preview / fallback).
@@ -87,7 +90,7 @@ export type ThermalHtmlPaper = '58' | '80';
  *
  * Layout:
  *   page = paper width (58 or 80 mm)
- *   58 mm → 30 cols, larger left padding (80→58 converter offset)
+ *   58 mm → 32 cols, equal side padding (native 2″ head)
  *   80 mm → 48 cols, equal side padding
  *
  * Font is sized to fill the content band. Regular weight stays readable on thermal;
@@ -105,13 +108,14 @@ export function buildThermalHtml(
   // Drop CB lines from body — they render as a large heading above the monospace strip.
   const withoutShop = source.replace(/^.*<CB>.*?<\/CB>.*$/gm, '');
   const paperMm = paper === '58' ? 58 : 80;
-  // 58 mm: extra left padding for converter offset; 80 mm: equal sides.
-  const sideLeftMm = paper === '58' ? 4 : 2.5;
+  // Equal sides — converter-style left inset left a blank strip on native 58 mm.
+  const sideLeftMm = paper === '58' ? 2 : 2.5;
   const sideRightMm = paper === '58' ? 2 : 2.5;
   const printableMm = Number((paperMm - sideLeftMm - sideRightMm).toFixed(2));
-  const glyphEm = paper === '58' ? 0.62 : 0.55;
+  // 80mm mild bump over default 0.55 (avoid the oversized 0.42 pass).
+  const glyphEm = paper === '58' ? 0.62 : 0.47;
   const fontMm = Number((Math.max(8, printableMm) / cols / glyphEm).toFixed(4));
-  const shopFontMm = Number((fontMm * 1.55).toFixed(4));
+  const shopFontMm = fontMm;
   const lineMm = fontMm * 1.55;
   const bodyLines = withoutShop.split('\n');
   const lineCount = Math.max(1, bodyLines.filter((line) => line.trim()).length + shopTitles.length * 2);
@@ -152,7 +156,7 @@ html, body {
   max-width: ${paperMm}mm;
   padding: 2mm ${sideRightMm}mm 1mm ${sideLeftMm}mm;
   font-family: Arial, Helvetica, ${DEVANAGARI_FONTS}, sans-serif;
-  font-weight: 600;
+  font-weight: 400;
   font-size: ${shopFontMm}mm;
   line-height: 1.5;
   text-align: center;
@@ -171,7 +175,7 @@ html, body {
 .center, .line {
   box-sizing: border-box;
   margin: 0;
-  font-weight: 500;
+  font-weight: 400;
   font-size: ${fontMm}mm;
   line-height: 1.55;
   padding-top: 0.4mm;
@@ -199,12 +203,12 @@ html, body {
   }
   .shop {
     font-size: ${shopFontMm}mm !important;
-    font-weight: 600 !important;
+    font-weight: 400 !important;
     line-height: 1.5 !important;
   }
   .center, .line {
     font-size: ${fontMm}mm !important;
-    font-weight: 500 !important;
+    font-weight: 400 !important;
     line-height: 1.55 !important;
     -webkit-font-smoothing: none !important;
     font-smooth: never !important;
@@ -241,30 +245,24 @@ export function bytesToBase64(bytes: number[]): string {
 }
 
 /**
- * Minimal ESC/POS — same approach as typical clean POS apps:
- * Font A, normal size, no bold/double-width (those look blurred on many 58/80mm printers).
- * Centering is done with spaces in the text, not hardware bold/size.
+ * Minimal ESC/POS for portable 58/80 mm heads.
+ * Centering is spaces only — no ESC M / GS ! / ESC a (those leak or stall).
  */
 const ESC = {
   INIT: [0x1b, 0x40],
-  /** Font A (standard sharp font) */
-  FONT_A: [0x1b, 0x4d, 0x00],
-  /** Default line spacing */
-  LINE_SPACING: [0x1b, 0x32],
-  /** Clear emphasize + size */
-  NORMAL_MODE: [0x1b, 0x45, 0x00, 0x1d, 0x21, 0x00, 0x1b, 0x21, 0x00],
-  ALIGN_LEFT: [0x1b, 0x61, 0x00],
-  FEED_TAIL: [0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a],
-  /** Partial cut (ignored by printers without cutter) */
+  /** Advance past the print head so the cutter can reach the gap. */
+  FEED_TAIL: [0x0a, 0x0a, 0x0a, 0x0a, 0x0a],
+  /** Partial cut — ignored by heads without a cutter. */
   CUT: [0x1d, 0x56, 0x01],
 };
 
 /**
  * Print-area dots for Font A (~12 dots/char @ 203 dpi).
  *
- * - 58 mm / 2″ (≤32 cols): **384-dot** page, **left margin** for 80→58 converter
- *   paper offset (content width = page − margin).
- * - 80 mm (48 cols): **576-dot** page, left 0 (unchanged).
+ * - 58 mm / 2″ (≤32 cols): **384-dot** full page.
+ * - 80 mm (48 cols): use **512-dot** graphics width (not 576). Many Windows
+ *   portables fault with red LED if GS v 0 is wider than the head; first band
+ *   prints (~one line) then the lamp goes red.
  */
 export function receiptPrintArea(charsPerLine: number): {
   leftDots: number;
@@ -273,29 +271,20 @@ export function receiptPrintArea(charsPerLine: number): {
   paperDots: number;
 } {
   const cols = Math.max(16, Math.min(96, charsPerLine));
-  const charDots = 12;
-  // 2″ (58 mm) → 384 dots; 3″ (80 mm) → 576 dots.
+  // 2″ → 384; 3″ mechanical is often 512–576 — stay at 512 for safe bitmaps.
   const paperDots = cols <= 32 ? 384 : 576;
-  const contentDots = cols * charDots;
+  const widthDots = cols <= 32 ? 384 : 512;
 
   if (cols <= 32) {
-    // Converter often seats paper a few mm in from the head’s left edge.
-    const leftDots = MARGIN_58_LEFT_DOTS;
-    const widthDots = Math.min(contentDots, paperDots - leftDots) & ~1;
-    const rightDots = Math.max(0, paperDots - leftDots - widthDots);
-    return { leftDots, widthDots, rightDots, paperDots };
+    return {
+      leftDots: MARGIN_58_LEFT_DOTS,
+      widthDots,
+      rightDots: 0,
+      paperDots,
+    };
   }
 
-  const leftover = Math.max(0, paperDots - contentDots);
-  let leftDots = Math.floor(leftover / 2) & ~1;
-  let rightDots = leftover - leftDots;
-  if (rightDots - leftDots > 1) {
-    leftDots += 2;
-    rightDots = leftover - leftDots;
-  }
-  const widthDots = Math.max(0, paperDots - leftDots - rightDots) & ~1;
-  rightDots = Math.max(0, paperDots - leftDots - widthDots);
-  return { leftDots, widthDots, rightDots, paperDots };
+  return { leftDots: 0, widthDots, rightDots: Math.max(0, paperDots - widthDots), paperDots };
 }
 
 /** True for 58 mm / 2″ roll jobs (Font A, ≤32 cols). */
@@ -307,6 +296,18 @@ function canDrawCanvas(): boolean {
   return typeof document !== 'undefined' && typeof document.createElement === 'function';
 }
 
+/**
+ * Receipt text size in canvas px (Marathi / mixed bitmaps).
+ * 58mm matches Font A (~12×24). 80mm is a mild bump (not double-height).
+ */
+function thermalBodyPx(charsPerLine: number): number {
+  return charsPerLine > 32 ? 30 : 24;
+}
+
+function thermalShopPx(charsPerLine: number): number {
+  return charsPerLine > 32 ? 32 : 24;
+}
+
 /** Bundled face when the desktop app has loaded it; otherwise Windows system faces. */
 function canvasIndicFont(px: number): string {
   const loaded =
@@ -314,20 +315,29 @@ function canvasIndicFont(px: number): string {
     ((globalThis as { __kdsIndicFont?: boolean }).__kdsIndicFont ||
       document.fonts?.check?.(`400 ${px}px KdsDevanagari`));
   const family = loaded ? 'KdsDevanagari' : '"Nirmala UI", "Noto Sans Devanagari", Mangal';
+  // Always regular — bold Devanagari prints heavier than English Font A.
   return `400 ${px}px ${family}, sans-serif`;
 }
 
-/** Shop name: medium weight so the counters stay open on a thermal head. */
-function canvasShopFont(px: number, indic: boolean): string {
-  if (indic) return canvasIndicFont(px);
-  return `600 ${px}px Arial, Helvetica, sans-serif`;
-}
-
-/** Qty / rate / amount sitting on the same row as a Marathi item name. */
+/**
+ * Pull trailing amount(s) / column cells off a Marathi line so the label
+ * stays left and money (or qty/rate/amt headers) stays right-justified.
+ */
 function splitAmountTail(line: string): { name: string; tail: string } | null {
-  const match = line.match(/^(.*\S)\s+(\d+(?:\.\d+)?\s+\d+\.\d{2}\s+\d+\.\d{2})\s*$/);
-  if (!match || !hasDevanagari(match[1])) return null;
-  return { name: match[1].trim(), tail: match[2].trim() };
+  const itemMatch = line.match(/^(.*\S)\s+(\d+(?:\.\d+)?\s+\d+\.\d{2}\s+\d+\.\d{2})\s*$/);
+  if (itemMatch && hasDevanagari(itemMatch[1])) {
+    return { name: itemMatch[1].trim(), tail: itemMatch[2].trim() };
+  }
+  const kvMatch = line.match(/^(.*\S)\s+([+\-]?\d+\.\d{2})\s*$/);
+  if (kvMatch && hasDevanagari(kvMatch[1])) {
+    return { name: kvMatch[1].trim(), tail: kvMatch[2].trim() };
+  }
+  // Table header: "वस्तू … नग  दर  रक्कम" — keep item label left, columns right.
+  const headerMatch = line.match(/^(.*\S)\s{2,}(\S+(?:\s+\S+){1,3})\s*$/);
+  if (headerMatch && hasDevanagari(line) && !/^\d/.test(headerMatch[2])) {
+    return { name: headerMatch[1].trim(), tail: headerMatch[2].replace(/\s+/g, '  ').trim() };
+  }
+  return null;
 }
 
 function centeredBody(line: string): string | null {
@@ -339,20 +349,36 @@ function centeredBody(line: string): string | null {
   return null;
 }
 
-/** Room above Devanagari so vowel signs are not sliced off the raster. */
-function textBox(measure: CanvasRenderingContext2D, sample: string, fontSize: number) {
-  const probe = measure.measureText(sample) as TextMetrics & {
-    fontBoundingBoxAscent?: number;
-    fontBoundingBoxDescent?: number;
-  };
+/** Label on the left, value on the right (date, customer, totals). */
+function splitJustified(line: string): { name: string; tail: string } | null {
+  const match = String(line || '').trim().match(/^(\S.*?)\s{2,}(\S.*)$/);
+  if (!match) return null;
+  const name = match[1].trim();
+  const tail = match[2].trim();
+  if (!name || !tail) return null;
+  return { name, tail };
+}
+
+/**
+ * Ink height of this line only. The font's em box is much taller than the
+ * letters and was leaving a blank band above every Marathi header line.
+ */
+function lineBox(
+  measure: CanvasRenderingContext2D,
+  sample: string,
+  fontSize: number,
+  compact: boolean,
+  ascentFloor = compact ? 0.9 : 1.05,
+) {
+  const probe = measure.measureText(sample || 'ई') as TextMetrics;
   const ascent = Math.ceil(
-    Math.max(probe.fontBoundingBoxAscent || 0, probe.actualBoundingBoxAscent || 0, fontSize * 1.05),
+    Math.max(probe.actualBoundingBoxAscent || 0, fontSize * ascentFloor),
   );
   const descent = Math.ceil(
-    Math.max(probe.fontBoundingBoxDescent || 0, probe.actualBoundingBoxDescent || 0, fontSize * 0.45),
+    Math.max(probe.actualBoundingBoxDescent || 0, fontSize * (compact ? 0.28 : 0.32)),
   );
-  const padTop = Math.ceil(fontSize * 0.32);
-  return { ascent, descent, padTop };
+  const pad = compact ? 2 : 3;
+  return { ascent, descent, pad };
 }
 
 function wrapByPixels(
@@ -376,67 +402,127 @@ function wrapByPixels(
   return lines.length ? lines : [''];
 }
 
+/** Break a shop name on spaces first, so a word is not split in the middle. */
+function wrapWordsByPixels(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return wrapByPixels(ctx, text.trim(), maxWidth);
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (ctx.measureText(next).width <= maxWidth) {
+      current = next;
+      continue;
+    }
+    if (current) lines.push(current);
+    if (ctx.measureText(word).width <= maxWidth) current = word;
+    else {
+      lines.push(...wrapByPixels(ctx, word, maxWidth));
+      current = '';
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [''];
+}
+
+type Raster = { width: number; widthBytes: number; height: number; data: Uint8Array };
+
 /**
- * Snap canvas glyphs to pure black/white.
- * Soft antialiased edges print as gray blur on 203 dpi thermal heads.
+ * Draw at 2× and keep a dot when any subpixel is actually ink.
+ * A single 1× threshold was dropping vowel signs and conjuncts.
  */
-function hardenRasterPixels(
+function packSupersampled(
   px: Uint8ClampedArray,
   width: number,
   height: number,
-  threshold = 108,
-) {
-  void width;
-  void height;
-  for (let i = 0; i < px.length; i += 4) {
-    const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-    // Keep only the dark core. Gray edges and a thicker stroke print as a dark blur.
-    const on = lum < threshold;
-    const v = on ? 0 : 255;
-    px[i] = v;
-    px[i + 1] = v;
-    px[i + 2] = v;
-    px[i + 3] = 255;
+  scale: number,
+): Raster {
+  const widthBytes = Math.ceil(width / 8);
+  const data = new Uint8Array(widthBytes * height);
+  const srcW = width * scale;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let sum = 0;
+      for (let sy = 0; sy < scale; sy += 1) {
+        for (let sx = 0; sx < scale; sx += 1) {
+          const i = ((y * scale + sy) * srcW + (x * scale + sx)) * 4;
+          sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        }
+      }
+      // Mid-gray only. Turning the pale edge black was printing the letters too heavy.
+      if (sum / (scale * scale) >= 136) continue;
+      data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
+    }
   }
+  return { width, widthBytes, height, data };
+}
+
+/** Drop the blank rows the em box leaves above and below the letters. */
+function trimRasterRows(raster: Raster, pad = 1): Raster {
+  const { width, widthBytes, height, data } = raster;
+  const ink = (y: number) => {
+    const start = y * widthBytes;
+    for (let i = 0; i < widthBytes; i += 1) if (data[start + i]) return true;
+    return false;
+  };
+  let top = 0;
+  let bottom = height - 1;
+  while (top < bottom && !ink(top)) top += 1;
+  while (bottom > top && !ink(bottom)) bottom -= 1;
+  top = Math.max(0, top - pad);
+  bottom = Math.min(height - 1, bottom + pad);
+  const nextH = bottom - top + 1;
+  if (nextH >= height) return raster;
+  const next = new Uint8Array(widthBytes * nextH);
+  next.set(data.subarray(top * widthBytes, (bottom + 1) * widthBytes));
+  return { width, widthBytes, height: nextH, data: next };
 }
 
 /** One receipt line drawn with a Devanagari font, as a black/white raster. */
 function renderIndicRaster(
   text: string,
   widthPx: number,
-  opts?: { fontSize?: number; center?: boolean; padTop?: number },
-): { width: number; widthBytes: number; height: number; data: Uint8Array } {
+  opts?: { fontSize?: number; center?: boolean; compact?: boolean; shop?: boolean },
+): Raster {
   const width = Math.max(8, widthPx);
-  const fontSize = opts?.fontSize ?? 20;
+  const fontSize = opts?.fontSize ?? 24;
+  const compact = Boolean(opts?.compact);
   const canvas = document.createElement('canvas');
   const measure = canvas.getContext('2d');
   if (!measure) throw new Error('Could not draw the Marathi receipt line.');
   measure.font = canvasIndicFont(fontSize);
 
   const paddedCenter = opts?.center ? null : centeredBody(text);
-  const amounts = opts?.center || paddedCenter ? null : splitAmountTail(text);
+  const centered = Boolean(opts?.center || paddedCenter);
+  const justified = centered ? null : splitJustified(text);
+  const amounts = justified || (centered ? null : splitAmountTail(text));
   const nameSource = opts?.center
     ? text.trim()
     : paddedCenter || amounts?.name || text.trim() || text;
   const tail = amounts?.tail || '';
   const tailWidth = tail ? measure.measureText(tail).width + 8 : 0;
-  const centered = Boolean(opts?.center || paddedCenter);
   const nameMax = Math.max(40, width - tailWidth - 4);
-  const rows = wrapByPixels(measure, nameSource, centered ? width - 8 : nameMax);
+  const wrapWidth = centered ? width - 8 : nameMax;
+  const rows = (opts?.shop ? wrapWordsByPixels : wrapByPixels)(measure, nameSource, wrapWidth);
 
-  const box = textBox(measure, 'ईंशिाी्ॐ', fontSize);
-  const padTop = opts?.padTop ?? box.padTop;
-  const ascent = box.ascent;
-  const descent = box.descent;
-  const rowH = Math.ceil(ascent + descent + padTop);
+  // किर्ीं is taller than many names. Measuring it keeps those marks inside the picture.
+  const sample = opts?.shop ? `${nameSource}किर्ीं` : `${nameSource}${tail}`;
+  // Same metrics for shop + body so Marathi does not look taller/heavier than English.
+  const box = lineBox(measure, sample, fontSize, compact && !opts?.shop);
+  const rowH = box.ascent + box.descent + box.pad;
   const height = Math.max(rowH, rowH * rows.length);
+  const scale = 2;
 
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = width * scale;
+  canvas.height = height * scale;
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) throw new Error('Could not draw the Marathi receipt line.');
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
   ctx.imageSmoothingEnabled = false;
-  (ctx as CanvasRenderingContext2D & { textRendering?: string }).textRendering = 'geometricPrecision';
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, width, height);
   ctx.fillStyle = '#000';
@@ -444,7 +530,7 @@ function renderIndicRaster(
   ctx.textBaseline = 'alphabetic';
 
   rows.forEach((row, index) => {
-    const baseline = Math.round(ascent + padTop + index * rowH);
+    const baseline = box.pad + box.ascent + index * rowH;
     if (centered) {
       ctx.textAlign = 'center';
       ctx.fillText(row, Math.round(width / 2), baseline);
@@ -453,149 +539,170 @@ function renderIndicRaster(
     ctx.textAlign = 'left';
     ctx.fillText(row, 2, baseline);
     if (tail && index === 0) {
-      ctx.font = canvasIndicFont(fontSize);
       ctx.textAlign = 'right';
       ctx.fillText(tail, width - 2, baseline);
-      ctx.font = canvasIndicFont(fontSize);
     }
   });
 
-  const image = ctx.getImageData(0, 0, width, height);
-  hardenRasterPixels(image.data, width, height);
-  ctx.putImageData(image, 0, 0);
-
-  const widthBytes = Math.ceil(width / 8);
-  const data = new Uint8Array(widthBytes * height);
-  const px = image.data;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = (y * width + x) * 4;
-      if (px[i] > 127) continue;
-      data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
-    }
-  }
-  return { width, widthBytes, height, data };
+  const image = ctx.getImageData(0, 0, width * scale, height * scale);
+  return trimRasterRows(packSupersampled(image.data, width, height, scale), compact ? 1 : 2);
 }
 
 /**
- * ESC * 24-dot bit image.
- * GS v 0 is skipped by a lot of 58/80 mm heads, and the bitmap bytes then print as ???.
+ * Bytes that some portable heads treat as real-time commands even inside a
+ * GS v 0 bitmap — clearing the buffer mid-header (slip breaks at the start).
+ * Flip one bit; invisible at 203 dpi.
  */
-function appendBitImage(
-  out: number[],
-  raster: { width: number; widthBytes: number; height: number; data: Uint8Array },
-) {
-  const { width, widthBytes, height, data } = raster;
-  const black = (x: number, y: number) => {
-    if (x >= width || y >= height) return false;
-    return (data[y * widthBytes + (x >> 3)] & (0x80 >> (x & 7))) !== 0;
-  };
-  out.push(0x1b, 0x33, 24);
-  for (let band = 0; band < height; band += 24) {
-    out.push(0x1b, 0x2a, 33, width & 0xff, (width >> 8) & 0xff);
-    for (let x = 0; x < width; x += 1) {
-      for (let k = 0; k < 3; k += 1) {
-        let slice = 0;
-        for (let b = 0; b < 8; b += 1) {
-          if (black(x, band + k * 8 + b)) slice |= 0x80 >> b;
-        }
-        out.push(slice);
+function scrubImageByte(slice: number): number {
+  if (slice === 0x10 || slice === 0x1b || slice === 0x1d) return slice ^ 0x01;
+  return slice;
+}
+
+/**
+ * GS v 0 raster bit image (row-major).
+ * ESC * 24-dot mode prints as "8a8a…" / "===3" junk on many portable 58 mm heads.
+ * Keep each command tiny — a tall multi-band picture makes those heads print the
+ * shop header, stall, then the spooler retries and the bill starts over.
+ */
+function appendBitImage(out: number[], raster: Raster) {
+  const { widthBytes, height, data } = raster;
+  // 24-row bands — smaller USB bursts; large 32-row GS v 0 packs made some
+  // Windows 80 mm heads print one strip then raise the red error LED.
+  const maxRows = 24;
+  for (let y0 = 0; y0 < height; y0 += maxRows) {
+    const rows = Math.min(maxRows, height - y0);
+    out.push(
+      0x1d, 0x76, 0x30, 0x00,
+      widthBytes & 0xff, (widthBytes >> 8) & 0xff,
+      rows & 0xff, (rows >> 8) & 0xff,
+    );
+    const start = y0 * widthBytes;
+    const end = start + rows * widthBytes;
+    for (let i = start; i < end; i += 1) {
+      out.push(scrubImageByte(data[i]));
+    }
+  }
+}
+
+/**
+ * Mixed / Marathi receipts.
+ * ASCII lines (===, English shop, qty/rate) stay in plain text.
+ * Only Devanagari lines become small GS v 0 pictures.
+ * Rasterizing the English shop on an MR bill was a common stall point —
+ * head printed ==== + name, then died; spooler retry restarted the slip.
+ */
+function appendIndicReceiptLines(out: number[], source: string, widthPx: number, charsPerLine: number) {
+  const pictureWidth = Math.max(8, widthPx - 4);
+  const bodyPx = thermalBodyPx(charsPerLine);
+  const shopPx = thermalShopPx(charsPerLine);
+  for (const line of String(source || '').replace(/\r/g, '').split('\n')) {
+    const title = line.match(/^<CB>(.*)<\/CB>\s*$/);
+    if (title) {
+      const body = title[1].replace(/<\/?[A-Z]+>/g, '').trim();
+      if (!body) {
+        out.push(0x0a);
+        continue;
       }
+      if (!hasDevanagari(body)) {
+        appendShopTitle(out, body, charsPerLine, widthPx);
+        continue;
+      }
+      appendBitImage(out, renderIndicRaster(body, pictureWidth, {
+        center: true,
+        fontSize: shopPx,
+        shop: true,
+      }));
+      continue;
     }
-    out.push(0x0a);
+    const centeredTag = line.match(/^<C>(.*)<\/C>\s*$/);
+    if (centeredTag) {
+      const body = centeredTag[1].replace(/<\/?[A-Z]+>/g, '').trim();
+      if (!body) {
+        out.push(0x0a);
+        continue;
+      }
+      if (!hasDevanagari(body)) {
+        const plain = toPlainReceipt(`<C>${body}</C>`, charsPerLine);
+        appendPlainChars(out, plain || body);
+        continue;
+      }
+      appendBitImage(out, renderIndicRaster(body, pictureWidth, {
+        center: true,
+        fontSize: bodyPx,
+        compact: true,
+      }));
+      continue;
+    }
+    const plain = toPlainReceipt(line, charsPerLine);
+    if (!plain) {
+      if (!line.trim()) out.push(0x0a);
+      continue;
+    }
+    if (!hasDevanagari(plain)) {
+      appendPlainChars(out, plain);
+      continue;
+    }
+    const centered = centeredBody(plain);
+    appendBitImage(out, renderIndicRaster(centered || plain, pictureWidth, {
+      center: Boolean(centered),
+      fontSize: bodyPx,
+      compact: true,
+    }));
   }
-  out.push(0x1b, 0x32);
 }
 
-/**
- * Large centered shop name as a hard B/W raster (English + Marathi).
- * Avoids GS ! double-width, which softens edges on many 58/80 mm printers.
- */
-function renderShopTitleRaster(
-  text: string,
-  widthPx: number,
-): { width: number; widthBytes: number; height: number; data: Uint8Array } {
-  const width = Math.max(8, widthPx);
-  const indic = hasDevanagari(text);
-  // Scale with paper, but stay light enough that letters do not fill in.
-  const fontSize = Math.max(22, Math.min(32, Math.round(width * (indic ? 0.055 : 0.058))));
-  const canvas = document.createElement('canvas');
-  const measure = canvas.getContext('2d');
-  if (!measure) throw new Error('Could not draw the shop name.');
-  measure.font = canvasShopFont(fontSize, indic);
-
-  // Latin → uppercase for punch; Devanagari stays as typed.
-  const body = indic ? text.trim() : text.trim().toUpperCase();
-  const rows = wrapByPixels(measure, body, width - 16);
-  const box = textBox(measure, indic ? 'ईंशिाी्ॐ' : 'Hg', fontSize);
-  const ascent = box.ascent;
-  const descent = box.descent;
-  const padTop = Math.max(8, box.padTop);
-  const padBottom = 6;
-  const rowH = Math.ceil(ascent + descent + 6);
-  const height = Math.max(rowH + padTop + padBottom, rowH * rows.length + padTop + padBottom);
-
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) throw new Error('Could not draw the shop name.');
-  ctx.imageSmoothingEnabled = false;
-  (ctx as CanvasRenderingContext2D & { textRendering?: string }).textRendering = 'geometricPrecision';
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = '#000';
-  ctx.font = canvasShopFont(fontSize, indic);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'alphabetic';
-
-  rows.forEach((row, index) => {
-    const baseline = Math.round(padTop + ascent + index * rowH);
-    ctx.fillText(row, Math.round(width / 2), baseline);
-  });
-
-  const image = ctx.getImageData(0, 0, width, height);
-  hardenRasterPixels(image.data, width, height);
-  ctx.putImageData(image, 0, 0);
-
-  const widthBytes = Math.ceil(width / 8);
-  const data = new Uint8Array(widthBytes * height);
-  const px = image.data;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = (y * width + x) * 4;
-      if (px[i] > 127) continue;
-      data[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
+function wrapAsciiCols(text: string, cols: number): string[] {
+  const width = Math.max(8, cols);
+  const clean = text.replace(/[^\x20-\x7E]/g, '').trim();
+  if (!clean) return [];
+  const lines: string[] = [];
+  let cur = '';
+  for (const word of clean.split(/\s+/)) {
+    if (word.length > width) {
+      if (cur) lines.push(cur);
+      for (let i = 0; i < word.length; i += width) lines.push(word.slice(i, i + width));
+      cur = '';
+      continue;
+    }
+    const next = cur ? `${cur} ${word}` : word;
+    if (next.length <= width) cur = next;
+    else {
+      if (cur) lines.push(cur);
+      cur = word;
     }
   }
-  return { width, widthBytes, height, data };
+  if (cur) lines.push(cur);
+  return lines;
 }
 
-function appendShopTitle(out: number[], title: string, widthPx: number) {
+function appendShopTitle(out: number[], title: string, charsPerLine: number, widthPx: number) {
   const body = title.replace(/<\/?[A-Z]+>/g, '').trim();
   if (!body) {
     out.push(0x0a);
     return;
   }
-  // Desktop / web: large mono raster — clearest shop name on thermal.
-  if (canDrawCanvas()) {
-    out.push(0x1b, 0x61, 0x00);
-    appendBitImage(out, renderShopTitleRaster(body, widthPx));
+  // Marathi still needs a raster (built-in font has no Devanagari).
+  if (hasDevanagari(body) && canDrawCanvas()) {
+    const pictureWidth = Math.max(8, widthPx - 4);
+    appendBitImage(out, renderIndicRaster(body, pictureWidth, {
+      center: true,
+      fontSize: thermalShopPx(charsPerLine),
+      shop: true,
+    }));
     return;
   }
-  // Native fallback: double-height only (not double-width) + bold.
-  out.push(
-    0x1b, 0x4a, 8,
-    0x1b, 0x61, 0x01,
-    0x1b, 0x45, 0x01,
-    0x1d, 0x21, 0x01,
-    0x1b, 0x21, 0x18,
-  );
-  const upper = body.toUpperCase();
-  for (let i = 0; i < upper.length; i += 1) {
-    const code = upper.charCodeAt(i);
-    if (code >= 0x20 && code <= 0x7e) out.push(code);
+  // Latin: normal size only, centered with spaces.
+  // Hardware double-height (GS !) + ESC M made portable heads print the shop
+  // name twice (once normal, once tall) and leak "M===" into the slip.
+  const lines = wrapAsciiCols(body.toUpperCase(), charsPerLine);
+  if (!lines.length) {
+    out.push(0x0a);
+    return;
   }
-  out.push(0x0a, 0x1d, 0x21, 0x00, 0x1b, 0x45, 0x00, 0x1b, 0x21, 0x00, 0x1b, 0x61, 0x00);
+  for (const line of lines) {
+    const plain = toPlainReceipt(`<C>${line}</C>`, charsPerLine);
+    appendPlainChars(out, plain || line);
+  }
 }
 
 function appendPlainChars(out: number[], text: string) {
@@ -606,10 +713,90 @@ function appendPlainChars(out: number[], text: string) {
   out.push(0x0a);
 }
 
+function blankRaster(width: number, height: number): Raster {
+  const w = Math.max(8, width);
+  const h = Math.max(1, height);
+  return { width: w, widthBytes: Math.ceil(w / 8), height: h, data: new Uint8Array(Math.ceil(w / 8) * h) };
+}
+
+/** Stack line pictures into one tall image so the head never leaves graphics mid-ticket. */
+function stackRasters(parts: Raster[]): Raster {
+  if (!parts.length) return blankRaster(8, 8);
+  const width = Math.max(...parts.map((part) => part.width));
+  const widthBytes = Math.ceil(width / 8);
+  const height = parts.reduce((sum, part) => sum + part.height, 0);
+  const data = new Uint8Array(widthBytes * height);
+  let y = 0;
+  for (const part of parts) {
+    for (let row = 0; row < part.height; row += 1) {
+      data.set(
+        part.data.subarray(row * part.widthBytes, (row + 1) * part.widthBytes),
+        (y + row) * widthBytes,
+      );
+    }
+    y += part.height;
+  }
+  return { width, widthBytes, height, data };
+}
+
+/**
+ * Marathi (and mixed) receipts: draw every line into one continuous raster.
+ * One ESC * shop picture then ASCII text makes many 58/80 mm heads stop after the name.
+ */
+function renderIndicReceipt(source: string, widthPx: number, charsPerLine: number): Raster {
+  // Use nearly the full head width — a large inset left a blank strip on 58 mm.
+  const pictureWidth = Math.max(8, widthPx - 4);
+  const bodyPx = thermalBodyPx(charsPerLine);
+  const shopPx = thermalShopPx(charsPerLine);
+  const parts: Raster[] = [];
+  for (const line of String(source || '').replace(/\r/g, '').split('\n')) {
+    const title = line.match(/^<CB>(.*)<\/CB>\s*$/);
+    if (title) {
+      const body = title[1].replace(/<\/?[A-Z]+>/g, '').trim();
+      if (!body) {
+        parts.push(blankRaster(pictureWidth, 8));
+        continue;
+      }
+      parts.push(renderIndicRaster(body, pictureWidth, {
+        center: true,
+        fontSize: shopPx,
+        shop: true,
+      }));
+      continue;
+    }
+    const centeredTag = line.match(/^<C>(.*)<\/C>\s*$/);
+    if (centeredTag) {
+      const body = centeredTag[1].replace(/<\/?[A-Z]+>/g, '').trim();
+      if (!body) {
+        parts.push(blankRaster(pictureWidth, 6));
+        continue;
+      }
+      parts.push(renderIndicRaster(body, pictureWidth, {
+        center: true,
+        fontSize: bodyPx,
+        compact: true,
+      }));
+      continue;
+    }
+    const plain = toPlainReceipt(line, charsPerLine);
+    if (!plain) {
+      if (!line.trim()) parts.push(blankRaster(pictureWidth, 8));
+      continue;
+    }
+    const centered = centeredBody(plain);
+    parts.push(renderIndicRaster(centered || plain, pictureWidth, {
+      center: Boolean(centered),
+      fontSize: bodyPx,
+      compact: true,
+    }));
+  }
+  return stackRasters(parts);
+}
+
 function appendReceiptLine(out: number[], line: string, charsPerLine: number, widthPx: number) {
   const title = line.match(/^<CB>(.*)<\/CB>\s*$/);
   if (title) {
-    appendShopTitle(out, title[1], widthPx);
+    appendShopTitle(out, title[1], charsPerLine, widthPx);
     return;
   }
   const centeredTag = line.match(/^<C>(.*)<\/C>\s*$/);
@@ -619,24 +806,14 @@ function appendReceiptLine(out: number[], line: string, charsPerLine: number, wi
       out.push(0x0a);
       return;
     }
-    if (hasDevanagari(body) && canDrawCanvas()) {
-      out.push(0x1b, 0x61, 0x00);
-      appendBitImage(out, renderIndicRaster(body, widthPx, { center: true }));
-      return;
-    }
-    out.push(0x1b, 0x61, 0x01);
-    appendPlainChars(out, body);
-    out.push(0x1b, 0x61, 0x00);
+    // Space-pad centering — ESC a 1 also glitches on some portable heads.
+    const plain = toPlainReceipt(`<C>${body}</C>`, charsPerLine);
+    appendPlainChars(out, plain || body);
     return;
   }
   const plain = toPlainReceipt(line, charsPerLine);
   if (!plain) {
     if (!line.trim()) out.push(0x0a);
-    return;
-  }
-  if (hasDevanagari(plain) && canDrawCanvas()) {
-    const centered = centeredBody(plain);
-    appendBitImage(out, renderIndicRaster(centered || plain, widthPx, { center: Boolean(centered) }));
     return;
   }
   appendPlainChars(out, plain);
@@ -645,33 +822,33 @@ function appendReceiptLine(out: number[], line: string, charsPerLine: number, wi
 /**
  * Encode receipt as sharp plain ESC/POS.
  *
- * Page/print area follows paper size:
- * - 58 mm (2″): GS L ≈ 3 mm, GS W = remaining 2″ band
- * - 80 mm: GS L=0, GS W=576
+ * Page width is implied by column count (32→58 mm, 48→80 mm). We do **not**
+ * send GS L / GS W — those stall many portable 58 **and** 80 mm heads after the
+ * first line (shop name), then the spooler retries from the top.
+ *
+ * When `paper` is set, column count is taken from the paper size — never from a
+ * stale charsPerLine — so Settings → 58mm cannot still print an 80mm page.
  */
-export function buildEscPosBytes(text: string, charsPerLine = 32): number[] {
+export function buildEscPosBytes(
+  text: string,
+  charsPerLine = 32,
+  paper?: '58' | '80',
+): number[] {
   const source = String(text || '').replace(/\r/g, '');
-  const { leftDots, widthDots } = receiptPrintArea(charsPerLine);
-  const out: number[] = [
-    ...ESC.INIT,
-    ...ESC.FONT_A,
-    ...ESC.LINE_SPACING,
-    ...ESC.NORMAL_MODE,
-    ...ESC.ALIGN_LEFT,
-    // GS L — left margin (58 mm converter inset; 0 on 80 mm)
-    0x1d, 0x4c, leftDots & 0xff, (leftDots >> 8) & 0xff,
-    // GS W — print area width inside the 2″ / 3″ page
-    0x1d, 0x57, widthDots & 0xff, (widthDots >> 8) & 0xff,
-    // Do not send ESC j (reverse feed): many POS printers ignore ESC and
-    // print the rest as text → first line shows "jx" (j + n=120).
-  ];
+  const roll: '58' | '80' = paper ?? (charsPerLine <= 32 ? '58' : '80');
+  const cols = receiptCharsForPaper(roll);
+  const { widthDots } = receiptPrintArea(cols);
+  const useIndic = hasDevanagari(source) && canDrawCanvas();
+  // ESC @ only — no GS a / GS L / GS W / ESC a.
+  const out: number[] = [...ESC.INIT];
 
-  if (hasDevanagari(source) && canDrawCanvas()) {
-    // Leave UTF-8 / Chinese character mode so the image is not printed as ???.
-    out.push(0x1c, 0x2e, 0x1b, 0x74, 0x00);
-  }
-  for (const line of source.split('\n')) {
-    appendReceiptLine(out, line, charsPerLine, widthDots);
+  if (useIndic) {
+    // Devanagari lines → small bitmaps; ASCII lines stay text (one job, one write).
+    appendIndicReceiptLines(out, source, widthDots, cols);
+  } else {
+    for (const line of source.split('\n')) {
+      appendReceiptLine(out, line, cols, widthDots);
+    }
   }
 
   if (!out.length || out[out.length - 1] !== 0x0a) out.push(0x0a);
@@ -707,5 +884,6 @@ export function delay(ms: number) {
 
 export function estimatePrintFlushMs(text: string): number {
   const lines = Math.max(1, text.split('\n').length);
-  return Math.min(4000, Math.max(700, 300 + lines * 40));
+  // Bluetooth only — desktop system/network return as soon as the job is accepted.
+  return Math.min(2500, Math.max(400, 200 + lines * 25));
 }
