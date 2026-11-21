@@ -59,7 +59,7 @@ const DESKTOP_ONLY = 'This printer type needs the KDSPOZ desktop app.';
  * fall back to an off-screen iframe (must not use opacity:0 — prints blank).
  * `paperMm` sizes the popup/iframe to the roll width so layout matches 58/80.
  */
-function printHtmlInBrowser(html: string, paperMm = 80): Promise<void> {
+function printHtmlInBrowser(html: string, paperMm = 80, isA4 = false): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (cleanup?: () => void) => {
@@ -73,8 +73,9 @@ function printHtmlInBrowser(html: string, paperMm = 80): Promise<void> {
       resolve();
     };
 
-    // ~3.8 CSS px/mm — keep popup near roll width so preview matches print.
-    const popupW = Math.max(220, Math.round(paperMm * 3.8 + 48));
+    const isFullWidth = isA4 || paperMm >= 210;
+    // ~3.8 CSS px/mm for thermal rolls; wide desktop width for A4 so preview formats to 100% width.
+    const popupW = isFullWidth ? 1024 : Math.max(220, Math.round(paperMm * 3.8 + 48));
     const tryPopup = (): boolean => {
       const popup = window.open('', '_blank', `noopener,noreferrer,width=${popupW},height=720`);
       if (!popup) return false;
@@ -140,7 +141,7 @@ function printHtmlInBrowser(html: string, paperMm = 80): Promise<void> {
     if (tryPopup()) return;
 
     const frame = document.createElement('iframe');
-    frame.style.cssText = `position:fixed;left:-10000px;top:0;width:${paperMm}mm;min-height:100vh;border:0;`;
+    frame.style.cssText = `position:fixed;left:-10000px;top:0;width:${isFullWidth ? '100%' : `${paperMm}mm`};min-height:100vh;border:0;`;
     frame.setAttribute('aria-hidden', 'true');
     frame.onload = () => {
       const win = frame.contentWindow;
@@ -272,11 +273,17 @@ export async function printViaA4(
 ): Promise<void> {
   const bridge = getDesktopBridge();
   if (!bridge) {
-    await printHtmlInBrowser(html);
+    await printHtmlInBrowser(html, 210, true);
     return;
   }
   const printerName = target?.printerName;
-  await bridge.printHtml({ html, printerName, silent: Boolean(printerName), a4: true });
+  await bridge.printHtml({
+    html,
+    printerName,
+    silent: Boolean(printerName),
+    a4: true,
+    preferCssPageSize: true,
+  });
 }
 
 /** Sends ready-made ESC/POS commands to a Wi-Fi / LAN printer. */

@@ -1,12 +1,42 @@
 const AppError = require('../utils/AppError');
 const { getMasterModels } = require('../models/master');
 
-function round4(n) {
-  return Math.round(n * 10000) / 10000;
+function round2(n) {
+  if (n == null || !Number.isFinite(Number(n))) return 0;
+  const sign = Number(n) < 0 ? -1 : 1;
+  const abs = Math.abs(Number(n));
+  return sign * Number(Math.round(Number(abs + 'e2')) + 'e-2');
 }
 
-function round2(n) {
-  return Math.round(n * 100) / 100;
+function round4(n) {
+  if (n == null || !Number.isFinite(Number(n))) return 0;
+  const sign = Number(n) < 0 ? -1 : 1;
+  const abs = Math.abs(Number(n));
+  return sign * Number(Math.round(Number(abs + 'e4')) + 'e-4');
+}
+
+function toPaise(n) {
+  if (n == null || !Number.isFinite(Number(n))) return 0;
+  const sign = Number(n) < 0 ? -1 : 1;
+  const abs = Math.abs(Number(n));
+  return sign * Math.round(Number(abs + 'e2'));
+}
+
+function fromPaise(paise) {
+  if (!Number.isFinite(Number(paise))) return 0;
+  return Number((paise / 100).toFixed(2));
+}
+
+function toUnits4(n) {
+  if (n == null || !Number.isFinite(Number(n))) return 0;
+  const sign = Number(n) < 0 ? -1 : 1;
+  const abs = Math.abs(Number(n));
+  return sign * Math.round(Number(abs + 'e4'));
+}
+
+function fromUnits4(units) {
+  if (!Number.isFinite(Number(units))) return 0;
+  return Number((units / 10000).toFixed(4));
 }
 
 /** Cache master Marathi names for one bill calculation (by English product name). */
@@ -138,6 +168,7 @@ async function calculateLine(db, item, variant, language = 'en', masterNameMrCac
   let taxAmount = 0;
 
   if (taxGroup?.components) {
+    let compTaxUnits = 0;
     for (const comp of taxGroup.components) {
       const rate = parseFloat(comp.rate_percent);
       const amt = round4(taxable * rate / 100);
@@ -147,12 +178,13 @@ async function calculateLine(db, item, variant, language = 'en', masterNameMrCac
         ratePercent: rate,
         taxAmount: amt,
       });
-      taxAmount += amt;
+      compTaxUnits += toUnits4(amt);
     }
+    taxAmount = fromUnits4(compTaxUnits);
   }
 
   taxAmount = round4(taxAmount);
-  const lineTotal = round4(taxable + taxAmount);
+  const lineTotal = fromUnits4(toUnits4(taxable) + toUnits4(taxAmount));
 
   let masterNameMr = null;
   const hasLocalMr = !!(
@@ -203,15 +235,15 @@ async function calculateBill(db, {
   const lang = language === 'mr' ? 'mr' : 'en';
   const masterNameMrCache = lang === 'mr' ? new Map() : null;
   const calculatedItems = [];
-  let subtotal = 0;
-  let taxAmount = 0;
+  let subtotalUnits = 0;
+  let taxAmountUnits = 0;
 
   for (const item of items) {
     if (isCustomBillItem(item)) {
       const line = calculateCustomLine(item);
       calculatedItems.push(line);
-      subtotal += line.taxable;
-      taxAmount += line.taxAmount;
+      subtotalUnits += toUnits4(line.taxable);
+      taxAmountUnits += toUnits4(line.taxAmount);
       continue;
     }
 
@@ -223,12 +255,12 @@ async function calculateBill(db, {
 
     const line = await calculateLine(db, item, variant, lang, masterNameMrCache);
     calculatedItems.push(line);
-    subtotal += line.taxable;
-    taxAmount += line.taxAmount;
+    subtotalUnits += toUnits4(line.taxable);
+    taxAmountUnits += toUnits4(line.taxAmount);
   }
 
-  subtotal = round4(subtotal);
-  taxAmount = round4(taxAmount);
+  const subtotal = fromUnits4(subtotalUnits);
+  const taxAmount = fromUnits4(taxAmountUnits);
 
   let billDiscount = 0;
   if (billDiscountPercent) {
@@ -241,16 +273,17 @@ async function calculateBill(db, {
     const base = subtotal + taxAmount;
     if (base >= parseFloat(offer.min_purchase || 0)) {
       if (offer.offer_type === 'percent_off') {
-        billDiscount += round4(base * parseFloat(offer.value) / 100);
+        billDiscount = round4(billDiscount + (base * parseFloat(offer.value) / 100));
       } else {
-        billDiscount += round4(parseFloat(offer.value));
+        billDiscount = round4(billDiscount + parseFloat(offer.value));
       }
     }
   }
 
-  const exactTotal = round4(Math.max(0, subtotal + taxAmount - billDiscount));
-  const roundOff = round4(parseFloat(roundOffAmount || 0));
-  const totalAmount = round4(Math.max(0, exactTotal + roundOff));
+  // Exact total in paise (2 decimal places) for retail billing:
+  const exactTotal = round2(Math.max(0, subtotal + taxAmount - billDiscount));
+  const roundOff = round2(parseFloat(roundOffAmount || 0));
+  const totalAmount = round2(Math.max(0, exactTotal + roundOff));
 
   return {
     items: calculatedItems,
@@ -264,4 +297,13 @@ async function calculateBill(db, {
   };
 }
 
-module.exports = { calculateBill, calculateLine, round4, round2 };
+module.exports = {
+  calculateBill,
+  calculateLine,
+  round4,
+  round2,
+  toPaise,
+  fromPaise,
+  toUnits4,
+  fromUnits4,
+};

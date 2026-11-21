@@ -93,8 +93,30 @@ async function applyStockMovement(
   return { balance, ledger, newQty };
 }
 
-function generateDocNumber(prefix) {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+function getLocalDatePrefix(date = new Date(), timeZone = 'Asia/Kolkata') {
+  try {
+    const d = date instanceof Date ? date : new Date(date);
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timeZone || 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(d).replace(/-/g, '');
+  } catch {
+    const d = date instanceof Date ? date : new Date(date);
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(d).replace(/-/g, '');
+  }
+}
+
+function generateDocNumber(prefix, timeZone = 'Asia/Kolkata') {
+  const date = getLocalDatePrefix(new Date(), timeZone);
   const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `${prefix}-${date}-${rand}`;
 }
@@ -105,4 +127,5 @@ module.exports = {
   getOrCreateBalance,
   applyStockMovement,
   generateDocNumber,
+  getLocalDatePrefix,
 };

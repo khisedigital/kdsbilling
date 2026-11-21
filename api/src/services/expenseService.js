@@ -256,6 +256,85 @@ async function createDailyClosing(db, branchId, userId, data) {
   return formatClosingRow(withCreator || created);
 }
 
+async function updateDailyClosing(db, branchId, userId, id, data) {
+  const existing = await db.DailyClosing.findOne({
+    where: { id, branch_id: branchId },
+  });
+  if (!existing) {
+    throw new AppError('Closing not found', 404, 'NOT_FOUND');
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const targetDate = data.closingDate || today;
+  if (existing.closing_date !== targetDate && existing.closing_date !== today) {
+    throw new AppError("Only today's register can be edited", 400, 'VALIDATION_ERROR');
+  }
+
+  const closingDate = existing.closing_date;
+
+  const payments = await paymentBreakdownForDay(db, branchId, closingDate);
+  const cashSales = payments.cash;
+  const cashRefunds = await cashRefundsForDay(db, branchId, closingDate);
+  const cashExpenses = await cashExpensesForDay(db, branchId, closingDate);
+  const totalSales = await totalSalesForDay(db, branchId, closingDate);
+
+  const openingCash = money(data.openingCash);
+  const cashAdded = money(data.cashAdded);
+  const expectedCash = money(openingCash + cashSales + cashAdded - cashRefunds - cashExpenses);
+  const actualCash = money(data.actualCash);
+  if (!Number.isFinite(parseFloat(data.actualCash))) {
+    throw new AppError('Enter the cash you counted in the drawer', 400, 'VALIDATION_ERROR');
+  }
+  const variance = money(actualCash - expectedCash);
+
+  const remarks = data.notes != null ? String(data.notes).trim() : data.remarks != null ? String(data.remarks).trim() : '';
+  const varianceReason =
+    data.varianceReason != null ? String(data.varianceReason).trim() : '';
+
+  if (Math.abs(variance) >= 0.01 && !varianceReason) {
+    throw new AppError('Please enter a reason when cash does not match', 400, 'VALIDATION_ERROR');
+  }
+
+  const denominations = data.denominations && typeof data.denominations === 'object'
+    ? data.denominations
+    : null;
+
+  const details = {
+    version: 1,
+    payments,
+    cashSales,
+    cashRefunds,
+    cashExpenses,
+    cashAdded,
+    denominations,
+    varianceReason: varianceReason || null,
+    remarks: remarks || null,
+    closedByUserId: existing.created_by,
+    lastEditedByUserId: userId,
+    lastEditedAt: new Date().toISOString(),
+  };
+
+  const noteParts = [];
+  if (remarks) noteParts.push(remarks);
+  if (varianceReason) noteParts.push(`Difference reason: ${varianceReason}`);
+
+  await existing.update({
+    opening_cash: openingCash,
+    expected_cash: expectedCash,
+    actual_cash: actualCash,
+    variance,
+    total_sales: totalSales,
+    total_expenses: cashExpenses,
+    notes: noteParts.length ? noteParts.join('\n') : null,
+    details: serializeClosingDetails(details),
+  });
+
+  const withCreator = await db.DailyClosing.findByPk(existing.id, {
+    include: [{ model: db.User, as: 'creator', attributes: ['id', 'name'], required: false }],
+  });
+  return formatClosingRow(withCreator || existing);
+}
+
 async function listClosings(db, branchId) {
   const rows = await db.DailyClosing.findAll({
     where: { branch_id: branchId },
@@ -285,6 +364,7 @@ module.exports = {
   listOffers,
   previewDailyClosing,
   createDailyClosing,
+  updateDailyClosing,
   listClosings,
   getDailyClosing,
 };

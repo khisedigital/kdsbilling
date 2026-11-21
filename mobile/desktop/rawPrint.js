@@ -183,38 +183,32 @@ async function sendRaw(host, port, data, options = {}) {
 }
 
 /**
- * Queue a job and unlock the UI immediately (same feel as label print).
- * Writing + head settle continue in the background FIFO.
+ * Queue a job. Resolves as soon as bytes are accepted by the printer/driver,
+ * or rejects if the printer is offline/cover open/out of paper.
  */
 function enqueueRawJob(queueName, jobFields) {
   const q = getPrintQueue(queueName);
   const seq = (printSeq += 1);
-  q.jobs.push({
-    seq,
-    ...jobFields,
-    // Click promise already resolved — log failures, do not block the button.
-    resolve: () => {},
-    reject: (err) => {
-      console.error(
-        '[KDSPOZ] background print failed',
-        `#${seq}`,
-        err && err.message ? err.message : err,
-      );
-    },
+  return new Promise((resolve, reject) => {
+    q.jobs.push({
+      seq,
+      ...jobFields,
+      resolve,
+      reject,
+    });
+    console.log(
+      '[KDSPOZ] enqueue',
+      `#${seq}`,
+      queueName,
+      'bytes=',
+      jobFields.buf && jobFields.buf.length,
+      'depth=',
+      q.jobs.length,
+      'busy=',
+      q.busy,
+    );
+    setImmediate(() => pumpPrintQueue(queueName));
   });
-  console.log(
-    '[KDSPOZ] enqueue',
-    `#${seq}`,
-    queueName,
-    'bytes=',
-    jobFields.buf && jobFields.buf.length,
-    'depth=',
-    q.jobs.length,
-    'busy=',
-    q.busy,
-  );
-  setImmediate(() => pumpPrintQueue(queueName));
-  return Promise.resolve();
 }
 
 function isLabelJob(copiesOrOpts) {
@@ -377,35 +371,109 @@ function markSlipSent(printerName) {
   lastSlipAt.set(String(printerName || '').trim(), Date.now());
 }
 
-/** Wait until this CUPS job id is gone (data handed off), then a short settle. */
-async function waitCupsJobGone(printerName, jobId, byteLength) {
+async function checkUnixPrinterStatus(printerName) {
   const name = String(printerName || '').trim();
-  if (!name) return;
-  const timeoutMs = Math.min(90000, Math.max(15000, estimateHeadFlushMs(byteLength) * 2));
+  if (!name || (process.platform !== 'darwin' && process.platform !== 'linux')) return null;
+  try {
+    const { stdout: pOut } = await execFileAsync('lpstat', ['-p', name, '-l'], {
+      timeout: 3000,
+      maxBuffer: 512 * 1024,
+    });
+    const text = String(pOut || '');
+    if (/door[\s_-]*open|cover[\s_-]*open/i.test(text)) {
+      return 'Printer cover/door is open. Please close the cover.';
+    }
+    if (/media[\s_-]*empty|paper[\s_-]*out|out[\s_-]*of[\s_-]*paper/i.test(text)) {
+      return 'Printer is out of paper. Please reload paper.';
+    }
+    if (/offline|unreachable|unable[\s_-]*to[\s_-]*send[\s_-]*data/i.test(text)) {
+      return 'Printer is offline or disconnected.';
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * Verify that the CUPS job was accepted by the physical printer hardware.
+ * If the cover is open, paper is out, or the printer is stalled, CUPS blocks.
+ * We detect this, clean up the stuck job so the queue doesn't stay blocked,
+ * and throw an error so the UI can show the retry prompt.
+ */
+async function verifyCupsJobNotStuck(printerName, jobId, byteLength) {
+  const name = String(printerName || '').trim();
+  if (!name || !jobId) return;
+
+  const maxWaitMs = 3000;
   const started = Date.now();
   await sleep(200);
-  while (Date.now() - started < timeoutMs) {
+
+  while (Date.now() - started < maxWaitMs) {
     try {
-      const { stdout } = await execFileAsync('lpstat', ['-o', name], {
-        timeout: 8000,
+      // 1. Check printer status line for immediate door-open or paper-empty
+      const { stdout: pOut } = await execFileAsync('lpstat', ['-p', name, '-l'], {
+        timeout: 2500,
         maxBuffer: 512 * 1024,
-      });
-      const lines = String(stdout || '')
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean);
-      if (!lines.length) break;
-      if (!jobId) break;
-      const still = lines.some((line) => line.startsWith(jobId) || line.includes(jobId));
-      if (!still) break;
-    } catch {
-      break;
+      }).catch(() => ({ stdout: '' }));
+      const pText = String(pOut || '');
+      if (/door[\s_-]*open|cover[\s_-]*open/i.test(pText)) {
+        await execFileAsync('cancel', [jobId], { timeout: 3000 }).catch(() => null);
+        throw new Error('Printer cover/door is open. Please close the cover.');
+      }
+      if (/media[\s_-]*empty|paper[\s_-]*out|out[\s_-]*of[\s_-]*paper/i.test(pText)) {
+        await execFileAsync('cancel', [jobId], { timeout: 3000 }).catch(() => null);
+        throw new Error('Printer is out of paper. Please reload paper.');
+      }
+
+      // 2. Check open jobs queue
+      const { stdout: oOut } = await execFileAsync('lpstat', ['-o', name], {
+        timeout: 2500,
+        maxBuffer: 512 * 1024,
+      }).catch(() => ({ stdout: '' }));
+      const oText = String(oOut || '');
+      const lines = oText.split('\n').map((l) => l.trim()).filter(Boolean);
+      const isJobStillOpen = lines.some((l) => l.startsWith(jobId) || l.includes(jobId));
+      if (!isJobStillOpen) {
+        // Job successfully handed off to printer and printed!
+        return;
+      }
+
+      // If still open, check if the job line has specific errors
+      const jobLine = lines.find((l) => l.startsWith(jobId) || l.includes(jobId)) || '';
+      if (/door[\s_-]*open|cover[\s_-]*open/i.test(jobLine)) {
+        await execFileAsync('cancel', [jobId], { timeout: 3000 }).catch(() => null);
+        throw new Error('Printer cover/door is open. Please close the cover.');
+      }
+      if (/media[\s_-]*empty|paper[\s_-]*out/i.test(jobLine)) {
+        await execFileAsync('cancel', [jobId], { timeout: 3000 }).catch(() => null);
+        throw new Error('Printer is out of paper. Please reload paper.');
+      }
+    } catch (err) {
+      if (err.message && /cover|door|paper|offline/i.test(err.message)) {
+        throw err;
+      }
     }
-    await sleep(350);
+    await sleep(250);
   }
-  const settleMs = estimateHeadFlushMs(byteLength, { jobKind: 'receipt' });
-  console.log('[KDSPOZ] after cups', jobId || name, 'settle', settleMs, 'ms');
-  await sleep(settleMs);
+
+  // If still stuck in queue after 3 seconds:
+  try {
+    const { stdout: oFinal } = await execFileAsync('lpstat', ['-o', name], { timeout: 2500 }).catch(() => ({ stdout: '' }));
+    if (String(oFinal || '').includes(jobId)) {
+      await execFileAsync('cancel', [jobId], { timeout: 3000 }).catch(() => null);
+      throw new Error('Printer offline / Door open or out of paper — printer is not accepting data.');
+    }
+  } catch (err) {
+    if (err.message && /cover|door|paper|offline/i.test(err.message)) {
+      throw err;
+    }
+  }
+}
+
+/** Wait until this CUPS job id is gone (data handed off), then a short settle. */
+async function waitCupsJobGone(printerName, jobId, byteLength) {
+  return verifyCupsJobNotStuck(printerName, jobId, byteLength);
 }
 
 async function deliverSystemPrint(printerName, buf, copiesOrOpts) {
@@ -807,6 +875,10 @@ async function sendRawUnix(printerName, data, copiesOrOpts = 1) {
   const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
 
   const sendOnceLp = async (payload) => {
+    const preStatus = await checkUnixPrinterStatus(printerName);
+    if (preStatus) {
+      throw new Error(preStatus);
+    }
     const body = prepareChainedPayload(printerName, payload);
     let stdout = '';
     try {
@@ -823,7 +895,9 @@ async function sendRawUnix(printerName, data, copiesOrOpts = 1) {
     const id = parseLpJobId(stdout);
     console.log('[KDSPOZ] lp accepted', id || '(none)', 'bytes=', body.length);
     markSlipSent(printerName);
-    // Head settle is in the pump after resolve (keeps Print button snappy).
+    if (id) {
+      await verifyCupsJobNotStuck(printerName, id, body.length);
+    }
   };
 
   if (!batchSize) {
@@ -877,14 +951,36 @@ async function sendRawWindows(printerName, data, copiesOrOpts = 1) {
 
   const script = `
 $ErrorActionPreference = 'Stop'
-function Wait-KdsPrinterIdle([string]$name, [int]$minPauseMs, [int]$timeoutSec = 180) {
+function Wait-KdsPrinterIdle([string]$name, [int]$minPauseMs, [int]$timeoutSec = 4) {
   if ($minPauseMs -gt 0) { Start-Sleep -Milliseconds $minPauseMs }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   do {
     $jobs = @(Get-PrintJob -PrinterName $name -ErrorAction SilentlyContinue)
     if ($jobs.Count -eq 0) { return }
+    foreach ($j in $jobs) {
+      $st = [string]$j.JobStatus
+      if ($st -match 'DoorOpen|CoverOpen') {
+        Remove-PrintJob -PrinterName $name -ID $j.ID -ErrorAction SilentlyContinue
+        throw 'Printer cover/door is open.'
+      }
+      if ($st -match 'PaperOut|PaperProblem') {
+        Remove-PrintJob -PrinterName $name -ID $j.ID -ErrorAction SilentlyContinue
+        throw 'Printer is out of paper.'
+      }
+      if ($st -match 'Error|Offline|UserIntervention') {
+        Remove-PrintJob -PrinterName $name -ID $j.ID -ErrorAction SilentlyContinue
+        throw 'Printer offline or error.'
+      }
+    }
     Start-Sleep -Milliseconds 250
   } while ($sw.Elapsed.TotalSeconds -lt $timeoutSec)
+  $remaining = @(Get-PrintJob -PrinterName $name -ErrorAction SilentlyContinue)
+  if ($remaining.Count -gt 0) {
+    foreach ($j in $remaining) {
+      Remove-PrintJob -PrinterName $name -ID $j.ID -ErrorAction SilentlyContinue
+    }
+    throw 'Printer offline / Door open or out of paper — job did not complete.'
+  }
 }
 Add-Type -TypeDefinition @"
 using System;

@@ -1,10 +1,11 @@
 import React, { useEffect } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, Platform } from 'react-native';
 import { prefetchMarathiTranslator } from '../i18n/translateToMarathi';
 import { colors } from '../theme/colors';
 import AppSidebar from './AppSidebar';
 import MainNavigator from './MainNavigator';
 import { usePinnedSidebar } from './usePinnedSidebar';
+import { navigateMainScreen } from './navigationRef';
 
 export default function AppShell() {
   const pinned = usePinnedSidebar();
@@ -12,6 +13,22 @@ export default function AppShell() {
   useEffect(() => {
     // Desktop/web: download Paar EN→MR once, then translations work offline.
     prefetchMarathiTranslator();
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+
+    const onGlobalKeyDown = (event: KeyboardEvent) => {
+      // F1: Open New Bill screen from anywhere in the app
+      if (event.key === 'F1') {
+        event.preventDefault();
+        event.stopPropagation();
+        navigateMainScreen('Billing', { fresh: true });
+      }
+    };
+
+    window.addEventListener('keydown', onGlobalKeyDown, true);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown, true);
   }, []);
 
   return (

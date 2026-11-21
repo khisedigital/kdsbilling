@@ -59,8 +59,8 @@ object LabelPrinterJob {
           ?: throw IOException("Printer socket has no output stream.")
         // Continuous stream (same as desktop default). JS may already chunk if user enabled Batched ×3.
         out.write(PrinterCommands.INIT)
-        // Left edge of the head. A centered align parks the sticker image in the middle of the roll.
-        out.write(byteArrayOf(0x1B, 0x61, 0x00, 0x1D, 0x4C, 0x00, 0x00))
+        // Center on the roll so left and right margins are equal
+        out.write(byteArrayOf(0x1B, 0x61, 0x01, 0x1D, 0x4C, 0x00, 0x00))
         // Two stickers, then wait. A third picture still in the buffer is what cuts the label.
         var left = count
         while (left > 0) {

@@ -190,6 +190,7 @@ export default function BillingScreen({ navigation, route }: Props) {
     setCartOpen(false);
     setPreview(null);
     dismissQuantity();
+    searchRef.current?.focus();
     if (typeof document !== 'undefined') {
       const active = document.activeElement as HTMLElement | null;
       if (active && active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA') active.blur();
@@ -783,51 +784,7 @@ export default function BillingScreen({ navigation, route }: Props) {
     }
   }, [catalog, remoteResults, commitScan, debouncedQ]);
 
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    let buffer = '';
-    let lastKey = 0;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (pendingProduct || discountOpen || customOpen) {
-        buffer = '';
-        return;
-      }
-      const el = document.activeElement as HTMLElement | null;
-      const tag = el?.tagName;
-      const typingInField =
-        tag === 'INPUT' || tag === 'TEXTAREA' || !!el?.isContentEditable;
 
-      const now = Date.now();
-      if (now - lastKey > 80) buffer = '';
-      lastKey = now;
-
-      if (event.key === 'Enter' || event.key === 'NumpadEnter') {
-        const code = buffer.trim();
-        buffer = '';
-        if (code.length >= 3) {
-          // Scanner wedge: digits then Enter. Do not let that Enter press a button.
-          event.preventDefault();
-          event.stopPropagation();
-          void commitScan(code);
-        }
-        return;
-      }
-
-      if (typingInField) {
-        // Still capture fast wedge keystrokes while search is focused; input also receives them.
-        if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
-          buffer += event.key;
-        }
-        return;
-      }
-
-      if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        buffer += event.key;
-      }
-    };
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [commitScan, customOpen, discountOpen, pendingProduct]);
 
   const handleIncrease = useCallback(
     (variantId: string) => {
@@ -912,6 +869,158 @@ export default function BillingScreen({ navigation, route }: Props) {
     setCartOpen(false);
     navigation.navigate('Payment');
   };
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    let buffer = '';
+    let lastKey = 0;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const activeEl = document.activeElement as HTMLElement | null;
+      const tag = activeEl?.tagName;
+      const typingInField =
+        tag === 'INPUT' || tag === 'TEXTAREA' || !!activeEl?.isContentEditable;
+
+      // F1: New Bill
+      if (event.key === 'F1') {
+        event.preventDefault();
+        event.stopPropagation();
+        clearCart();
+        setSearch('');
+        setCategoryId(null);
+        setCartOpen(false);
+        setPreview(null);
+        dismissQuantity();
+        searchRef.current?.focus();
+        return;
+      }
+
+      // F2: Search
+      if (event.key === 'F2') {
+        event.preventDefault();
+        event.stopPropagation();
+        searchRef.current?.focus();
+        const inputEl = searchRef.current as unknown as HTMLInputElement | null;
+        if (inputEl && typeof inputEl.select === 'function') {
+          inputEl.select();
+        }
+        return;
+      }
+
+      // F7: Customer select
+      if (event.key === 'F7') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isWideBill) {
+          window.dispatchEvent(new CustomEvent('pos:customer-select'));
+        } else {
+          navigation.navigate('CustomerList');
+        }
+        return;
+      }
+
+      // F8: Discount
+      if (event.key === 'F8') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isWideBill) {
+          window.dispatchEvent(new CustomEvent('pos:discount'));
+        } else {
+          setDiscountOpen(true);
+        }
+        return;
+      }
+
+      // F9: Hold bill
+      if (event.key === 'F9') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!items.length) {
+          Alert.alert(t('Cart is empty'), t('Add items to hold a bill.'));
+          return;
+        }
+        if (isWideBill) {
+          window.dispatchEvent(new CustomEvent('pos:hold'));
+        } else {
+          setCartOpen(false);
+          navigation.navigate('HoldBill');
+        }
+        return;
+      }
+
+      // F10: Print bill
+      if (event.key === 'F10') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isWideBill && items.length > 0) {
+          window.dispatchEvent(new CustomEvent('pos:print'));
+        }
+        return;
+      }
+
+      // F12: Complete bill
+      if (event.key === 'F12') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!items.length) {
+          Alert.alert(t('Cart is empty'), t('Add items before completing bill.'));
+          return;
+        }
+        if (isWideBill) {
+          window.dispatchEvent(new CustomEvent('pos:complete'));
+        } else {
+          goPay();
+        }
+        return;
+      }
+
+      // Barcode scanner wedge: digits then Enter
+      if (pendingProduct || discountOpen || customOpen) {
+        buffer = '';
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastKey > 80) buffer = '';
+      lastKey = now;
+
+      if (event.key === 'Enter' || event.key === 'NumpadEnter') {
+        const code = buffer.trim();
+        buffer = '';
+        if (code.length >= 3) {
+          // Fast keystrokes + Enter = barcode gun
+          event.preventDefault();
+          event.stopPropagation();
+          void commitScan(code);
+        }
+        return;
+      }
+
+      if (typingInField) {
+        if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+          buffer += event.key;
+        }
+        return;
+      }
+
+      if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        buffer += event.key;
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [
+    commitScan,
+    customOpen,
+    discountOpen,
+    goPay,
+    isWideBill,
+    items,
+    navigation,
+    pendingProduct,
+    t,
+  ]);
 
   const renderProduct = useCallback(
     ({ item }: { item: SearchProductResult }) => (
@@ -1165,6 +1274,18 @@ export default function BillingScreen({ navigation, route }: Props) {
           ) : null}
         </View>
       </View>
+
+      {isWideBill ? (
+        <View style={styles.shortcutBar}>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F1</Text> {t('New Bill')}</Text>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F2</Text> {t('Search')}</Text>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F7</Text> {t('Customer')}</Text>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F8</Text> {t('Discount')}</Text>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F9</Text> {t('Hold')}</Text>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F10</Text> {t('Print')}</Text>
+          <Text style={styles.shortcutItem}><Text style={styles.shortcutKey}>F12</Text> {t('Complete Bill')}</Text>
+        </View>
+      ) : null}
 
       <FlatList
         data={gridItems}
@@ -1943,4 +2064,30 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   dialogRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  shortcutBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs + 2,
+    backgroundColor: colors.surfaceVariant,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    alignItems: 'center',
+  },
+  shortcutItem: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  shortcutKey: {
+    fontWeight: '700',
+    color: colors.primary,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
 });

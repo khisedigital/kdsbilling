@@ -360,16 +360,20 @@ export function renderGapLabelCanvas(
   ctx.imageSmoothingEnabled = false;
 
   /**
-   * Shop is double-height thermal dots (16×24). Product, price, and barcode
-   * digits are 16×16. Every stroke is a whole printer dot.
-   * Left pad is generous — many 50mm heads clip the first ~1–2mm.
+   * Shop is 16×16 thermal dots for Latin (2x/2x square), or 16×24 (2x/3x) for Devanagari matras.
+   * Product, price, and barcode digits are 16×16.
+   * Equal margins on both sides (~3.5 mm / 28 dots) so the label is centered and product name
+   * never clips on the left physical edge of thermal heads.
    */
-  const padLeft = 16;
-  const padRight = 10;
+  const padX = 28;
+  const padLeft = padX;
+  const padRight = padX;
   const padY = 8;
   const bodyGap = 1;
+  const shopSource = (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase());
+  const shopIndic = hasDevanagari(shopSource);
   const shopSX = 2;
-  const shopSY = 3;
+  const shopSY = shopIndic ? 3 : 2;
   const bodySX = 2;
   const bodySY = 2;
   const shopH = thermalHeight(shopSY);
@@ -379,7 +383,6 @@ export function renderGapLabelCanvas(
   const footerReserve = digitH + 4 + bottomClear;
   let y = padY;
 
-  const shopSource = (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase());
   const productSource = content.productName.trim() || 'Product';
   // Stickers: "500g" not "500 g" (space cell + letter gap looked like a huge hole).
   const qtyText = content.detail.trim().replace(/\s+/g, '');
@@ -647,7 +650,7 @@ export function buildGapLabelEscPos(
   const unit = buildRasterGapLabelUnit(content, heightMm);
   const header = [
     0x1b, 0x40, // INIT
-    0x1b, 0x61, 0x00, // left
+    0x1b, 0x61, 0x01, // center align on roll so both sides have equal margin
     0x1d, 0x4c, 0x00, 0x00, // left margin 0
   ];
   const out: number[] = [...header];
@@ -671,13 +674,9 @@ const TSPL_PAGE_WIDTH = LABEL_WIDTH_MM * 8;
 
 type TsplFont = { id: string; w: number; h: number };
 
-function tsplFont(heightMm: LabelHeightMm, role: 'shop' | 'body'): TsplFont {
-  // Font 4 (24×32) reads clearly on TE244; font 3 was too small.
-  if (heightMm <= 25) {
-    return role === 'shop' ? { id: '4', w: 24, h: 32 } : { id: '3', w: 16, h: 24 };
-  }
-  if (role === 'shop') return { id: '4', w: 24, h: 32 };
-  return { id: '4', w: 24, h: 32 };
+function tsplFont(_heightMm: LabelHeightMm, _role: 'shop' | 'body'): TsplFont {
+  // Font 3 (16×24) fits ~22 shop chars and ~15 product chars neatly; Font 4 (24×32) was too wide.
+  return { id: '3', w: 16, h: 24 };
 }
 
 function tsplAscii(text: string, maxChars: number): string {
@@ -740,10 +739,12 @@ function tsplJobHeader(heightMm: LabelHeightMm): string[] {
 function renderLabelTextBand(content: GapLabelContent, pageW = TSPL_PAGE_WIDTH): HTMLCanvasElement {
   // Match TSPL SIZE width (50×8=400), not the 384-dot ESC/POS head width.
   const width = Math.max(8, Math.floor(pageW / 8) * 8);
-  const padLeft = 12;
-  const padRight = 8;
-  // Larger px + thicken — Marathi bitmap was too light/small on TE244.
-  const shopSize = 26;
+  const padX = 28;
+  const padLeft = padX;
+  const padRight = padX;
+  // Larger px + thicken — Marathi bitmap was too light/small on TE244; Latin stays clean at 18px.
+  const shopIndic = hasDevanagari(content.shopName);
+  const shopSize = shopIndic ? 24 : 18;
   const productSize = 22;
   const qtySize = 20;
   const priceSize = 24;
@@ -837,8 +838,9 @@ export function buildGapLabelTspl(
       (content.shopName.trim() || 'Shop').replace(/[A-Za-z]+/g, (word) => word.toUpperCase()),
       Math.floor((pageW - 16) / shopFont.w),
     );
-    const leftInset = 10;
-    const rightInset = 8;
+    const inset = 28;
+    const leftInset = inset;
+    const rightInset = inset;
     const shopX = Math.max(leftInset, Math.floor((pageW - shop.length * shopFont.w) / 2));
     const shopY = 2;
     const bodyY = shopY + shopFont.h * shopMulY + 2;

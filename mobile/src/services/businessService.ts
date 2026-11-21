@@ -739,6 +739,68 @@ export async function createDailyClosing(
   return data.data;
 }
 
+export async function updateDailyClosing(
+  id: string,
+  payload: {
+    openingCash: number;
+    actualCash: number;
+    cashAdded?: number;
+    notes?: string;
+    varianceReason?: string;
+    denominations?: Record<string, number>;
+    closingDate?: string;
+  },
+  opts?: { forceNetwork?: boolean },
+): Promise<DailyClosingRecord> {
+  if (!opts?.forceNetwork) {
+    try {
+      const { isFullyLocalMode, localPreviewDailyClosing, localSaveDailyClosing, localEnqueueSync } =
+        await import('../offline/localApi');
+      if (isFullyLocalMode()) {
+        const preview = await localPreviewDailyClosing(payload.closingDate);
+        const expected =
+          Number(payload.openingCash || 0) +
+          Number(preview?.cashSales || 0) -
+          Number(preview?.cashExpenses || 0) +
+          Number(payload.cashAdded || 0);
+        const row: DailyClosingRecord = {
+          id,
+          closing_date: payload.closingDate || preview?.closingDate || new Date().toISOString().slice(0, 10),
+          opening_cash: payload.openingCash,
+          expected_cash: expected,
+          actual_cash: payload.actualCash,
+          variance: Number(payload.actualCash) - expected,
+          total_sales: preview?.totalSales || 0,
+          total_expenses: preview?.cashExpenses || 0,
+          notes: payload.notes || null,
+          details: {
+            payments: preview?.payments,
+            cashSales: preview?.cashSales,
+            cashRefunds: preview?.cashRefunds,
+            cashExpenses: preview?.cashExpenses,
+            cashAdded: payload.cashAdded,
+            denominations: payload.denominations,
+            varianceReason: payload.varianceReason,
+          },
+          created_at: new Date().toISOString(),
+        };
+        await localSaveDailyClosing({ ...row, syncStatus: 'pending' });
+        await localEnqueueSync({
+          entityType: 'daily_closing',
+          entityId: id,
+          op: 'update',
+          payload: { ...payload, id },
+        });
+        return row;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const { data } = await api.put(`/daily-closings/${id}`, payload);
+  return data.data;
+}
+
 export async function fetchDailyClosings(): Promise<DailyClosingRecord[]> {
   try {
     const { isFullyLocalMode, localListDailyClosings } = await import('../offline/localApi');

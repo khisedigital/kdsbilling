@@ -1,8 +1,8 @@
 const { Op } = require('sequelize');
 const AppError = require('../utils/AppError');
 const { getPagination, paginatedResponse } = require('../utils/pagination');
-const { calculateBill } = require('./taxCalculator');
-const { applyStockMovement, MOVEMENT_TYPES, generateDocNumber } = require('./stockEngine');
+const { calculateBill, toPaise, fromPaise, round2 } = require('./taxCalculator');
+const { applyStockMovement, MOVEMENT_TYPES, generateDocNumber, getLocalDatePrefix } = require('./stockEngine');
 
 function round3(n) {
   return Math.round((Number(n) || 0) * 1000) / 1000;
@@ -30,7 +30,8 @@ function serializeBill(bill) {
 async function nextBillNumber(db, branchId, transaction) {
   const { BillSequence, Branch } = db;
   const branch = await Branch.findByPk(branchId, { transaction });
-  const datePrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const timeZone = db?.timezone || process.env.TIMEZONE || 'Asia/Kolkata';
+  const datePrefix = getLocalDatePrefix(new Date(), timeZone);
 
   let seq = await BillSequence.findOne({ where: { branch_id: branchId }, transaction, lock: transaction?.LOCK?.UPDATE });
   if (!seq || seq.date_prefix !== datePrefix) {
@@ -127,22 +128,55 @@ async function createBill(db, branchId, userId, payload) {
   if (!payload.payments?.length) throw new AppError('Payment required', 400, 'VALIDATION_ERROR');
 
   const clientBillId = payload.clientBillId || payload.client_bill_id || null;
+  let supportsClientBillId = true;
   if (clientBillId) {
-    const existing = await SalesOrder.findOne({ where: { client_bill_id: clientBillId } });
-    if (existing) return getBill(db, existing.id);
+    try {
+      const existing = await SalesOrder.findOne({ where: { client_bill_id: clientBillId } });
+      if (existing) return getBill(db, existing.id);
+    } catch (findErr) {
+      if (findErr.parent?.code === 'ER_BAD_FIELD_ERROR' || /client_bill_id/i.test(findErr.message)) {
+        try {
+          const qi = db.sequelize.getQueryInterface();
+          const table = await qi.describeTable('sales_orders');
+          if (!table.client_bill_id) {
+            await qi.addColumn('sales_orders', 'client_bill_id', {
+              type: (db.Sequelize && db.Sequelize.DataTypes ? db.Sequelize.DataTypes.UUID : null) || 'CHAR(36)',
+              allowNull: true,
+              defaultValue: null,
+            });
+            try {
+              await qi.addIndex('sales_orders', ['client_bill_id'], {
+                unique: true,
+                name: 'sales_orders_client_bill_id_unique',
+              });
+            } catch {
+              // ignore duplicate index if already exists
+            }
+          }
+        } catch {
+          supportsClientBillId = false;
+        }
+      } else {
+        throw findErr;
+      }
+    }
   }
 
   let offer = null;
   if (payload.offerId) offer = await Offer.findOne({ where: { id: payload.offerId, status: 'active' } });
 
   const calculated = await calculateBill(db, { ...payload, offer });
-  const paidAmount = payload.payments.reduce((s, p) => s + parseFloat(p.amount), 0);
+  const paidPaise = (payload.payments || []).reduce((s, p) => s + toPaise(p.amount), 0);
+  const totalPaise = toPaise(calculated.totalAmount);
 
-  if (paidAmount < calculated.totalAmount - 0.01) {
+  if (paidPaise < totalPaise) {
     throw new AppError('Insufficient payment amount', 400, 'INSUFFICIENT_PAYMENT');
   }
 
-  const usesStoreCredit = payload.payments.some((p) => p.mode === 'store_credit' && parseFloat(p.amount) > 0);
+  const paidAmount = fromPaise(paidPaise);
+  const changeAmount = fromPaise(Math.max(0, paidPaise - totalPaise));
+
+  const usesStoreCredit = payload.payments.some((p) => p.mode === 'store_credit' && toPaise(p.amount) > 0);
   if (usesStoreCredit && !payload.customerId) {
     throw new AppError('Store credit payment requires a customer', 400, 'VALIDATION_ERROR');
   }
@@ -160,9 +194,8 @@ async function createBill(db, branchId, userId, payload) {
       if (!customer) throw new AppError('Customer not found', 404, 'NOT_FOUND');
     }
 
-    const bill = await SalesOrder.create({
+    const billData = {
       bill_number: billNumber,
-      client_bill_id: clientBillId || null,
       branch_id: branchId,
       customer_id: customer ? customer.id : null,
       status: 'completed',
@@ -173,10 +206,14 @@ async function createBill(db, branchId, userId, payload) {
       round_off_amount: calculated.roundOffAmount || 0,
       total_amount: calculated.totalAmount,
       paid_amount: paidAmount,
-      change_amount: Math.max(0, paidAmount - calculated.totalAmount),
+      change_amount: changeAmount,
       notes: payload.notes || null,
       created_by: userId,
-    }, { transaction });
+    };
+    if (supportsClientBillId && clientBillId) {
+      billData.client_bill_id = clientBillId;
+    }
+    const bill = await SalesOrder.create(billData, { transaction });
 
     for (const line of calculated.items) {
       const isCustom = line.isCustom === true || !line.variantId || String(line.variantId).startsWith('custom-');
@@ -229,17 +266,20 @@ async function createBill(db, branchId, userId, payload) {
       }, { transaction });
 
       if (payment.mode === 'store_credit') {
-        const amount = parseFloat(payment.amount);
-        if (!(amount > 0)) continue;
+        const amountPaise = toPaise(payment.amount);
+        if (amountPaise <= 0) continue;
         if (!customer) throw new AppError('Store credit payment requires a customer', 400, 'VALIDATION_ERROR');
-        const newBal = parseFloat(customer.store_credit_balance) - amount;
-        if (newBal < -0.01) throw new AppError('Insufficient store credit', 400, 'INSUFFICIENT_CREDIT');
+        const balPaise = toPaise(customer.store_credit_balance);
+        const newBalPaise = balPaise - amountPaise;
+        if (newBalPaise < 0) throw new AppError('Insufficient store credit', 400, 'INSUFFICIENT_CREDIT');
+        const newBal = fromPaise(newBalPaise);
+        const usedAmount = fromPaise(amountPaise);
         await customer.update({ store_credit_balance: newBal }, { transaction });
         await customer.reload({ transaction });
         await db.CustomerLedger.create({
           customer_id: customer.id,
           entry_type: 'store_credit_use',
-          amount: -amount,
+          amount: -usedAmount,
           balance_after: newBal,
           reference_type: 'sales_order',
           reference_id: bill.id,
@@ -249,9 +289,9 @@ async function createBill(db, branchId, userId, payload) {
     }
 
     if (customer) {
-      const points = Math.floor(calculated.totalAmount / 100);
+      const points = Math.floor(totalPaise / 10000);
       if (points > 0) {
-        const newPts = parseFloat(customer.loyalty_points) + points;
+        const newPts = round2(parseFloat(customer.loyalty_points || 0) + points);
         await customer.update({ loyalty_points: newPts }, { transaction });
         await db.CustomerLedger.create({
           customer_id: customer.id,
@@ -281,7 +321,7 @@ async function createBill(db, branchId, userId, payload) {
   } catch (err) {
     await transaction.rollback();
     // Concurrent offline sync of the same clientBillId — return the winner.
-    if (clientBillId && err && (err.name === 'SequelizeUniqueConstraintError' || err.parent?.code === 'ER_DUP_ENTRY')) {
+    if (supportsClientBillId && clientBillId && err && (err.name === 'SequelizeUniqueConstraintError' || err.parent?.code === 'ER_DUP_ENTRY')) {
       const existing = await SalesOrder.findOne({ where: { client_bill_id: clientBillId } });
       if (existing) return getBill(db, existing.id);
     }
@@ -369,23 +409,24 @@ async function voidBill(db, branchId, userId, billId, reason) {
         lock: transaction.LOCK.UPDATE,
       });
       if (customer) {
-        let bal = parseFloat(customer.store_credit_balance);
+        let balPaise = toPaise(customer.store_credit_balance);
         for (const payment of creditPayments) {
-          const amount = parseFloat(payment.amount);
-          if (!(amount > 0)) continue;
-          bal += amount;
+          const amountPaise = toPaise(payment.amount);
+          if (amountPaise <= 0) continue;
+          balPaise += amountPaise;
+          const currentBal = fromPaise(balPaise);
           await db.CustomerLedger.create({
             customer_id: customer.id,
             entry_type: 'store_credit_add',
-            amount,
-            balance_after: bal,
+            amount: fromPaise(amountPaise),
+            balance_after: currentBal,
             reference_type: 'void_bill',
             reference_id: bill.id,
             notes: `Void restore: ${reason}`,
             created_by: userId,
           }, { transaction });
         }
-        await customer.update({ store_credit_balance: bal }, { transaction });
+        await customer.update({ store_credit_balance: fromPaise(balPaise) }, { transaction });
       }
     }
 

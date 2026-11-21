@@ -234,6 +234,11 @@ async function createClosing(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function updateClosing(req, res) {
+  const data = await expenseService.updateDailyClosing(req.db, branchId(req), req.auth.sub, req.params.id, req.body);
+  res.json({ success: true, data });
+}
+
 async function listClosings(req, res) {
   const data = await expenseService.listClosings(req.db, branchId(req));
   res.json({ success: true, data });
@@ -318,7 +323,7 @@ module.exports = {
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, addStoreCredit,
   createReturn, listReturns, getReturn,
   listExpenseCategories, createExpense, listExpenses, listOffers,
-  previewClosing, createClosing, listClosings, getClosing,
+  previewClosing, createClosing, updateClosing, listClosings, getClosing,
   listPrinters, createPrinter, updatePrinter, deletePrinter, printBillNetwork,
   getShopSettings, updateShopSettings, uploadShopLogo, removeShopLogo,
 };

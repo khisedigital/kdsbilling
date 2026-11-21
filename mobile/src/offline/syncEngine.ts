@@ -2,6 +2,7 @@ import api from '../services/api';
 import { createBill } from '../services/businessService';
 import { fetchAllProducts, fetchBrands, fetchCategories } from '../services/catalogService';
 import { getShopSettings } from '../services/shopSettingsService';
+import { apiError } from '../utils/apiError';
 import { isDesktopOfflineCapable } from './capability';
 import { useConnectivityStore } from './connectivityStore';
 import {
@@ -133,8 +134,12 @@ async function pushSyncQueueItem(row: {
     await api.delete(`/products/${row.entityId}`);
     return;
   }
-  if (type === 'daily_closing' && op === 'create') {
-    await api.post('/daily-closings', p);
+  if (type === 'daily_closing' && (op === 'create' || op === 'update')) {
+    if (op === 'update') {
+      await api.put(`/daily-closings/${row.entityId}`, p);
+    } else {
+      await api.post('/daily-closings', p);
+    }
     return;
   }
   if (type === 'stock_movement') {
@@ -174,7 +179,7 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number }>
         synced += 1;
       } catch (err) {
         failed += 1;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = apiError(err, err instanceof Error ? err.message : String(err));
         await markOutboxSaleError(row, message);
         useConnectivityStore.getState().setLastSyncError(message);
         if (/401|403|login|unauthorized/i.test(message)) break;
@@ -190,7 +195,7 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number }>
           synced += 1;
         } catch (err) {
           failed += 1;
-          const message = err instanceof Error ? err.message : String(err);
+          const message = apiError(err, err instanceof Error ? err.message : String(err));
           await localMarkSyncQueueError(row.id, message, (row.syncAttempts || 0) + 1);
           useConnectivityStore.getState().setLastSyncError(message);
           if (/401|403|login|unauthorized/i.test(message)) break;
@@ -387,7 +392,7 @@ export async function syncNow(): Promise<SyncResult> {
     useConnectivityStore.getState().setLastSyncAt(syncedAt);
     return { ...push, pulled };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = apiError(err, err instanceof Error ? err.message : String(err));
     useConnectivityStore.getState().setLastSyncError(message);
     return { synced: 0, failed: 0 };
   } finally {

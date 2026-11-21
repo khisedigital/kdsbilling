@@ -486,24 +486,51 @@ function renderA4(payload, language = 'en') {
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
+      @page {
+        size: A4 portrait;
+        margin: 3mm 10mm 6mm;
+      }
       *{box-sizing:border-box}
-      body{font-family:Georgia,'Times New Roman','Nirmala UI','Noto Sans Devanagari',Mangal,serif;padding:36px 40px;color:#111;max-width:720px;margin:0 auto}
-      .banner{text-align:center;border-top:3px double #111;border-bottom:3px double #111;padding:18px 12px 16px;margin-bottom:22px}
-      .logo{max-height:64px;max-width:200px;object-fit:contain;margin-bottom:10px}
-      .shop{font-size:26px;font-weight:700;letter-spacing:0.04em;margin:0 0 8px;text-transform:uppercase;line-height:1.5}
-      .meta{color:#374151;font-size:13px;margin:3px 0;line-height:1.55;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
-      .doc-title{margin-top:12px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
-      .bill-meta{text-align:center;margin:0 0 18px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;color:#374151;line-height:1.55}
+      html, body {
+        width: 100%;
+        max-width: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      body{font-family:Georgia,'Times New Roman','Nirmala UI','Noto Sans Devanagari',Mangal,serif;padding:4px 16px 16px;color:#111;width:100%;max-width:100%;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .banner{text-align:center;border-top:2px double #111;border-bottom:2px double #111;padding:8px 12px 8px;margin-bottom:12px;width:100%}
+      .logo{max-height:56px;max-width:180px;object-fit:contain;margin-bottom:6px}
+      .shop{font-size:24px;font-weight:700;letter-spacing:0.04em;margin:0 0 4px;text-transform:uppercase;line-height:1.3}
+      .meta{color:#374151;font-size:12px;margin:2px 0;line-height:1.4;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
+      .doc-title{margin-top:6px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
+      .bill-meta{text-align:center;margin:0 0 10px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:12px;color:#374151;line-height:1.4;width:100%}
       .bill-meta strong{color:#111}
       table{width:100%;border-collapse:collapse;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
-      th,td{border-bottom:1px solid #e5e7eb;padding:10px 8px;text-align:left}
+      th,td{border-bottom:1px solid #e5e7eb;padding:8px 6px;text-align:left}
       th{background:#f3f4f6;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#4b5563}
-      .totals{margin-top:16px;margin-left:auto;width:260px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
-      .totals .row{display:flex;justify-content:space-between;padding:4px 0}
-      .totals .grand{border-top:2px solid #111;margin-top:8px;padding-top:10px;font-size:16px;font-weight:700}
-      .pay{margin-top:18px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
-      .pay-row{display:flex;justify-content:space-between;max-width:260px;margin-left:auto;padding:2px 0}
-      .footer{text-align:center;margin-top:32px;padding-top:14px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
+      .totals{margin-top:12px;margin-left:auto;width:280px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
+      .totals .row{display:flex;justify-content:space-between;padding:3px 0}
+      .totals .grand{border-top:2px solid #111;margin-top:6px;padding-top:8px;font-size:16px;font-weight:700}
+      .pay{margin-top:12px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
+      .pay-row{display:flex;justify-content:space-between;max-width:280px;margin-left:auto;padding:2px 0}
+      .footer{text-align:center;margin-top:24px;padding-top:10px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;width:100%}
+      @media print {
+        @page {
+          size: A4 portrait;
+          margin: 3mm 10mm 6mm;
+        }
+        html, body {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+        .banner, .bill-meta, table, .footer {
+          width: 100% !important;
+          max-width: 100% !important;
+        }
+        .banner { padding: 6px 10px !important; margin-bottom: 8px !important; }
+      }
     </style>
     </head><body>
     <div class="banner">

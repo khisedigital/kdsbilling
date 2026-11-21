@@ -5,7 +5,7 @@ import { billT, paymentLabel } from '../i18n';
 import { useLanguageStore } from '../i18n/languageStore';
 import { totalSaving } from '../utils/billSaving';
 import type { ThermalPrintPayload } from './PrintService';
-import { receiptCharsForPaper } from './escpos';
+import { buildThermalHtml, receiptCharsForPaper } from './escpos';
 import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari } from './indicText';
 
 /** English bills keep their current words. Marathi bills use the bill-language dictionary. */
@@ -393,29 +393,47 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>${escapeHtml(pickBillNo(bill))}</title>
 <style>
+  @page {
+    size: A4 portrait;
+    margin: 3mm 8mm 6mm;
+  }
   *{box-sizing:border-box}
-  body{font-family:Arial,Helvetica,${DEVANAGARI_FONTS},sans-serif;color:#000;font-weight:400;margin:0;padding:28px;max-width:780px;
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  body{font-family:Arial,Helvetica,${DEVANAGARI_FONTS},sans-serif;color:#000;font-weight:400;margin:0;padding:4px 16px 16px;width:100%;max-width:100%;
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b,.totals .grand{font-weight:700}
-  .head{text-align:center;border:1px solid #000;padding:18px 14px;margin-bottom:18px}
-  .logo{display:block;max-height:72px;max-width:220px;margin:0 auto 10px;object-fit:contain}
-  .shop{margin:0;font-size:32px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:center;line-height:1.45}
-  .meta{margin:4px 0 0;color:#000;font-size:13px}
-  .title{margin:10px 0 0;font-size:12px;letter-spacing:.2em}
-  .meta{line-height:1.5}
-  .info{text-align:center;margin-bottom:14px;font-size:13px;line-height:1.5}
+  .head{text-align:center;border:1px solid #000;padding:8px 12px;margin-bottom:8px;width:100%}
+  .logo{display:block;max-height:56px;max-width:200px;margin:0 auto 4px;object-fit:contain}
+  .shop{margin:0;font-size:26px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;text-align:center;line-height:1.25}
+  .meta{margin:2px 0 0;color:#000;font-size:12px;line-height:1.4}
+  .title{margin:6px 0 0;font-size:12px;letter-spacing:.2em}
+  .info{text-align:center;margin-bottom:8px;font-size:13px;line-height:1.4;width:100%}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{color:#000;padding:10px 8px;text-align:left;letter-spacing:.04em;font-size:11px;border-top:1px solid #000;border-bottom:1px solid #000}
-  td{padding:9px 8px;border-bottom:0.5px solid #000}
+  th{color:#000;padding:8px 6px;text-align:left;letter-spacing:.04em;font-size:11px;border-top:1px solid #000;border-bottom:1px solid #000}
+  td{padding:7px 6px;border-bottom:0.5px solid #000}
   th.r,td.r{text-align:right}
   th.c,td.c{text-align:center;width:36px}
   .sku{color:#000;font-size:11px;margin-top:2px}
-  .totals{width:280px;margin:16px 0 0 auto;font-size:13px}
-  .totals .row{display:flex;justify-content:space-between;padding:4px 0}
-  .totals .grand{border-top:1px solid #000;margin-top:8px;padding-top:8px;font-size:16px}
-  .totals .save{margin-top:8px;padding-top:8px;border-top:1px dashed #000;font-weight:700}
-  .pay{display:flex;justify-content:space-between;width:280px;margin:4px 0 0 auto;font-size:13px}
-  .foot{text-align:center;margin-top:28px;padding-top:12px;border-top:1px dashed #000;color:#000;font-size:13px}
+  .totals{width:300px;margin:12px 0 0 auto;font-size:13px}
+  .totals .row{display:flex;justify-content:space-between;padding:3px 0}
+  .totals .grand{border-top:1px solid #000;margin-top:6px;padding-top:6px;font-size:16px}
+  .totals .save{margin-top:6px;padding-top:6px;border-top:1px dashed #000;font-weight:700}
+  .pay{display:flex;justify-content:space-between;width:300px;margin:3px 0 0 auto;font-size:13px}
+  .foot{text-align:center;margin-top:18px;padding-top:10px;border-top:1px dashed #000;color:#000;font-size:13px;width:100%}
+  @media print {
+    @page {
+      size: A4 portrait;
+      margin: 3mm 8mm 6mm;
+    }
+    html, body { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; }
+    .head, .info, table, .foot { width: 100% !important; max-width: 100% !important; }
+    .head { padding: 6px 10px !important; margin-bottom: 6px !important; }
+  }
 </style></head><body>
   <div class="head">
     ${logoBlock}
@@ -469,10 +487,12 @@ export function buildReceiptPayload(
   }
   const charsPerLine = receiptCharsForPaper(format);
   const raw = buildThermalReceipt(bill, shop, charsPerLine);
+  const thermal = buildThermalHtml(raw, charsPerLine, format);
   return {
     format,
     charsPerLine,
     lines: raw.split('\n'),
     raw,
+    html: thermal.html,
   };
 }

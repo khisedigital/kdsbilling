@@ -21,6 +21,7 @@ import ListRow from '../../components/ui/ListRow';
 import SectionCard from '../../components/ui/SectionCard';
 import {
   createDailyClosing,
+  updateDailyClosing,
   fetchDailyClosings,
   previewDailyClosing,
   type ClosingPreview,
@@ -80,6 +81,26 @@ export default function DailyClosingScreen({}: Props) {
   const [varianceReason, setVarianceReason] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [lastClosed, setLastClosed] = useState<DailyClosingRecord | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const isEditingRef = React.useRef(isEditing);
+  isEditingRef.current = isEditing;
+
+  const populateFromClosing = useCallback((closing: DailyClosingRecord) => {
+    setOpeningCash(String(closing.opening_cash ?? 0));
+    const addedVal = closing.details?.cashAdded != null ? closing.details.cashAdded : 0;
+    setCashAdded(String(addedVal));
+    const denoms = emptyDenoms();
+    if (closing.details?.denominations) {
+      for (const [face, count] of Object.entries(closing.details.denominations)) {
+        if (Object.prototype.hasOwnProperty.call(denoms, face)) {
+          denoms[face] = String(count ?? '');
+        }
+      }
+    }
+    setDenomCounts(denoms);
+    setRemarks(closing.details?.remarks || closing.notes || '');
+    setVarianceReason(closing.details?.varianceReason || '');
+  }, []);
 
   const load = useCallback(async () => {
     const [nextPreview, closings] = await Promise.all([
@@ -88,10 +109,15 @@ export default function DailyClosingScreen({}: Props) {
     ]);
     setPreview(nextPreview);
     setHistory(closings || []);
-    if (!nextPreview.alreadyClosed) {
+    if (nextPreview.alreadyClosed && nextPreview.existingClosing) {
+      setLastClosed(nextPreview.existingClosing);
+      if (!isEditingRef.current) {
+        populateFromClosing(nextPreview.existingClosing);
+      }
+    } else if (!nextPreview.alreadyClosed) {
       setOpeningCash(String(nextPreview.suggestedOpeningCash || 0));
     }
-  }, []);
+  }, [populateFromClosing]);
 
   useEffect(() => {
     setLoadingPreview(true);
@@ -108,6 +134,22 @@ export default function DailyClosingScreen({}: Props) {
       Alert.alert(t('Load failed'), apiError(err, t('Could not load closing data')));
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const startEditing = () => {
+    setFormError('');
+    if (preview?.existingClosing) {
+      populateFromClosing(preview.existingClosing);
+    }
+    setIsEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setFormError('');
+    setIsEditing(false);
+    if (preview?.existingClosing) {
+      populateFromClosing(preview.existingClosing);
     }
   };
 
@@ -139,12 +181,13 @@ export default function DailyClosingScreen({}: Props) {
 
   const alreadyClosed = Boolean(preview?.alreadyClosed);
   const canSubmit =
-    !alreadyClosed && !saving && (matched || varianceReason.trim().length > 0);
+    (!alreadyClosed || isEditing) &&
+    !saving &&
+    (matched || varianceReason.trim().length > 0);
 
   const openConfirm = () => {
     setFormError('');
-    if (alreadyClosed) {
-      setFormError(t('This register is already closed for today'));
+    if (alreadyClosed && !isEditing) {
       return;
     }
     if (!matched && !varianceReason.trim()) {
@@ -163,7 +206,7 @@ export default function DailyClosingScreen({}: Props) {
         const qty = parseInt(denomCounts[String(face)] || '0', 10) || 0;
         if (qty > 0) denominations[String(face)] = qty;
       }
-      const saved = await createDailyClosing({
+      const payload = {
         openingCash: opening,
         cashAdded: added,
         actualCash,
@@ -171,17 +214,28 @@ export default function DailyClosingScreen({}: Props) {
         varianceReason: matched ? undefined : varianceReason.trim(),
         denominations,
         closingDate: preview?.closingDate,
-      });
-      setConfirmOpen(false);
-      setLastClosed(saved);
-      setDenomCounts(emptyDenoms());
-      setCashAdded('0');
-      setRemarks('');
-      setVarianceReason('');
-      await load();
+      };
+
+      if (alreadyClosed && preview?.existingClosing) {
+        const saved = await updateDailyClosing(preview.existingClosing.id, payload);
+        setConfirmOpen(false);
+        setIsEditing(false);
+        setLastClosed(saved);
+        await load();
+        Alert.alert(t('Success'), t("Today's register updated successfully"));
+      } else {
+        const saved = await createDailyClosing(payload);
+        setConfirmOpen(false);
+        setLastClosed(saved);
+        setDenomCounts(emptyDenoms());
+        setCashAdded('0');
+        setRemarks('');
+        setVarianceReason('');
+        await load();
+      }
     } catch (err) {
       setConfirmOpen(false);
-      setFormError(apiError(err, t('Could not close register')));
+      setFormError(apiError(err, alreadyClosed ? t('Could not update register') : t('Could not close register')));
     } finally {
       setSaving(false);
     }
@@ -259,7 +313,7 @@ export default function DailyClosingScreen({}: Props) {
           keyboardType="decimal-pad"
           mode="outlined"
           style={[styles.input, styles.half]}
-          disabled={alreadyClosed}
+          disabled={alreadyClosed && !isEditing}
         />
         <AppTextInput
           label={t('Cash added today')}
@@ -268,7 +322,7 @@ export default function DailyClosingScreen({}: Props) {
           keyboardType="decimal-pad"
           mode="outlined"
           style={[styles.input, styles.half]}
-          disabled={alreadyClosed}
+          disabled={alreadyClosed && !isEditing}
         />
       </View>
       {preview?.previousClosingDate ? (
@@ -318,7 +372,7 @@ export default function DailyClosingScreen({}: Props) {
                 dense
                 placeholder="0"
                 style={styles.denomInput}
-                disabled={alreadyClosed}
+                disabled={alreadyClosed && !isEditing}
               />
               <Text style={styles.denomTotal}>{lineTotal ? rupee(lineTotal) : '—'}</Text>
             </View>
@@ -363,7 +417,7 @@ export default function DailyClosingScreen({}: Props) {
           mode="outlined"
           style={styles.input}
           multiline
-          disabled={alreadyClosed}
+          disabled={alreadyClosed && !isEditing}
           placeholder={t('Example: short change, missing note, tip float')}
         />
       ) : null}
@@ -375,17 +429,56 @@ export default function DailyClosingScreen({}: Props) {
         mode="outlined"
         style={styles.input}
         multiline
-        disabled={alreadyClosed}
+        disabled={alreadyClosed && !isEditing}
       />
 
       {formError ? <HelperText type="error" visible>{formError}</HelperText> : null}
 
-      {alreadyClosed ? (
-        <View style={styles.closedBox}>
-          <Icon name="lock-check" size={22} color={colors.secondary} />
-          <Text style={styles.closedText}>
-            {t('Register already closed for {{date}}', { date: preview?.closingDate || t('today') })}
-          </Text>
+      {alreadyClosed && !isEditing ? (
+        <View style={styles.closedActions}>
+          <View style={styles.closedBox}>
+            <Icon name="lock-check" size={22} color={colors.secondary} />
+            <Text style={styles.closedText}>
+              {t('Register already closed for {{date}}', { date: preview?.closingDate || t('today') })}
+            </Text>
+          </View>
+          <Button
+            mode="contained"
+            icon="pencil"
+            onPress={startEditing}
+            contentStyle={styles.closeBtnContent}
+            style={styles.editBtn}>
+            {t("Edit today's register")}
+          </Button>
+        </View>
+      ) : alreadyClosed && isEditing ? (
+        <View style={styles.editActions}>
+          <View style={styles.editingBanner}>
+            <Icon name="pencil" size={20} color={colors.primary} />
+            <Text style={styles.editingText}>
+              {t("Editing today's register. Changes will update the register report.")}
+            </Text>
+          </View>
+          <View style={styles.btnRow}>
+            <Button
+              mode="outlined"
+              icon="close"
+              onPress={cancelEdit}
+              disabled={saving}
+              style={styles.cancelBtn}>
+              {t('Cancel')}
+            </Button>
+            <Button
+              mode="contained"
+              icon="content-save"
+              onPress={openConfirm}
+              loading={saving}
+              disabled={!canSubmit}
+              contentStyle={styles.closeBtnContent}
+              style={styles.saveBtn}>
+              {t('Save changes')}
+            </Button>
+          </View>
         </View>
       ) : (
         <Button
@@ -420,13 +513,37 @@ export default function DailyClosingScreen({}: Props) {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
         }>
-        <Text style={styles.pageTitle}>{t('Close Register')}</Text>
-        <Text style={styles.subtitle}>
-          {t('Count the cash in the drawer and check it matches today\'s cash sales')}
-        </Text>
-        {user?.name ? (
-          <Text style={styles.cashier}>{t('Cashier')}: {user.name}</Text>
-        ) : null}
+        <View style={styles.pageHeaderRow}>
+          <View style={styles.pageHeaderLeft}>
+            <Text style={styles.pageTitle}>{t('Close Register')}</Text>
+            <Text style={styles.subtitle}>
+              {t('Count the cash in the drawer and check it matches today\'s cash sales')}
+            </Text>
+            {user?.name ? (
+              <Text style={styles.cashier}>{t('Cashier')}: {user.name}</Text>
+            ) : null}
+          </View>
+          {alreadyClosed ? (
+            <View
+              style={[
+                styles.badge,
+                isEditing ? styles.badgeEditing : styles.badgeClosed,
+              ]}>
+              <Icon
+                name={isEditing ? 'pencil' : 'lock-check'}
+                size={16}
+                color={isEditing ? colors.primary : colors.secondary}
+              />
+              <Text
+                style={[
+                  styles.badgeText,
+                  { color: isEditing ? colors.primary : colors.secondary },
+                ]}>
+                {isEditing ? t("Editing today's register") : t('Register closed')}
+              </Text>
+            </View>
+          ) : null}
+        </View>
 
         {wide ? (
           <View style={styles.columns}>
@@ -449,17 +566,38 @@ export default function DailyClosingScreen({}: Props) {
           {history.map((c) => {
             const variance = money(c.variance);
             const ok = Math.abs(variance) < 0.01;
+            const isToday = preview?.closingDate ? c.closing_date === preview.closingDate : false;
             return (
               <ListRow
                 key={c.id}
-                title={c.closing_date}
+                title={`${c.closing_date}${isToday ? ` · ${t("Today's Register")}` : ''}`}
                 subtitle={`${t('Sales')} ${rupee(c.total_sales)}${c.creator?.name ? ` · ${c.creator.name}` : ''}`}
                 icon={ok ? 'check-circle-outline' : 'alert-circle-outline'}
                 iconColor={ok ? colors.secondary : colors.error}
                 iconBg={ok ? colors.secondaryLight : colors.errorLight}
                 right={`${variance >= 0 ? '+' : ''}${rupee(variance)}`}
                 showChevron={false}
-                onPress={() => handlePrint(c)}
+                onPress={() => {
+                  if (isToday) {
+                    Alert.alert(
+                      t("Today's Register"),
+                      t("Choose an action for today's register"),
+                      [
+                        { text: t('Print report'), onPress: () => handlePrint(c) },
+                        {
+                          text: t('Edit register'),
+                          onPress: () => {
+                            populateFromClosing(c);
+                            setIsEditing(true);
+                          },
+                        },
+                        { text: t('Cancel'), style: 'cancel' },
+                      ],
+                    );
+                  } else {
+                    handlePrint(c);
+                  }
+                }}
                 style={styles.historyRow}
               />
             );
@@ -474,7 +612,9 @@ export default function DailyClosingScreen({}: Props) {
 
       <Portal>
         <AppDialog visible={confirmOpen} onDismiss={() => !saving && setConfirmOpen(false)} style={styles.dialog}>
-          <AppDialog.Title>{t('Confirm close register')}</AppDialog.Title>
+          <AppDialog.Title>
+            {alreadyClosed ? t('Confirm update register') : t('Confirm close register')}
+          </AppDialog.Title>
           <AppDialog.Content>
             <Text style={styles.confirmLine}>{t('Expected cash')}: {rupee(expectedCash)}</Text>
             <Text style={styles.confirmLine}>{t('Cash counted')}: {rupee(actualCash)}</Text>
@@ -485,13 +625,15 @@ export default function DailyClosingScreen({}: Props) {
               <Text style={styles.confirmReason}>{t('Reason')}: {varianceReason.trim()}</Text>
             ) : null}
             <Text style={styles.confirmWarn}>
-              {t('After closing, today\'s register cannot be edited.')}
+              {alreadyClosed
+                ? t("This will replace today's closing figures with the updated amounts.")
+                : t('You can still edit today\'s register later if changes are needed.')}
             </Text>
           </AppDialog.Content>
           <AppDialog.Actions>
             <Button onPress={() => setConfirmOpen(false)} disabled={saving}>{t('Cancel')}</Button>
             <Button mode="contained" onPress={submitClosing} loading={saving}>
-              {t('Confirm & close')}
+              {alreadyClosed ? t('Confirm & update') : t('Confirm & close')}
             </Button>
           </AppDialog.Actions>
         </AppDialog>
@@ -522,6 +664,35 @@ function CalcRow({
 const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
   loadingText: { ...typography.bodySm },
+  pageHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  pageHeaderLeft: { flex: 1, minWidth: 260 },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.full,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  badgeClosed: {
+    backgroundColor: colors.secondaryLight,
+  },
+  badgeEditing: {
+    backgroundColor: colors.primaryLight,
+  },
+  badgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   pageTitle: { ...typography.h1, fontSize: 24, marginBottom: 4 },
   subtitle: { ...typography.bodySm, marginBottom: spacing.sm },
   cashier: { ...typography.caption, marginBottom: spacing.lg },
@@ -614,6 +785,21 @@ const styles = StyleSheet.create({
   closeBtn: { borderRadius: radius.md, marginTop: spacing.sm },
   closeBtnContent: { minHeight: 52 },
   printBtn: { marginTop: spacing.sm, borderRadius: radius.md },
+  closedActions: { gap: spacing.sm },
+  editBtn: { borderRadius: radius.md },
+  editActions: { gap: spacing.sm },
+  editingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  editingText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.primary },
+  btnRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
+  saveBtn: { flex: 1, borderRadius: radius.md },
+  cancelBtn: { flex: 1, borderRadius: radius.md },
   closedBox: {
     flexDirection: 'row',
     alignItems: 'center',

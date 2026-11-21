@@ -59,6 +59,7 @@ router.get('/daily-closings/preview', requirePermission(PERMISSIONS.CLOSING_MANA
 router.get('/daily-closings', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.listClosings));
 router.get('/daily-closings/:id', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.getClosing));
 router.post('/daily-closings', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.createClosing));
+router.put('/daily-closings/:id', requirePermission(PERMISSIONS.CLOSING_MANAGE), asyncHandler(biz.updateClosing));
 
 // Printers
 router.get('/printers', requirePermission(PERMISSIONS.SETTINGS_MANAGE), asyncHandler(biz.listPrinters));

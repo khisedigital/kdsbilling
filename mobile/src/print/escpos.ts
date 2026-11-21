@@ -112,8 +112,8 @@ export function buildThermalHtml(
   const sideLeftMm = paper === '58' ? 2 : 2.5;
   const sideRightMm = paper === '58' ? 2 : 2.5;
   const printableMm = Number((paperMm - sideLeftMm - sideRightMm).toFixed(2));
-  // 80mm mild bump over default 0.55 (avoid the oversized 0.42 pass).
-  const glyphEm = paper === '58' ? 0.62 : 0.47;
+  // 80mm uses 0.60 so 48 monospace characters fill 100% of the printable width.
+  const glyphEm = paper === '58' ? 0.62 : 0.60;
   const fontMm = Number((Math.max(8, printableMm) / cols / glyphEm).toFixed(4));
   const shopFontMm = fontMm;
   const lineMm = fontMm * 1.55;
@@ -144,7 +144,7 @@ export function buildThermalHtml(
 html, body {
   margin: 0;
   padding: 0;
-  width: ${paperMm}mm;
+  width: 100%;
   max-width: ${paperMm}mm;
   background: #fff;
   -webkit-print-color-adjust: exact;
@@ -152,13 +152,13 @@ html, body {
 }
 .shop {
   box-sizing: border-box;
-  width: ${paperMm}mm;
+  width: 100%;
   max-width: ${paperMm}mm;
-  padding: 2mm ${sideRightMm}mm 1mm ${sideLeftMm}mm;
+  padding: 0mm ${sideRightMm}mm 0.5mm ${sideLeftMm}mm;
   font-family: Arial, Helvetica, ${DEVANAGARI_FONTS}, sans-serif;
   font-weight: 400;
   font-size: ${shopFontMm}mm;
-  line-height: 1.5;
+  line-height: 1.4;
   text-align: center;
   color: #000;
   -webkit-font-smoothing: none;
@@ -167,15 +167,16 @@ html, body {
 }
 .body {
   box-sizing: border-box;
-  width: ${paperMm}mm;
+  width: 100%;
   max-width: ${paperMm}mm;
   /* 58 mm: larger left padding for converter; 80 mm: equal sides */
   padding: 1mm ${sideRightMm}mm 8mm ${sideLeftMm}mm;
 }
 .center, .line {
   box-sizing: border-box;
+  width: 100%;
   margin: 0;
-  font-weight: 400;
+  font-weight: 500;
   font-size: ${fontMm}mm;
   line-height: 1.55;
   padding-top: 0.4mm;
@@ -197,18 +198,26 @@ html, body {
   overflow: hidden;
 }
 @media print {
-  html, body, .body, .shop {
-    width: ${paperMm}mm !important;
-    max-width: ${paperMm}mm !important;
+  html, body {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .body, .shop {
+    width: 100% !important;
+    max-width: 100% !important;
   }
   .shop {
+    padding-top: 0 !important;
     font-size: ${shopFontMm}mm !important;
     font-weight: 400 !important;
-    line-height: 1.5 !important;
+    line-height: 1.4 !important;
   }
   .center, .line {
+    width: 100% !important;
     font-size: ${fontMm}mm !important;
-    font-weight: 400 !important;
+    font-weight: 500 !important;
     line-height: 1.55 !important;
     -webkit-font-smoothing: none !important;
     font-smooth: never !important;
@@ -250,8 +259,8 @@ export function bytesToBase64(bytes: number[]): string {
  */
 const ESC = {
   INIT: [0x1b, 0x40],
-  /** Advance past the print head so the cutter can reach the gap. */
-  FEED_TAIL: [0x0a, 0x0a, 0x0a, 0x0a, 0x0a],
+  /** Advance past the print head so the cutter can reach the gap (short feed). */
+  FEED_TAIL: [0x0a, 0x0a, 0x0a],
   /** Partial cut — ignored by heads without a cutter. */
   CUT: [0x1d, 0x56, 0x01],
 };
@@ -260,9 +269,7 @@ const ESC = {
  * Print-area dots for Font A (~12 dots/char @ 203 dpi).
  *
  * - 58 mm / 2″ (≤32 cols): **384-dot** full page.
- * - 80 mm (48 cols): use **512-dot** graphics width (not 576). Many Windows
- *   portables fault with red LED if GS v 0 is wider than the head; first band
- *   prints (~one line) then the lamp goes red.
+ * - 80 mm (48 cols): **576-dot** full page.
  */
 export function receiptPrintArea(charsPerLine: number): {
   leftDots: number;
@@ -271,9 +278,8 @@ export function receiptPrintArea(charsPerLine: number): {
   paperDots: number;
 } {
   const cols = Math.max(16, Math.min(96, charsPerLine));
-  // 2″ → 384; 3″ mechanical is often 512–576 — stay at 512 for safe bitmaps.
   const paperDots = cols <= 32 ? 384 : 576;
-  const widthDots = cols <= 32 ? 384 : 512;
+  const widthDots = cols <= 32 ? 384 : 576;
 
   if (cols <= 32) {
     return {
@@ -837,10 +843,18 @@ export function buildEscPosBytes(
   const source = String(text || '').replace(/\r/g, '');
   const roll: '58' | '80' = paper ?? (charsPerLine <= 32 ? '58' : '80');
   const cols = receiptCharsForPaper(roll);
-  const { widthDots } = receiptPrintArea(cols);
+  const { leftDots, widthDots } = receiptPrintArea(cols);
   const useIndic = hasDevanagari(source) && canDrawCanvas();
-  // ESC @ only — no GS a / GS L / GS W / ESC a.
+  // ESC @ only — no GS a / ESC a.
   const out: number[] = [...ESC.INIT];
+
+  if (roll === '80') {
+    // 80mm ESC/POS fills the head (GS L=0, GS W=576)
+    out.push(
+      0x1d, 0x4c, leftDots & 0xff, (leftDots >> 8) & 0xff,
+      0x1d, 0x57, widthDots & 0xff, (widthDots >> 8) & 0xff,
+    );
+  }
 
   if (useIndic) {
     // Devanagari lines → small bitmaps; ASCII lines stay text (one job, one write).
@@ -853,7 +867,9 @@ export function buildEscPosBytes(
 
   if (!out.length || out[out.length - 1] !== 0x0a) out.push(0x0a);
   out.push(...ESC.FEED_TAIL);
-  out.push(...ESC.CUT);
+  if (roll === '80') {
+    out.push(...ESC.CUT);
+  }
   return out;
 }
 

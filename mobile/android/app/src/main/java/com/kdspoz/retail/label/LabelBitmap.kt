@@ -51,9 +51,10 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
   val height = labelHeightPx(heightMm)
   /**
    * One sticker frame — shop / product / divider / barcode / digits / white gap margin.
-   * Never let bars or digits spill into the gap (that looks like a "broken" barcode).
+   * Equal margins on both sides (~3.5 mm / 28 dots) ensure the label is centered and
+   * product name never clips on the left physical edge / unprintable dead zone of thermal heads.
    */
-  val padX = maxOf(6, width / 32)
+  val padX = 28
   // ~1.2 mm top clearance — small padY was clipping the shop title on thermal heads.
   val padY = maxOf(10, height / 22)
   val lineGap = 3f
@@ -83,14 +84,24 @@ fun renderLabelBitmap(content: LabelContent, heightMm: Int = 28): Bitmap {
 
   val shopSource = content.shopName.ifBlank { "Shop" }.replace(Regex("[A-Za-z]+")) { it.value.uppercase() }
   val productSource = content.productName.ifBlank { "Product" }
-  val indic = DEVANAGARI.containsMatchIn(shopSource) || DEVANAGARI.containsMatchIn(productSource) ||
+  val shopIndic = DEVANAGARI.containsMatchIn(shopSource)
+  val indic = shopIndic || DEVANAGARI.containsMatchIn(productSource) ||
     DEVANAGARI.containsMatchIn(content.detail)
-  val shopSize = if (indic) 24f else 22f
+
+  val maxShopWidth = (width - padX * 2).toFloat()
+  var shopSize = if (shopIndic) 22f else 16f
   paint.textSize = shopSize
   paint.textAlign = Paint.Align.CENTER
-  paint.isAntiAlias = indic
+  paint.isAntiAlias = shopIndic
+
+  val minShopSize = if (shopIndic) 16f else 12f
+  while (shopSize > minShopSize && paint.measureText(shopSource) > maxShopWidth) {
+    shopSize -= 1f
+    paint.textSize = shopSize
+  }
+
   // FontMetrics: draw baseline so the full ascent sits below padY (not clipped at top).
-  val shop = ellipsize(paint, shopSource, shopSize, (width - padX * 2).toFloat())
+  val shop = ellipsize(paint, shopSource, shopSize, maxShopWidth)
   val fm = paint.fontMetrics
   y += -fm.ascent
   canvas.drawText(shop, (width / 2).toFloat(), y, paint)

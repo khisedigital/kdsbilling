@@ -464,6 +464,32 @@ export default function PaymentScreen({ navigation }: Props) {
     }
   };
 
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // F10: Print bill
+      if (event.key === 'F10') {
+        event.preventDefault();
+        if (preview && !loading) {
+          handlePrint();
+        }
+        return;
+      }
+
+      // F12: Complete bill
+      if (event.key === 'F12') {
+        event.preventDefault();
+        if (preview && !loading) {
+          void handlePay();
+        }
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [handlePay, handlePrint, loading, preview]);
+
   if (loadingPreview && !preview) {
     return (
       <View style={styles.center}>

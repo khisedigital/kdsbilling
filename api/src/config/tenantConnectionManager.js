@@ -68,6 +68,7 @@ class TenantConnectionManager {
     const { initTenantModels } = require('../models/tenant');
     const models = initTenantModels(sequelize);
     Object.defineProperty(models, 'tenantId', { value: tenantId, enumerable: false });
+    Object.defineProperty(models, 'timezone', { value: tenant.timezone || 'Asia/Kolkata', enumerable: false });
     this.modelCache.set(tenantId, models);
     return models;
   }

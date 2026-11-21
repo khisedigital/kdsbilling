@@ -30,13 +30,28 @@ function errorHandler(err, req, res, _next) {
     });
   }
 
+  const isProduction = process.env.NODE_ENV === 'production';
+
   if (err.name === 'SequelizeDatabaseError') {
-    console.error(err);
+    console.error('[Database Error]', err);
     return res.status(500).json({
       success: false,
       error: {
         code: 'DB_ERROR',
-        message: err.message || 'Database error',
+        message: isProduction ? 'A database error occurred' : (err.message || 'Database error'),
+      },
+    });
+  }
+
+  if (err.name === 'SequelizeForeignKeyConstraintError') {
+    console.error('[Database Error]', err);
+    return res.status(409).json({
+      success: false,
+      error: {
+        code: 'FOREIGN_KEY_CONFLICT',
+        message: isProduction
+          ? 'Cannot complete operation due to related records'
+          : (err.message || 'Foreign key constraint error'),
       },
     });
   }
@@ -54,12 +69,12 @@ function errorHandler(err, req, res, _next) {
     });
   }
 
-  console.error(err);
+  console.error('[Internal Error]', err);
   return res.status(500).json({
     success: false,
     error: {
       code: 'INTERNAL_ERROR',
-      message: err.message || 'Something went wrong',
+      message: isProduction ? 'Something went wrong' : (err.message || 'Something went wrong'),
     },
   });
 }

@@ -659,6 +659,74 @@ export default function WideBillPanel() {
     }
   };
 
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+
+    // F7: Customer select
+    const onPosCustomer = () => {
+      setError('');
+      setView((prev) => (prev === 'customer' ? 'bill' : 'customer'));
+    };
+
+    // F8: Discount
+    const onPosDiscount = () => {
+      if (hasItems && view === 'bill') {
+        openDiscount();
+      }
+    };
+
+    // F9: Hold bill
+    const onPosHold = () => {
+      if (hasItems) {
+        setError('');
+        setView((prev) => (prev === 'hold' ? 'bill' : 'hold'));
+      }
+    };
+
+    // F10: Print bill
+    const onPosPrint = () => {
+      if (hasItems) {
+        handlePrint();
+      }
+    };
+
+    // F12: Complete bill
+    const onPosComplete = () => {
+      if (!hasItems) return;
+      setError('');
+      if (view !== 'bill') {
+        setView('bill');
+      }
+      if (totalPaid < totalDue - 0.01) {
+        syncPrimaryAmount(totalDue);
+      }
+      void handlePay();
+    };
+
+    window.addEventListener('pos:customer-select', onPosCustomer);
+    window.addEventListener('pos:discount', onPosDiscount);
+    window.addEventListener('pos:hold', onPosHold);
+    window.addEventListener('pos:print', onPosPrint);
+    window.addEventListener('pos:complete', onPosComplete);
+
+    return () => {
+      window.removeEventListener('pos:customer-select', onPosCustomer);
+      window.removeEventListener('pos:discount', onPosDiscount);
+      window.removeEventListener('pos:hold', onPosHold);
+      window.removeEventListener('pos:print', onPosPrint);
+      window.removeEventListener('pos:complete', onPosComplete);
+    };
+  }, [
+    handlePay,
+    handlePrint,
+    hasItems,
+    openDiscount,
+    syncPrimaryAmount,
+    totalDue,
+    totalPaid,
+    view,
+  ]);
+
   const renderLine = ({ item }: { item: CartItem }) => {
     const size = variantLabel(item.size, item.color);
     const lineName = screenProductName(item.productName, item.productNameMr);

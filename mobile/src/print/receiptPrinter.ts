@@ -234,16 +234,36 @@ function buildTestA4Html(opts: {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><title>Test Print</title>
 <style>
-  body{font-family:Arial,sans-serif;padding:28px;color:#000;font-weight:400;max-width:640px;margin:0 auto;
+  @page {
+    size: A4 portrait;
+    margin: 3mm 8mm 6mm;
+  }
+  *{box-sizing:border-box}
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  body{font-family:Arial,sans-serif;padding:4px 16px 16px;color:#000;font-weight:400;width:100%;max-width:100%;
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   h1,th,strong,b{font-weight:700}
-  .head{text-align:center;border:1px solid #000;padding:16px;margin-bottom:16px}
-  .shop{font-size:28px;margin:0;letter-spacing:.02em;text-transform:uppercase;text-align:center}
-  .meta{font-size:13px;color:#000;margin:4px 0}
-  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
-  th{color:#000;padding:8px;text-align:left;border-top:1px solid #000;border-bottom:1px solid #000}
-  td{padding:8px;border-bottom:0.5px solid #000}
+  .head{text-align:center;border:1px solid #000;padding:8px 12px;margin-bottom:8px;width:100%}
+  .shop{font-size:26px;margin:0;letter-spacing:.02em;text-transform:uppercase;text-align:center;line-height:1.25}
+  .meta{font-size:12px;color:#000;margin:2px 0;line-height:1.4}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th{color:#000;padding:6px;text-align:left;border-top:1px solid #000;border-bottom:1px solid #000}
+  td{padding:6px;border-bottom:0.5px solid #000}
   th.r,td.r{text-align:right}
+  @media print {
+    @page {
+      size: A4 portrait;
+      margin: 3mm 8mm 6mm;
+    }
+    html, body { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; }
+    .head, table { width: 100% !important; max-width: 100% !important; }
+    .head { padding: 6px 10px !important; margin-bottom: 6px !important; }
+  }
 </style></head>
 <body>
   <div class="head">
