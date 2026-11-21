@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Text } from 'react-native-paper';
+import { ActivityIndicator, Button, Switch, Text } from 'react-native-paper';
 import SectionCard from '../../components/ui/SectionCard';
 import { useT } from '../../i18n';
 import { isDesktopOfflineCapable } from '../../offline/capability';
@@ -32,6 +32,8 @@ export default function SyncDataScreen() {
   const t = useT();
   const online = useConnectivityStore((s) => s.online);
   const syncing = useConnectivityStore((s) => s.syncing);
+  const autoSync = useConnectivityStore((s) => s.autoSync);
+  const setAutoSync = useConnectivityStore((s) => s.setAutoSync);
   const pendingCount = useConnectivityStore((s) => s.pendingCount);
   const lastSyncError = useConnectivityStore((s) => s.lastSyncError);
   const lastSyncAt = useConnectivityStore((s) => s.lastSyncAt);
@@ -47,16 +49,20 @@ export default function SyncDataScreen() {
       return;
     }
     try {
-      const [at, pending] = await Promise.all([
+      const [at, pending, autoMeta] = await Promise.all([
         sqliteGetMeta('last_sync_at'),
         sqlitePendingCount().catch(() => 0),
+        sqliteGetMeta('auto_sync_enabled').catch(() => null),
       ]);
       if (at) setLastSyncAt(at);
       setPendingCount(pending);
+      if (autoMeta != null) {
+        setAutoSync(autoMeta === '1');
+      }
     } finally {
       setLoadingMeta(false);
     }
-  }, [setLastSyncAt, setPendingCount]);
+  }, [setAutoSync, setLastSyncAt, setPendingCount]);
 
   useEffect(() => {
     void refreshMeta();
@@ -98,6 +104,22 @@ export default function SyncDataScreen() {
         <Text style={[typography.caption, styles.muted]}>
           {t('Green = online. Orange = offline. Blue pulse while syncing.')}
         </Text>
+      </SectionCard>
+
+      <SectionCard title={t('Auto sync')}>
+        <View style={styles.autoSyncRow}>
+          <View style={styles.autoSyncInfo}>
+            <Text style={typography.subtitle}>{t('Auto sync when online')}</Text>
+            <Text style={[typography.caption, styles.muted]}>
+              {t('Automatically sync data from local to live database when switching to online.')}
+            </Text>
+          </View>
+          <Switch
+            value={autoSync}
+            onValueChange={(val) => setAutoSync(val)}
+            color={colors.primary}
+          />
+        </View>
       </SectionCard>
 
       <SectionCard title={t('Last sync')}>
@@ -167,6 +189,15 @@ const styles = StyleSheet.create({
   pad: { paddingBottom: spacing.xl * 2, gap: spacing.md },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  autoSyncRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  autoSyncInfo: {
+    flex: 1,
+  },
   dot: { width: 12, height: 12, borderRadius: 6 },
   muted: { color: colors.textMuted, marginTop: 4 },
   warn: { color: colors.warning },

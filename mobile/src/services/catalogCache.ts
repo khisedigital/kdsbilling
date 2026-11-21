@@ -25,6 +25,8 @@ export type CatalogPricePatch = {
   name?: string;
   nameMr?: string | null;
   stockQty?: number;
+  barcode?: string;
+  barcodes?: string[];
 };
 
 type CatalogChangeListener = (revision: number, pricePatches: CatalogPricePatch[]) => void;
@@ -257,6 +259,13 @@ export async function upsertCachedProduct(product: Product): Promise<void> {
     if (selling == null) continue;
     const stockRaw = (variant as { stockQty?: number; stock_qty?: number }).stockQty
       ?? (variant as { stock_qty?: number }).stock_qty;
+    const firstBarcode =
+      variant.barcode ||
+      (Array.isArray(variant.barcodes) && variant.barcodes[0] && (typeof variant.barcodes[0] === 'string' ? variant.barcodes[0] : (variant.barcodes[0] as any).barcode || (variant.barcodes[0] as any).code)) ||
+      undefined;
+    const barcodesList = (variant.barcodes || [])
+      .map((b) => (typeof b === 'string' ? b : (b as any)?.barcode || (b as any)?.code))
+      .filter(Boolean) as string[];
     patches.push({
       variantId: variant.id,
       productId: normalized.id,
@@ -266,11 +275,21 @@ export async function upsertCachedProduct(product: Product): Promise<void> {
       name: normalized.name,
       nameMr: normalized.name_mr ?? null,
       stockQty: stockRaw !== undefined && stockRaw !== null ? Number(stockRaw) || 0 : undefined,
+      barcode: firstBarcode,
+      barcodes: barcodesList.length ? barcodesList : (firstBarcode ? [firstBarcode] : undefined),
     });
   }
 
   // Notify first so open Billing screens patch prices immediately (don't wait on AsyncStorage).
   bumpCatalogRevision(patches);
+
+  // Sync to SQLite local DB on desktop so offline/billing searches immediately see the updated product
+  void import('../offline/localApi')
+    .then(({ hasSqliteBridge, localUpsertProduct }) => {
+      if (!hasSqliteBridge()) return;
+      return localUpsertProduct(normalized);
+    })
+    .catch(() => null);
 
   if (!isCatalogCacheEnabled()) return;
   const prev = await readCachedProducts();
@@ -318,6 +337,22 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
   // Notify first — Billing applies patches in memory without waiting for disk I/O.
   bumpCatalogRevision(clean);
 
+  // Sync price bulk patches to SQLite on desktop
+  void import('./catalogService')
+    .then(({ syncPriceBulkToSqlite }) => syncPriceBulkToSqlite(clean.map((p) => ({
+      variantId: p.variantId,
+      productId: p.productId,
+      sellingPrice: p.sellingPrice,
+      costPrice: p.costPrice,
+      mrp: p.mrp,
+      name: p.name,
+      nameMr: p.nameMr,
+      stockQty: p.stockQty,
+      barcode: p.barcode,
+      barcodes: p.barcodes,
+    }))))
+    .catch(() => null);
+
   if (!isCatalogCacheEnabled()) return;
   const prev = await readCachedProducts();
   if (!prev?.items?.length) return;
@@ -330,13 +365,19 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
       if (!patch) return variant;
       touched = true;
       const nextStock = patch.stockQty !== undefined ? patch.stockQty : variant.stockQty;
+      const nextBarcode = patch.barcode !== undefined ? patch.barcode : variant.barcode;
+      const nextBarcodes = patch.barcodes !== undefined ? patch.barcodes : variant.barcodes;
       return {
         ...variant,
         selling_price: patch.sellingPrice !== undefined ? patch.sellingPrice : variant.selling_price,
+        sellingPrice: patch.sellingPrice !== undefined ? patch.sellingPrice : (variant.sellingPrice ?? variant.selling_price),
         cost_price: patch.costPrice !== undefined ? patch.costPrice : variant.cost_price,
+        costPrice: patch.costPrice !== undefined ? patch.costPrice : (variant.costPrice ?? variant.cost_price),
         mrp: patch.mrp !== undefined ? patch.mrp : variant.mrp,
         stockQty: nextStock,
         stock_qty: nextStock,
+        barcode: nextBarcode,
+        barcodes: nextBarcodes,
       };
     });
     if (!touched) {
@@ -352,7 +393,7 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
     }
     const namePatch = clean.find((p) => (
       (p.productId && p.productId === product.id)
-      || byVariant.has(p.variantId)
+      || (product.variants || []).some((v) => v.id === p.variantId)
     ));
     const stockTotal = variants.reduce((s, v) => {
       const raw = (v as { stockQty?: number; stock_qty?: number }).stockQty

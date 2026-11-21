@@ -117,9 +117,9 @@ function toRows(products: Product[]): PriceRow[] {
   const rows: PriceRow[] = [];
   for (const product of products) {
     for (const variant of product.variants || []) {
-      const costPrice = moneyStr(variant.cost_price);
+      const costPrice = moneyStr(variant.cost_price ?? (variant as any).costPrice);
       const mrp = moneyStr(variant.mrp);
-      const sellingPrice = moneyStr(variant.selling_price);
+      const sellingPrice = moneyStr(variant.selling_price ?? (variant as any).sellingPrice);
       const plains = plainBarcodesOf(variant);
       const barcode = plains[0] || mainBarcodeOf(variant) || '';
       const extraBarcodes = plains.slice(1);
@@ -129,7 +129,7 @@ function toRows(products: Product[]): PriceRow[] {
           ?? 0,
       ) || '0';
       const name = product.name || '';
-      const nameMr = product.name_mr || '';
+      const nameMr = product.name_mr || (product as any).nameMr || '';
       const isFavorite = isProductFavorite(product);
       const label = variantLabel(variant.size, variant.color) || 'Default';
       rows.push({

@@ -607,6 +607,21 @@ export const mr: Record<string, string> = {
   'Username and password are required': 'युजरनेम आणि पासवर्ड टाका',
   'Unit cannot be its own base unit': 'मोजमाप स्वतःचेच मूळ मोजमाप असू शकत नाही',
   'Unit is referenced as a base unit and cannot be deleted': 'हे मोजमाप दुसऱ्या मोजमापाचे मूळ मोजमाप आहे. त्यामुळे ते डिलीट करता येणार नाही.',
+  Online: 'ऑनलाइन',
+  Offline: 'ऑफलाइन',
+  'Auto sync': 'ऑटो सिंक',
+  'Auto sync when online': 'ऑनलाइन झाल्यावर ऑटो सिंक',
+  'Automatically sync data from local to live database when switching to online.':
+    'ऑनलाइन मोडवर स्विच केल्यावर स्थानिक डेटा थेट लाइव्ह डेटाबेसशी आपोआप सिंक करा.',
+  'Sync in progress': 'सिंक चालू आहे',
+  'Please wait until sync completes before changing connection mode.':
+    'कृपया कनेक्शन मोड बदलण्यापूर्वी सिंक पूर्ण होईपर्यंत प्रतीक्षा करा.',
+  'No internet connection': 'इंटरनेट कनेक्शन नाही',
+  'Cannot switch to online mode without an active internet connection.':
+    'इंटरनेट कनेक्शनशिवाय ऑनलाइन मोडवर स्विच करता येत नाही.',
+  'Online mode: tap to switch to offline': 'ऑनलाइन मोड: ऑफलाइन मोड करण्यासाठी टॅप करा',
+  'Offline mode: tap to switch to online': 'ऑफलाइन मोड: ऑनलाइन मोड करण्यासाठी टॅप करा',
+  'Syncing in progress': 'सिंक चालू आहे',
 };
 
 export const mrPatterns: Array<[RegExp, string]> = [

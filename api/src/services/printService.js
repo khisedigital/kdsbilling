@@ -514,6 +514,7 @@ function renderA4(payload, language = 'en') {
       .pay{margin-top:12px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       .pay-row{display:flex;justify-content:space-between;max-width:280px;margin-left:auto;padding:2px 0}
       .footer{text-align:center;margin-top:24px;padding-top:10px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;width:100%}
+      .cut-space{height:16mm;width:100%}
       @media print {
         @page {
           size: A4 portrait;
@@ -530,6 +531,7 @@ function renderA4(payload, language = 'en') {
           max-width: 100% !important;
         }
         .banner { padding: 6px 10px !important; margin-bottom: 8px !important; }
+        .cut-space { height: 16mm !important; }
       }
     </style>
     </head><body>
@@ -561,6 +563,7 @@ function renderA4(payload, language = 'en') {
         : ''}
       <p><strong>${escapeHtml(copy.thanks)}</strong></p>
     </div>
+    <div class="cut-space"></div>
     </body></html>`;
 
   return { format: 'a4', html, mimeType: 'text/html' };

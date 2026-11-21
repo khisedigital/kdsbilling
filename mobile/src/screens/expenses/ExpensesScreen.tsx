@@ -13,7 +13,12 @@ import {
   shiftAnchor,
   type PeriodMode,
 } from '../../reports/reportDates';
-import { createExpense, fetchExpenseCategories, fetchExpenses } from '../../services/businessService';
+import {
+  createExpense,
+  DEFAULT_EXPENSE_CATEGORIES,
+  fetchExpenseCategories,
+  fetchExpenses,
+} from '../../services/businessService';
 import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
 import { colors } from '../../theme/colors';
@@ -47,12 +52,12 @@ export default function ExpensesScreen({}: Props) {
 
   const loadCategories = useCallback(async () => {
     try {
-      setCategories(await fetchExpenseCategories());
-    } catch (err) {
-      setCategories([]);
-      Alert.alert(t('Categories failed'), apiError(err, t('Could not load expense categories')));
+      const cats = await fetchExpenseCategories();
+      setCategories(Array.isArray(cats) && cats.length ? cats : DEFAULT_EXPENSE_CATEGORIES);
+    } catch {
+      setCategories(DEFAULT_EXPENSE_CATEGORIES);
     }
-  }, [t]);
+  }, []);
 
   const loadExpenses = useCallback(async () => {
     setListLoading(true);
@@ -60,7 +65,9 @@ export default function ExpensesScreen({}: Props) {
       setExpenses(await fetchExpenses({ from: range.from, to: range.to, limit: 500 }));
     } catch (err) {
       setExpenses([]);
-      Alert.alert(t('Load failed'), apiError(err, t('Could not load expenses')));
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        Alert.alert(t('Load failed'), apiError(err, t('Could not load expenses')));
+      }
     } finally {
       setListLoading(false);
     }
@@ -105,7 +112,14 @@ export default function ExpensesScreen({}: Props) {
     setLoading(true);
     setFormError('');
     try {
-      await createExpense({ categoryId, amount: parseFloat(amount), notes });
+      const selectedCat = categories.find((c) => c.id === categoryId);
+      await createExpense({
+        categoryId,
+        amount: parseFloat(amount),
+        notes,
+        expenseDate: new Date().toISOString().slice(0, 10),
+        category: selectedCat ? { id: selectedCat.id, name: selectedCat.name } : undefined,
+      });
       setAddOpen(false);
       setAmount('');
       setNotes('');

@@ -119,7 +119,7 @@ export function buildThermalHtml(
   const lineMm = fontMm * 1.55;
   const bodyLines = withoutShop.split('\n');
   const lineCount = Math.max(1, bodyLines.filter((line) => line.trim()).length + shopTitles.length * 2);
-  const heightMm = Math.max(80, Math.ceil(lineCount * lineMm + 20));
+  const heightMm = Math.max(90, Math.ceil(lineCount * lineMm + 35));
   const shopHtml = shopTitles
     .map((title) => `<div class="shop">${escapeHtml(title)}</div>`)
     .join('');
@@ -197,6 +197,10 @@ html, body {
   white-space: pre;
   overflow: hidden;
 }
+.cut-space {
+  height: 16mm;
+  width: 100%;
+}
 @media print {
   html, body {
     width: 100% !important;
@@ -207,6 +211,9 @@ html, body {
   .body, .shop {
     width: 100% !important;
     max-width: 100% !important;
+  }
+  .cut-space {
+    height: 16mm !important;
   }
   .shop {
     padding-top: 0 !important;
@@ -223,7 +230,7 @@ html, body {
     font-smooth: never !important;
   }
 }
-</style></head><body>${shopHtml}<div class="body">${bodyHtml}</div></body></html>`;
+</style></head><body>${shopHtml}<div class="body">${bodyHtml}<div class="cut-space"></div></div></body></html>`;
 
   return {
     html,
@@ -259,8 +266,8 @@ export function bytesToBase64(bytes: number[]): string {
  */
 const ESC = {
   INIT: [0x1b, 0x40],
-  /** Advance past the print head so the cutter can reach the gap (short feed). */
-  FEED_TAIL: [0x0a, 0x0a, 0x0a],
+  /** Advance past the print head so the cutter or tear-bar can clear the gap safely. */
+  FEED_TAIL: [0x0a, 0x0a, 0x0a, 0x0a],
   /** Partial cut — ignored by heads without a cutter. */
   CUT: [0x1d, 0x56, 0x01],
 };
@@ -868,6 +875,7 @@ export function buildEscPosBytes(
   if (!out.length || out[out.length - 1] !== 0x0a) out.push(0x0a);
   out.push(...ESC.FEED_TAIL);
   if (roll === '80') {
+    out.push(0x0a, 0x0a);
     out.push(...ESC.CUT);
   }
   return out;

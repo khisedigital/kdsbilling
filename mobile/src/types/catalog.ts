@@ -38,10 +38,10 @@ export interface ProductVariant {
   color?: string;
   cost_price: string | number;
   selling_price: string | number;
-  mrp?: string | number;
+  mrp?: string | number | null;
   wholesale_price?: string | number;
   status?: string;
-  /** `quantity` set = scanning this barcode adds that quantity (in the product's unit). */
+  barcode?: string;
   barcodes?: { barcode: string; is_primary: boolean; quantity?: string | number | null }[];
   stockQty?: number;
 }

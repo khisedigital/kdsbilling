@@ -731,12 +731,20 @@ function readAuthSession(db) {
 /** UI sends YYYY-MM-DD; sales store full ISO times — expand so the whole day is included. */
 function dayBoundStart(value) {
   const s = String(value || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T00:00:00`);
+    if (!isNaN(d.getTime())) return d.toISOString();
+    return `${s}T00:00:00.000Z`;
+  }
   return s;
 }
 function dayBoundEnd(value) {
   const s = String(value || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T23:59:59.999Z`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T23:59:59.999`);
+    if (!isNaN(d.getTime())) return d.toISOString();
+    return `${s}T23:59:59.999Z`;
+  }
   return s;
 }
 
@@ -913,14 +921,24 @@ function replaceJsonTable(db, table, rows, idKey = 'id') {
   db.exec('BEGIN');
   try {
     // Upsert only — keep local rows that are not in this batch.
-    const stmt = db.prepare(
-      `INSERT INTO ${table} (id, json, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
-    );
+    const hasNameCol = table === 'expense_categories';
+    const stmt = hasNameCol
+      ? db.prepare(
+          `INSERT INTO ${table} (id, name, json, updated_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET name = excluded.name, json = excluded.json, updated_at = excluded.updated_at`,
+        )
+      : db.prepare(
+          `INSERT INTO ${table} (id, json, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+        );
     for (const row of rows || []) {
       const id = row?.[idKey] || row?.id;
       if (!id) continue;
-      stmt.run(String(id), JSON.stringify(row), ts);
+      if (hasNameCol) {
+        stmt.run(String(id), String(row?.name || ''), JSON.stringify(row), ts);
+      } else {
+        stmt.run(String(id), JSON.stringify(row), ts);
+      }
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -951,6 +969,18 @@ function listJsonTable(db, table) {
 function saveExpense(db, expense) {
   const id = String(expense.id || '').trim();
   if (!id) throw new Error('expense.id required');
+  const catId = expense.categoryId || expense.category_id || null;
+  const expenseDate = String(expense.expenseDate || expense.expense_date || nowIso().slice(0, 10));
+  const fullExpense = {
+    ...expense,
+    id,
+    categoryId: catId,
+    category_id: catId,
+    amount: Number(expense.amount) || 0,
+    expense_date: expenseDate,
+    expenseDate,
+    notes: expense.notes || expense.note || null,
+  };
   db.prepare(
     `INSERT INTO expenses (id, category_id, amount, note, expense_date, json, sync_status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -963,11 +993,11 @@ function saveExpense(db, expense) {
        sync_status = excluded.sync_status`,
   ).run(
     id,
-    expense.categoryId || expense.category_id || null,
+    catId,
     Number(expense.amount) || 0,
-    expense.note || null,
-    String(expense.expenseDate || expense.expense_date || nowIso().slice(0, 10)),
-    JSON.stringify(expense),
+    expense.notes || expense.note || null,
+    expenseDate,
+    JSON.stringify(fullExpense),
     expense.syncStatus || 'pending',
     expense.createdAt || nowIso(),
   );
@@ -978,28 +1008,55 @@ function listExpenses(db, { from, to, limit = 200 } = {}) {
   const where = [];
   const params = [];
   if (from) {
-    where.push('expense_date >= ?');
-    params.push(String(from));
+    where.push('e.expense_date >= ?');
+    params.push(String(from).slice(0, 10));
   }
   if (to) {
-    where.push('expense_date <= ?');
-    params.push(String(to));
+    where.push('e.expense_date <= ?');
+    params.push(String(to).slice(0, 10));
   }
   params.push(Math.max(1, Math.min(2000, Number(limit) || 200)));
   return db
     .prepare(
-      `SELECT json FROM expenses
+      `SELECT e.id, e.category_id, e.amount, e.note, e.expense_date, e.json, e.sync_status, e.created_at,
+              ec.name AS category_name, ec.json AS category_json
+       FROM expenses e
+       LEFT JOIN expense_categories ec ON ec.id = e.category_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY expense_date DESC, created_at DESC
+       ORDER BY e.expense_date DESC, e.created_at DESC
        LIMIT ?`,
     )
     .all(...params)
     .map((r) => {
+      let parsed = {};
       try {
-        return JSON.parse(r.json);
+        parsed = JSON.parse(r.json) || {};
       } catch {
-        return null;
+        parsed = {};
       }
+      let catName = r.category_name;
+      if (!catName && r.category_json) {
+        try {
+          catName = JSON.parse(r.category_json)?.name;
+        } catch {
+          catName = null;
+        }
+      }
+      const categoryName = catName || parsed.category?.name || parsed.categoryName || 'Expense';
+      return {
+        ...parsed,
+        id: r.id,
+        amount: Number(r.amount) || 0,
+        expense_date: r.expense_date,
+        expenseDate: r.expense_date,
+        category_id: r.category_id,
+        categoryId: r.category_id,
+        category: { id: r.category_id, name: categoryName },
+        note: r.note,
+        notes: r.note,
+        syncStatus: r.sync_status,
+        createdAt: r.created_at,
+      };
     })
     .filter(Boolean);
 }
@@ -1153,11 +1210,61 @@ function buildSalesReport(db, { from, to } = {}) {
        ORDER BY day ASC`,
     )
     .all(...params);
+
+  const billRows = db
+    .prepare(
+      `SELECT s.client_bill_id AS id, s.bill_number, s.total_amount, s.tax_amount, s.discount_amount, s.created_at,
+              c.name AS customer_name
+       FROM sales s
+       LEFT JOIN customers c ON c.id = s.customer_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY s.created_at DESC`,
+    )
+    .all(...params)
+    .map((r) => ({
+      id: r.id,
+      bill_number: r.bill_number,
+      total_amount: Number(r.total_amount) || 0,
+      tax_amount: Number(r.tax_amount) || 0,
+      discount_amount: Number(r.discount_amount) || 0,
+      created_at: r.created_at,
+      customer: r.customer_name ? { name: r.customer_name } : null,
+    }));
+
+  const topProducts = db
+    .prepare(
+      `SELECT si.product_name, si.sku,
+              IFNULL(SUM(si.quantity), 0) AS total_qty,
+              IFNULL(SUM(si.line_total), 0) AS revenue
+       FROM sale_items si
+       JOIN sales s ON s.client_bill_id = si.client_bill_id
+       WHERE ${where.join(' AND ')}
+       GROUP BY si.product_name, si.sku
+       ORDER BY total_qty DESC, revenue DESC
+       LIMIT 10`,
+    )
+    .all(...params)
+    .map((r) => ({
+      product_name: r.product_name,
+      sku: r.sku || '',
+      total_qty: Number(r.total_qty) || 0,
+      revenue: Number(r.revenue) || 0,
+    }));
+
   return {
     revenue: Number(summary?.revenue) || 0,
     discount: Number(summary?.discount) || 0,
     tax: Number(summary?.tax) || 0,
-    bills: Number(summary?.bills) || 0,
+    bills: billRows,
+    count: billRows.length,
+    summary: {
+      count: billRows.length,
+      total: Number(summary?.revenue) || 0,
+      tax: Number(summary?.tax) || 0,
+      discount: Number(summary?.discount) || 0,
+    },
+    topProducts,
+    mostSold: topProducts[0] || null,
     byDay: byDay.map((r) => ({
       day: r.day,
       revenue: Number(r.revenue) || 0,

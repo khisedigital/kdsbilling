@@ -425,6 +425,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   .totals .save{margin-top:6px;padding-top:6px;border-top:1px dashed #000;font-weight:700}
   .pay{display:flex;justify-content:space-between;width:300px;margin:3px 0 0 auto;font-size:13px}
   .foot{text-align:center;margin-top:18px;padding-top:10px;border-top:1px dashed #000;color:#000;font-size:13px;width:100%}
+  .cut-space{height:16mm;width:100%}
   @media print {
     @page {
       size: A4 portrait;
@@ -433,6 +434,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     html, body { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; }
     .head, .info, table, .foot { width: 100% !important; max-width: 100% !important; }
     .head { padding: 6px 10px !important; margin-bottom: 6px !important; }
+    .cut-space { height: 16mm !important; }
   }
 </style></head><body>
   <div class="head">
@@ -466,6 +468,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     ${footer && !/^thank you!?$/i.test(footer) ? `<p>${escapeHtml(footer)}</p>` : ''}
     <p><strong>${escapeHtml(L('Thank you! Visit Again'))}</strong></p>
   </div>
+  <div class="cut-space"></div>
 </body></html>`;
 }
 

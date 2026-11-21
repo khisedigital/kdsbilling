@@ -46,7 +46,14 @@ export default function ProfileScreen({}: Props) {
           email: profile.email,
         });
       } catch (err) {
-        if (alive) Alert.alert(t('Error'), apiError(err, t('Could not load profile')));
+        if (!alive) return;
+        const cached = useAuthStore.getState().user;
+        if (cached) {
+          setName(cached.name || '');
+          setPhone(cached.phone || '');
+        } else {
+          Alert.alert(t('Error'), apiError(err, t('Could not load profile')));
+        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -54,7 +61,7 @@ export default function ProfileScreen({}: Props) {
     return () => {
       alive = false;
     };
-  }, [updateLocalUser]);
+  }, [updateLocalUser, t]);
 
   const handleSaveProfile = async () => {
     setSaving(true);
@@ -65,7 +72,12 @@ export default function ProfileScreen({}: Props) {
         phone: profile.phone,
         email: profile.email,
       });
-      Alert.alert(t('Saved'), t('Profile updated.'));
+      Alert.alert(
+        t('Saved'),
+        typeof navigator !== 'undefined' && !navigator.onLine
+          ? t('Profile updated (saved locally).')
+          : t('Profile updated.'),
+      );
     } catch (err) {
       Alert.alert(t('Error'), apiError(err, t('Could not save profile')));
     } finally {
@@ -74,6 +86,10 @@ export default function ProfileScreen({}: Props) {
   };
 
   const handleChangePassword = async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      Alert.alert(t('Offline'), t('Password change requires an active internet connection.'));
+      return;
+    }
     if (!currentPassword || !newPassword) {
       Alert.alert(t('Missing fields'), t('Enter current and new password.'));
       return;

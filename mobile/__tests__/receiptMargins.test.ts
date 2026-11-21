@@ -81,13 +81,23 @@ describe('receipt paper width balance', () => {
     expect(text).toContain('TOTAL 10.00');
   });
 
-  it('uses a short tear-off feed (not a long blank strip)', () => {
+  it('uses a safe tear-off feed for bill cutting', () => {
     const bytes = buildEscPosBytes('TOTAL 10.00', 32, '58');
-    // Trailing LFs only — was 8 and wasted paper.
+    // Trailing LFs for safe manual tear-off without cutting into text
     let trailing = 0;
     for (let i = bytes.length - 1; i >= 0 && bytes[i] === 0x0a; i -= 1) trailing += 1;
-    expect(trailing).toBeLessThanOrEqual(4);
-    expect(trailing).toBeGreaterThanOrEqual(2);
+    expect(trailing).toBeLessThanOrEqual(6);
+    expect(trailing).toBeGreaterThanOrEqual(3);
+  });
+
+  it('80mm feeds safely past the cutter blade before cutting', () => {
+    const bytes = buildEscPosBytes('TOTAL 10.00', 48, '80');
+    const cutIndex = bytes.findIndex((b, i) => b === 0x1d && bytes[i + 1] === 0x56);
+    expect(cutIndex).toBeGreaterThan(0);
+    // Count line feeds right before CUT command
+    let preCutLfs = 0;
+    for (let i = cutIndex - 1; i >= 0 && bytes[i] === 0x0a; i -= 1) preCutLfs += 1;
+    expect(preCutLfs).toBeGreaterThanOrEqual(5);
   });
 
   it('does not send ESC j reverse-feed (unsupported printers print "jx")', () => {

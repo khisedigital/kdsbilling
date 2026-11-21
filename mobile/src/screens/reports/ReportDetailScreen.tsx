@@ -58,15 +58,17 @@ function usesDateFilter(type: ReportType) {
 
 function hasReportData(data: unknown, type: ReportType) {
   if (!data) return false;
-  if (type === 'product_sales') {
-    if (Array.isArray(data)) return data.length > 0;
-    const report = data as { items?: unknown[]; mostSold?: unknown };
-    return (report.items?.length ?? 0) > 0 || !!report.mostSold;
+  if (Array.isArray(data)) return data.length > 0;
+  if (typeof data === 'object') {
+    const obj = data as Record<string, any>;
+    if (Array.isArray(obj.items)) return obj.items.length > 0 || !!obj.mostSold;
+    if (Array.isArray(obj.bills)) return obj.bills.length > 0;
+    if (Array.isArray(obj.expenses)) return obj.expenses.length > 0;
+    if (Array.isArray(obj.inflows)) return obj.inflows.length > 0;
+    if (obj.summary) return true;
+    if (['daily_sales', 'purchase', 'profit', 'expense', 'cash_flow', 'low_stock'].includes(type)) return true;
   }
-  if (['daily_sales', 'purchase', 'profit', 'expense', 'cash_flow', 'low_stock'].includes(type)) {
-    return true;
-  }
-  return Array.isArray(data) && data.length > 0;
+  return false;
 }
 
 async function loadReport(type: ReportType, range: { from?: string; to?: string }) {
@@ -185,31 +187,41 @@ export default function ReportDetailScreen({ route }: Props) {
     if (!data) return null;
     const q = search;
 
-    switch (reportType) {
+    try {
+      switch (reportType) {
       case 'daily_sales': {
-        const report = data as {
-          bills: Array<{ id?: string; bill_number: string; total_amount: number; created_at: string; customer?: { name?: string } }>;
+        const report = (data || {}) as {
+          bills?: Array<{ id?: string; bill_number: string; total_amount: number; created_at: string; customer?: { name?: string } }>;
           topProducts?: Array<{ product_name: string; sku?: string; total_qty: number; revenue: number }>;
           mostSold?: { product_name: string; sku?: string; total_qty: number; revenue: number } | null;
-          summary: { count: number; total: number; tax?: number; discount?: number };
+          summary?: { count: number; total: number; tax?: number; discount?: number };
         };
-        const bills = report.bills.filter((bill) => matchesSearch(q, bill.bill_number, bill.customer?.name));
-        const topProducts = (report.topProducts || []).filter((item) => matchesSearch(q, item.product_name, item.sku));
+        const rawBills = Array.isArray(report.bills) ? report.bills : [];
+        const bills = rawBills.filter((bill) => matchesSearch(q, bill.bill_number, bill.customer?.name));
+        const rawTop = Array.isArray(report.topProducts) ? report.topProducts : [];
+        const topProducts = rawTop.filter((item) => matchesSearch(q, item.product_name, item.sku));
+        const summary = report.summary || {
+          count: rawBills.length,
+          total: (report as any).revenue || 0,
+          tax: (report as any).tax || 0,
+          discount: (report as any).discount || 0,
+        };
+        const mostSold = report.mostSold || topProducts[0] || null;
         return (
           <>
             <SummaryCards items={[
-              { label: t('Bills'), value: String(report.summary.count) },
-              { label: t('Revenue'), value: money(report.summary.total), color: colors.secondary },
-              { label: t('Tax'), value: money(report.summary.tax || 0) },
-              { label: t('Discount'), value: money(report.summary.discount || 0), color: colors.accent },
+              { label: t('Bills'), value: String(summary.count) },
+              { label: t('Revenue'), value: money(summary.total), color: colors.secondary },
+              { label: t('Tax'), value: money(summary.tax || 0) },
+              { label: t('Discount'), value: money(summary.discount || 0), color: colors.accent },
             ]} />
-            {report.mostSold ? (
+            {mostSold ? (
               <SurfaceCard style={styles.heroCard} padding>
                 <Text style={styles.heroEyebrow}>{t('Most sold product')}</Text>
-                <Text style={styles.heroTitle}>{report.mostSold.product_name}</Text>
+                <Text style={styles.heroTitle}>{mostSold.product_name}</Text>
                 <Text style={styles.heroMeta}>
-                  {t('Qty {{qty}}', { qty: qty(report.mostSold.total_qty) })} · {money(report.mostSold.revenue)}
-                  {report.mostSold.sku ? ` · ${report.mostSold.sku}` : ''}
+                  {t('Qty {{qty}}', { qty: qty(mostSold.total_qty) })} · {money(mostSold.revenue)}
+                  {mostSold.sku ? ` · ${mostSold.sku}` : ''}
                 </Text>
               </SurfaceCard>
             ) : null}
@@ -236,7 +248,7 @@ export default function ReportDetailScreen({ route }: Props) {
               <ListRow
                 key={bill.id || bill.bill_number}
                 title={bill.bill_number}
-                subtitle={[bill.customer?.name, new Date(bill.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })].filter(Boolean).join(' · ')}
+                subtitle={[bill.customer?.name, bill.created_at ? new Date(bill.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''].filter(Boolean).join(' · ')}
                 icon="receipt"
                 right={money(bill.total_amount)}
                 showChevron={false}
@@ -329,19 +341,32 @@ export default function ReportDetailScreen({ route }: Props) {
         ));
       }
       case 'profit': {
-        const report = data as {
-          summary: { revenue: number; cost: number; grossProfit: number; expenses: number; netProfit: number; taxCollected?: number };
-          items: Array<{ product_name: string; profit: number; revenue: number; cost?: number; total_qty?: number }>;
+        const report = (data || {}) as {
+          summary?: { revenue: number; cost: number; grossProfit: number; expenses: number; netProfit: number; taxCollected?: number };
+          items?: Array<{ product_name?: string; name?: string; profit: number; revenue: number; cost?: number; total_qty?: number }>;
         };
-        const items = report.items.filter((item) => matchesSearch(q, item.product_name));
-        const net = report.summary.netProfit;
+        const summary = report.summary || {
+          revenue: (report as any).revenue || 0,
+          cost: (report as any).cost || 0,
+          grossProfit: (report as any).grossProfit || 0,
+          expenses: (report as any).expenses || 0,
+          netProfit: (report as any).netProfit ?? (report as any).profit ?? 0,
+        };
+        const rawItems = Array.isArray(report.items) ? report.items : [];
+        const items = rawItems
+          .map((i) => ({
+            ...i,
+            product_name: i.product_name || i.name || t('Unknown product'),
+          }))
+          .filter((item) => matchesSearch(q, item.product_name));
+        const net = summary.netProfit;
         return (
           <>
             <SummaryCards items={[
-              { label: t('Revenue'), value: money(report.summary.revenue), color: colors.secondary },
-              { label: t('Cost'), value: money(report.summary.cost), color: colors.accent },
-              { label: t('Gross profit'), value: money(report.summary.grossProfit), color: colors.primary },
-              { label: t('Expenses'), value: money(report.summary.expenses), color: colors.error },
+              { label: t('Revenue'), value: money(summary.revenue), color: colors.secondary },
+              { label: t('Cost'), value: money(summary.cost), color: colors.accent },
+              { label: t('Gross profit'), value: money(summary.grossProfit), color: colors.primary },
+              { label: t('Expenses'), value: money(summary.expenses), color: colors.error },
             ]} />
             <SurfaceCard style={[styles.heroCard, net >= 0 ? styles.profitHero : styles.lossHero]} padding>
               <Text style={styles.heroEyebrow}>{net >= 0 ? t('Net profit') : t('Net loss')}</Text>
@@ -350,9 +375,9 @@ export default function ReportDetailScreen({ route }: Props) {
               </Text>
               <Text style={styles.heroMeta}>
                 {t('Revenue {{revenue}} − Cost {{cost}} − Expenses {{expenses}}', {
-                  revenue: money(report.summary.revenue),
-                  cost: money(report.summary.cost),
-                  expenses: money(report.summary.expenses),
+                  revenue: money(summary.revenue),
+                  cost: money(summary.cost),
+                  expenses: money(summary.expenses),
                 })}
               </Text>
             </SurfaceCard>
@@ -375,13 +400,21 @@ export default function ReportDetailScreen({ route }: Props) {
         );
       }
       case 'purchase': {
-        const report = data as { bills: Array<{ id: string; bill_number: string; bill_date: string; total_amount: number; supplier?: { name?: string } }>; summary: { count: number; total: number } };
-        const bills = report.bills.filter((bill) => matchesSearch(q, bill.bill_number, bill.supplier?.name, bill.bill_date));
+        const report = (data || {}) as {
+          bills?: Array<{ id: string; bill_number: string; bill_date: string; total_amount: number; supplier?: { name?: string } }>;
+          summary?: { count: number; total: number };
+        };
+        const rawBills = Array.isArray(report.bills) ? report.bills : [];
+        const bills = rawBills.filter((bill) => matchesSearch(q, bill.bill_number, bill.supplier?.name, bill.bill_date));
+        const summary = report.summary || {
+          count: rawBills.length,
+          total: rawBills.reduce((s, b) => s + (b.total_amount || 0), 0),
+        };
         return (
           <>
             <SummaryCards items={[
-              { label: t('Bills'), value: String(report.summary.count) },
-              { label: t('Purchases'), value: money(report.summary.total), color: colors.secondary },
+              { label: t('Bills'), value: String(summary.count) },
+              { label: t('Purchases'), value: money(summary.total), color: colors.secondary },
             ]} />
             {bills.map((bill) => (
               <ListRow
@@ -399,26 +432,28 @@ export default function ReportDetailScreen({ route }: Props) {
         );
       }
       case 'stock': {
-        const items = (data as Array<{
-          id: string;
-          quantity: number;
-          variant?: { sku?: string; size?: string; color?: string; product?: { name?: string }; uom?: { code?: string } };
-        }>)
-          .filter((item) => matchesSearch(q, item.variant?.product?.name, item.variant?.sku, item.variant?.size));
+        const raw = Array.isArray(data) ? data : Array.isArray((data as any)?.items) ? (data as any).items : [];
+        const items = (raw as Array<any>).filter((item) =>
+          matchesSearch(q, item.variant?.product?.name, item.productName, item.name, item.variant?.sku, item.sku, item.variant?.size),
+        );
         if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         if (!items.length) return <EmptyState icon="warehouse" title={t('No stock rows')} subtitle={t('Add products and stock to see them here')} />;
         return (
           <>
             <SummaryCards items={[{ label: t('Items'), value: String(items.length) }]} />
-            {items.map((item) => {
+            {items.map((item, index) => {
               const size = [item.variant?.size, item.variant?.color].filter(Boolean).join(' · ');
+              const title = item.variant?.product?.name || item.productName || item.name || t('Unknown');
+              const sku = item.variant?.sku || item.sku || '';
+              const quantity = item.quantity ?? item.stockQty ?? 0;
+              const uomCode = item.variant?.uom?.code || item.uomCode || '';
               return (
                 <ListRow
-                  key={item.id}
-                  title={item.variant?.product?.name || t('Unknown')}
-                  subtitle={[item.variant?.sku, size].filter(Boolean).join(' · ') || undefined}
+                  key={item.id || `${title}-${sku}-${index}`}
+                  title={title}
+                  subtitle={[sku, size].filter(Boolean).join(' · ') || undefined}
                   icon="warehouse"
-                  right={`${qty(item.quantity)} ${item.variant?.uom?.code || ''}`.trim()}
+                  right={`${qty(quantity)} ${uomCode}`.trim()}
                   showChevron={false}
                   style={styles.row}
                 />
@@ -428,33 +463,37 @@ export default function ReportDetailScreen({ route }: Props) {
         );
       }
       case 'low_stock': {
-        const report = data as {
-          items: Array<{
-            id: string;
-            quantity: number;
-            reorder_level: number;
-            variant?: { sku?: string; size?: string; color?: string; product?: { name?: string }; uom?: { code?: string } };
-          }>;
-          summary: { count: number };
+        const report = (data || {}) as {
+          items?: Array<any>;
+          summary?: { count: number };
         };
-        const items = report.items.filter((item) => matchesSearch(q, item.variant?.product?.name, item.variant?.sku, item.variant?.size));
+        const raw = Array.isArray(data) ? data : Array.isArray(report.items) ? report.items : [];
+        const items = raw.filter((item) =>
+          matchesSearch(q, item.variant?.product?.name, item.name, item.productName, item.variant?.sku, item.sku, item.variant?.size),
+        );
+        const summary = report.summary || { count: items.length };
         return (
           <>
-            <SummaryCards items={[{ label: t('Low items'), value: String(report.summary.count), color: colors.error }]} />
-            {items.map((item) => {
+            <SummaryCards items={[{ label: t('Low items'), value: String(summary.count), color: colors.error }]} />
+            {items.map((item, index) => {
               const size = [item.variant?.size, item.variant?.color].filter(Boolean).join(' · ');
-              const reorderLabel = item.reorder_level > 0
-                ? t('Reorder {{qty}}', { qty: qty(item.reorder_level) })
+              const reorder = item.reorder_level ?? item.reorderLevel ?? 0;
+              const reorderLabel = reorder > 0
+                ? t('Reorder {{qty}}', { qty: qty(reorder) })
                 : t('Out of stock');
+              const title = item.variant?.product?.name || item.name || item.productName || t('Unknown');
+              const sku = item.variant?.sku || item.sku || '';
+              const quantity = item.quantity ?? item.stockQty ?? 0;
+              const uomCode = item.variant?.uom?.code || item.uomCode || '';
               return (
                 <ListRow
-                  key={item.id}
-                  title={item.variant?.product?.name || t('Unknown')}
-                  subtitle={[item.variant?.sku, size, reorderLabel].filter(Boolean).join(' · ')}
+                  key={item.id || `${title}-${sku}-${index}`}
+                  title={title}
+                  subtitle={[sku, size, reorderLabel].filter(Boolean).join(' · ')}
                   icon="alert-outline"
                   iconColor={colors.error}
                   iconBg={colors.errorLight}
-                  right={`${qty(item.quantity)} ${item.variant?.uom?.code || ''}`.trim()}
+                  right={`${qty(quantity)} ${uomCode}`.trim()}
                   showChevron={false}
                   style={styles.row}
                 />
@@ -465,7 +504,8 @@ export default function ReportDetailScreen({ route }: Props) {
         );
       }
       case 'customer': {
-        const items = (data as Array<{ id: string; name: string; phone?: string; order_count: number; total_spent: number }>)
+        const raw = Array.isArray(data) ? data : Array.isArray((data as any)?.items) ? (data as any).items : [];
+        const items = (raw as Array<{ id: string; name: string; phone?: string; order_count: number; total_spent: number }>)
           .filter((item) => matchesSearch(q, item.name, item.phone));
         if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item) => (
@@ -481,7 +521,8 @@ export default function ReportDetailScreen({ route }: Props) {
         ));
       }
       case 'supplier': {
-        const items = (data as Array<{ id: string; name: string; phone?: string; bill_count: number; total_purchased: number }>)
+        const raw = Array.isArray(data) ? data : Array.isArray((data as any)?.items) ? (data as any).items : [];
+        const items = (raw as Array<{ id: string; name: string; phone?: string; bill_count: number; total_purchased: number }>)
           .filter((item) => matchesSearch(q, item.name, item.phone));
         if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item) => (
@@ -497,8 +538,20 @@ export default function ReportDetailScreen({ route }: Props) {
         ));
       }
       case 'gst': {
-        const items = (data as Array<{ tax_name: string; totalTax: number }>)
-          .filter((item) => matchesSearch(q, item.tax_name));
+        let rawItems: Array<{ tax_name: string; totalTax: number }> = [];
+        if (Array.isArray(data)) {
+          rawItems = data;
+        } else if (Array.isArray((data as any)?.items)) {
+          rawItems = (data as any).items;
+        } else if (data && typeof data === 'object' && ('tax' in (data as any) || 'taxable' in (data as any))) {
+          const d = data as any;
+          rawItems = [
+            { tax_name: 'GST Total Tax Collected', totalTax: Number(d.tax || 0) },
+            { tax_name: 'Taxable Turnover', totalTax: Number(d.taxable || 0) },
+            { tax_name: 'Gross Turnover', totalTax: Number(d.total || 0) },
+          ];
+        }
+        const items = rawItems.filter((item) => matchesSearch(q, item.tax_name));
         if (q.trim() && !items.length) return <Text style={styles.emptyFilter}>{t('No matching rows')}</Text>;
         return items.map((item, index) => (
           <ListRow
@@ -512,11 +565,20 @@ export default function ReportDetailScreen({ route }: Props) {
         ));
       }
       case 'expense': {
-        const report = data as { expenses: Array<{ id: string; expense_date: string; amount: number; category?: { name?: string } }>; total: number };
-        const expenses = report.expenses.filter((item) => matchesSearch(q, item.category?.name, item.expense_date));
+        const report = (data || {}) as {
+          expenses?: Array<{ id: string; expense_date: string; amount: number; category?: { name?: string } }>;
+          total?: number;
+        };
+        const rawExpenses = Array.isArray(report.expenses)
+          ? report.expenses
+          : Array.isArray(data)
+            ? (data as Array<any>)
+            : [];
+        const expenses = rawExpenses.filter((item) => matchesSearch(q, item.category?.name, item.expense_date));
+        const total = report.total ?? rawExpenses.reduce((s, e) => s + (parseFloat(String(e.amount)) || 0), 0);
         return (
           <>
-            <SummaryCards items={[{ label: t('Total expenses'), value: money(report.total), color: colors.error }]} />
+            <SummaryCards items={[{ label: t('Total expenses'), value: money(total), color: colors.error }]} />
             {expenses.map((item) => (
               <ListRow
                 key={item.id}
@@ -533,17 +595,25 @@ export default function ReportDetailScreen({ route }: Props) {
         );
       }
       case 'cash_flow': {
-        const report = data as {
-          summary: { cashIn: number; cashOut: number; netFlow: number; expenses: number; purchases: number };
-          inflows: Array<{ payment_mode: string; total: number }>;
+        const report = (data || {}) as {
+          summary?: { cashIn: number; cashOut: number; netFlow: number; expenses: number; purchases: number };
+          inflows?: Array<{ payment_mode: string; total: number }>;
         };
-        const inflows = report.inflows.filter((item) => matchesSearch(q, item.payment_mode));
+        const summary = report.summary || {
+          cashIn: (report as any).inflow || 0,
+          cashOut: (report as any).outflow || 0,
+          netFlow: (report as any).net || 0,
+          expenses: (report as any).expenses || 0,
+          purchases: (report as any).purchases || 0,
+        };
+        const rawInflows = Array.isArray(report.inflows) ? report.inflows : [{ payment_mode: 'cash', total: summary.cashIn }];
+        const inflows = rawInflows.filter((item) => matchesSearch(q, item.payment_mode));
         return (
           <>
             <SummaryCards items={[
-              { label: t('Cash in'), value: money(report.summary.cashIn), color: colors.secondary },
-              { label: t('Cash out'), value: money(report.summary.cashOut), color: colors.error },
-              { label: t('Net flow'), value: money(report.summary.netFlow), color: report.summary.netFlow >= 0 ? colors.success : colors.error },
+              { label: t('Cash in'), value: money(summary.cashIn), color: colors.secondary },
+              { label: t('Cash out'), value: money(summary.cashOut), color: colors.error },
+              { label: t('Net flow'), value: money(summary.netFlow), color: summary.netFlow >= 0 ? colors.success : colors.error },
             ]} />
             <Text style={styles.sectionTitle}>{t('Payment modes')}</Text>
             {inflows.map((item) => (
@@ -563,7 +633,11 @@ export default function ReportDetailScreen({ route }: Props) {
       default:
         return null;
     }
-  }, [data, reportType, search, t]);
+  } catch (renderError) {
+    console.error('Error rendering report content:', renderError);
+    return null;
+  }
+}, [data, reportType, search, t]);
 
   const hasRows = hasReportData(data, reportType);
 

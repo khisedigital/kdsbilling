@@ -428,6 +428,17 @@ export async function fetchReturns(page = 1, limit = 100) {
 
 type ReportRange = { from?: string; to?: string };
 
+export const DEFAULT_EXPENSE_CATEGORIES = [
+  { id: 'cat-rent', name: 'Rent' },
+  { id: 'cat-salary', name: 'Salary' },
+  { id: 'cat-electricity', name: 'Electricity' },
+  { id: 'cat-tea', name: 'Tea & Snacks' },
+  { id: 'cat-transport', name: 'Transport' },
+  { id: 'cat-maintenance', name: 'Maintenance' },
+  { id: 'cat-stationery', name: 'Office / Stationery' },
+  { id: 'cat-other', name: 'Other' },
+];
+
 export async function fetchSalesReport(from?: string, to?: string) {
   try {
     const { isFullyLocalMode, localSalesReport } = await import('../offline/localApi');
@@ -443,16 +454,129 @@ export async function fetchSalesReport(from?: string, to?: string) {
 }
 
 export async function fetchProductReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localSalesReport } = await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+      const sales = await localSalesReport(range);
+      if (sales) {
+        const items = sales.topProducts || [];
+        return {
+          items,
+          mostSold: sales.mostSold || items[0] || null,
+          summary: {
+            totalQty: items.reduce((s: number, i: any) => s + (Number(i.total_qty) || 0), 0),
+            totalRevenue: items.reduce((s: number, i: any) => s + (Number(i.revenue) || 0), 0),
+          },
+        };
+      }
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/products', { params: range });
   return data.data;
 }
 
 export async function fetchCategorySalesReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localListSales } = await import('../offline/localApi');
+    const { sqliteListProducts, sqliteListCategories } = await import('../offline/sqliteApi');
+    if (isFullyLocalMode()) {
+      const [{ items: sales }, { items: products }, { items: categories }] = await Promise.all([
+        localListSales({ from: range?.from, to: range?.to, limit: 10000 }),
+        sqliteListProducts({ limit: 50000 }),
+        sqliteListCategories(),
+      ]);
+      const catNameMap = new Map<string, string>();
+      for (const c of categories as any[]) catNameMap.set(c.id, c.name);
+
+      const prodCatMap = new Map<string, string>();
+      for (const p of products as any[]) {
+        const catName = (p.categoryId && catNameMap.get(p.categoryId)) || p.category?.name || 'Uncategorised';
+        prodCatMap.set(p.name, catName);
+        if (p.id) prodCatMap.set(p.id, catName);
+        for (const v of p.variants || []) {
+          if (v.id) prodCatMap.set(v.id, catName);
+          if (v.sku) prodCatMap.set(v.sku, catName);
+        }
+      }
+
+      const catAgg = new Map<string, { category_name: string; total_qty: number; revenue: number }>();
+      for (const s of sales as any[]) {
+        const items = s.items || s.bill?.items || [];
+        for (const it of items) {
+          const catName =
+            prodCatMap.get(it.variant_id) ||
+            prodCatMap.get(it.variantId) ||
+            prodCatMap.get(it.sku) ||
+            prodCatMap.get(it.product_name) ||
+            prodCatMap.get(it.productName) ||
+            'Uncategorised';
+          if (!catAgg.has(catName)) {
+            catAgg.set(catName, { category_name: catName, total_qty: 0, revenue: 0 });
+          }
+          const row = catAgg.get(catName)!;
+          row.total_qty += Number(it.quantity) || 0;
+          row.revenue += Number(it.line_total ?? it.lineTotal ?? (it.quantity * it.unit_price)) || 0;
+        }
+      }
+      return Array.from(catAgg.values()).sort((a, b) => b.revenue - a.revenue);
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/categories', { params: range });
   return data.data;
 }
 
 export async function fetchBrandSalesReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localListSales } = await import('../offline/localApi');
+    const { sqliteListProducts, sqliteListBrands } = await import('../offline/sqliteApi');
+    if (isFullyLocalMode()) {
+      const [{ items: sales }, { items: products }, { items: brands }] = await Promise.all([
+        localListSales({ from: range?.from, to: range?.to, limit: 10000 }),
+        sqliteListProducts({ limit: 50000 }),
+        sqliteListBrands(),
+      ]);
+      const brandNameMap = new Map<string, string>();
+      for (const b of brands as any[]) brandNameMap.set(b.id, b.name);
+
+      const prodBrandMap = new Map<string, string>();
+      for (const p of products as any[]) {
+        const brandName = (p.brandId && brandNameMap.get(p.brandId)) || p.brand?.name || 'No brand';
+        prodBrandMap.set(p.name, brandName);
+        if (p.id) prodBrandMap.set(p.id, brandName);
+        for (const v of p.variants || []) {
+          if (v.id) prodBrandMap.set(v.id, brandName);
+          if (v.sku) prodBrandMap.set(v.sku, brandName);
+        }
+      }
+
+      const brandAgg = new Map<string, { brand_name: string; total_qty: number; revenue: number }>();
+      for (const s of sales as any[]) {
+        const items = s.items || s.bill?.items || [];
+        for (const it of items) {
+          const brandName =
+            prodBrandMap.get(it.variant_id) ||
+            prodBrandMap.get(it.variantId) ||
+            prodBrandMap.get(it.sku) ||
+            prodBrandMap.get(it.product_name) ||
+            prodBrandMap.get(it.productName) ||
+            'No brand';
+          if (!brandAgg.has(brandName)) {
+            brandAgg.set(brandName, { brand_name: brandName, total_qty: 0, revenue: 0 });
+          }
+          const row = brandAgg.get(brandName)!;
+          row.total_qty += Number(it.quantity) || 0;
+          row.revenue += Number(it.line_total ?? it.lineTotal ?? (it.quantity * it.unit_price)) || 0;
+        }
+      }
+      return Array.from(brandAgg.values()).sort((a, b) => b.revenue - a.revenue);
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/brands', { params: range });
   return data.data;
 }
@@ -472,6 +596,28 @@ export async function fetchProfitReport(range?: ReportRange) {
 }
 
 export async function fetchPurchaseReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localListPurchases } = await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+      const items = await localListPurchases({ limit: 500 });
+      const bills = (Array.isArray(items) ? items : []).map((r: any) => ({
+        id: r.id,
+        bill_number: r.bill_number || r.billNumber || 'PB',
+        bill_date: r.bill_date || r.billDate || r.created_at?.slice(0, 10) || '',
+        total_amount: Number(r.total_amount ?? r.totalAmount ?? 0),
+        supplier: r.supplier ? { name: r.supplier.name } : undefined,
+      }));
+      return {
+        bills,
+        summary: {
+          count: bills.length,
+          total: bills.reduce((s, b) => s + (b.total_amount || 0), 0),
+        },
+      };
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/purchases', { params: range });
   return data.data;
 }
@@ -481,7 +627,15 @@ export async function fetchGstReport(range?: ReportRange) {
     const { isFullyLocalMode, localGstReport } = await import('../offline/localApi');
     if (isFullyLocalMode()) {
       const local = await localGstReport(range);
-      if (local) return local;
+      if (local) {
+        if (Array.isArray(local)) return local;
+        if (Array.isArray(local.items)) return local.items;
+        return [
+          { tax_name: 'GST Total Tax Collected', totalTax: Number(local.tax || 0) },
+          { tax_name: 'Taxable Turnover', totalTax: Number(local.taxable || 0) },
+          { tax_name: 'Gross Turnover', totalTax: Number(local.total || 0) },
+        ];
+      }
     }
   } catch {
     /* fall through */
@@ -496,17 +650,21 @@ export async function fetchStockReport() {
     const { sqliteListProducts } = await import('../offline/sqliteApi');
     if (isFullyLocalMode()) {
       const { items } = await sqliteListProducts({ limit: 50000, offset: 0 });
-      return {
-        items: (items as any[]).flatMap((p) =>
-          (p.variants || []).map((v: any) => ({
-            productId: p.id,
-            productName: p.name,
-            variantId: v.id,
+      return (items as any[]).flatMap((p) =>
+        (p.variants || []).map((v: any) => ({
+          id: v.id || `${p.id}-${v.sku}`,
+          quantity: Number(v.stockQty ?? v.stock_qty ?? 0),
+          variant: {
+            id: v.id,
             sku: v.sku,
-            stockQty: Number(v.stockQty ?? v.stock_qty) || 0,
-          })),
-        ),
-      };
+            size: v.size || null,
+            color: v.color || null,
+            reorder_level: Number(v.reorderLevel ?? v.reorder_level ?? 0),
+            product: { id: p.id, name: p.name },
+            uom: { code: v.uom?.code || v.uomCode || 'PCS' },
+          },
+        })),
+      );
     }
   } catch {
     /* fall through */
@@ -517,10 +675,30 @@ export async function fetchStockReport() {
 
 export async function fetchLowStockReport() {
   try {
-    const { isFullyLocalMode, localDashboard } = await import('../offline/localApi');
+    const { isFullyLocalMode } = await import('../offline/localApi');
+    const { sqliteListProducts } = await import('../offline/sqliteApi');
     if (isFullyLocalMode()) {
-      const dash = await localDashboard();
-      return { items: dash?.lowStock || [] };
+      const { items } = await sqliteListProducts({ limit: 50000, offset: 0 });
+      const flat = (items as any[]).flatMap((p) =>
+        (p.variants || []).map((v: any) => ({
+          id: v.id || `${p.id}-${v.sku}`,
+          quantity: Number(v.stockQty ?? v.stock_qty ?? 0),
+          reorder_level: Number(v.reorderLevel ?? v.reorder_level ?? 5),
+          variant: {
+            id: v.id,
+            sku: v.sku,
+            size: v.size || null,
+            color: v.color || null,
+            product: { id: p.id, name: p.name },
+            uom: { code: v.uom?.code || v.uomCode || 'PCS' },
+          },
+        })),
+      );
+      const low = flat.filter((item) => item.quantity <= 0 || (item.reorder_level > 0 && item.quantity <= item.reorder_level));
+      return {
+        items: low,
+        summary: { count: low.length },
+      };
     }
   } catch {
     /* fall through */
@@ -530,16 +708,76 @@ export async function fetchLowStockReport() {
 }
 
 export async function fetchCustomerReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localListSales } = await import('../offline/localApi');
+    const { sqliteListCustomers } = await import('../offline/sqliteApi');
+    if (isFullyLocalMode()) {
+      const [{ items: customers }, { items: sales }] = await Promise.all([
+        sqliteListCustomers({ limit: 2000 }),
+        localListSales({ from: range?.from, to: range?.to, limit: 10000 }),
+      ]);
+      const custMap = new Map<string, { id: string; name: string; phone?: string; order_count: number; total_spent: number }>();
+      for (const c of customers as any[]) {
+        custMap.set(c.id, { id: c.id, name: c.name, phone: c.phone || '', order_count: 0, total_spent: 0 });
+      }
+      for (const s of sales as any[]) {
+        const cid = s.customer_id || s.customer?.id;
+        if (cid && custMap.has(cid)) {
+          const entry = custMap.get(cid)!;
+          entry.order_count += 1;
+          entry.total_spent += Number(s.total_amount) || 0;
+        }
+      }
+      return Array.from(custMap.values()).filter((c) => c.order_count > 0).sort((a, b) => b.total_spent - a.total_spent);
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/customers', { params: range });
   return data.data;
 }
 
 export async function fetchSupplierReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localListSuppliers, localListPurchases } = await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+      const [suppliers, purchases] = await Promise.all([
+        localListSuppliers(),
+        localListPurchases({ limit: 5000 }),
+      ]);
+      const supMap = new Map<string, { id: string; name: string; phone?: string; bill_count: number; total_purchased: number }>();
+      for (const s of suppliers as any[]) {
+        supMap.set(s.id, { id: s.id, name: s.name, phone: s.phone || '', bill_count: 0, total_purchased: 0 });
+      }
+      for (const p of purchases as any[]) {
+        const sid = p.supplier_id || p.supplierId || p.supplier?.id;
+        if (sid && supMap.has(sid)) {
+          const entry = supMap.get(sid)!;
+          entry.bill_count += 1;
+          entry.total_purchased += Number(p.total_amount ?? p.totalAmount ?? 0);
+        }
+      }
+      return Array.from(supMap.values()).filter((s) => s.bill_count > 0).sort((a, b) => b.total_purchased - a.total_purchased);
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/suppliers', { params: range });
   return data.data;
 }
 
 export async function fetchExpenseReport(range?: ReportRange) {
+  try {
+    const { isFullyLocalMode, localListExpenses } = await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+      const items = await localListExpenses(range);
+      const list = Array.isArray(items) ? items : [];
+      const total = list.reduce((s: number, e: any) => s + (parseFloat(String(e.amount)) || 0), 0);
+      return { expenses: list, total };
+    }
+  } catch {
+    /* fall through */
+  }
   const { data } = await api.get('/reports/expenses', { params: range });
   return data.data;
 }
@@ -559,8 +797,30 @@ export async function fetchCashFlowReport(range?: ReportRange) {
 }
 
 export async function fetchExpenseCategories() {
-  const { data } = await api.get('/expense-categories');
-  return data.data;
+  try {
+    const { isFullyLocalMode } = await import('../offline/localApi');
+    const { getDesktopBridge } = await import('../desktop/bridge');
+    if (isFullyLocalMode()) {
+      const b = getDesktopBridge();
+      if (b?.sqliteListJsonTable) {
+        const { useAuthStore } = await import('../store/authStore');
+        const shopCode = useAuthStore.getState().savedLogin?.shopCode || 'default';
+        const res = await b.sqliteListJsonTable({ shopCode, table: 'expense_categories' });
+        if (res?.items && Array.isArray(res.items) && res.items.length > 0) {
+          return res.items;
+        }
+      }
+      return DEFAULT_EXPENSE_CATEGORIES;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.get('/expense-categories');
+    return Array.isArray(data.data) && data.data.length ? data.data : DEFAULT_EXPENSE_CATEGORIES;
+  } catch {
+    return DEFAULT_EXPENSE_CATEGORIES;
+  }
 }
 
 export async function fetchExpenses(params?: { from?: string; to?: string; limit?: number }) {
@@ -588,6 +848,12 @@ export async function fetchExpenses(params?: { from?: string; to?: string; limit
 }
 
 export async function createExpense(payload: Record<string, unknown>) {
+  const expenseDate = String(payload.expenseDate || payload.expense_date || new Date().toISOString().slice(0, 10));
+  const fullPayload = {
+    ...payload,
+    expenseDate,
+    expense_date: expenseDate,
+  };
   try {
     const { isFullyLocalMode, localSaveExpense, localEnqueueSync } = await import('../offline/localApi');
     if (isFullyLocalMode()) {
@@ -595,7 +861,7 @@ export async function createExpense(payload: Record<string, unknown>) {
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `exp-${Date.now()}`;
-      const expense = { id, ...payload, syncStatus: 'pending' };
+      const expense = { id, ...fullPayload, syncStatus: 'pending' };
       await localSaveExpense(expense);
       await localEnqueueSync({
         entityType: 'expense',
@@ -608,7 +874,7 @@ export async function createExpense(payload: Record<string, unknown>) {
   } catch {
     /* fall through */
   }
-  const { data } = await api.post('/expenses', payload);
+  const { data } = await api.post('/expenses', fullPayload);
   return data.data;
 }
 

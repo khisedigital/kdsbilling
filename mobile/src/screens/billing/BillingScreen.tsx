@@ -322,6 +322,11 @@ export default function BillingScreen({ navigation, route }: Props) {
         const nextPrice = patchPrice != null && Number.isFinite(patchPrice) && (patchPrice > 0 || row.sellingPrice <= 0)
           ? patchPrice
           : row.sellingPrice;
+        const nextBarcodes = patch.barcodes !== undefined
+          ? patch.barcodes
+          : patch.barcode !== undefined
+            ? [patch.barcode]
+            : row.barcodes;
         return {
           ...row,
           variantId: patch.variantId || row.variantId,
@@ -331,6 +336,7 @@ export default function BillingScreen({ navigation, route }: Props) {
           costPrice: patch.costPrice !== undefined ? Number(patch.costPrice) : row.costPrice,
           mrp: patch.mrp !== undefined ? patch.mrp : row.mrp,
           stockQty: patch.stockQty !== undefined ? patch.stockQty : row.stockQty,
+          barcodes: nextBarcodes,
         };
       });
       if (changed) nextCatalog = next;

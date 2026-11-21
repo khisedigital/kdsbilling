@@ -255,6 +255,7 @@ function buildTestA4Html(opts: {
   th{color:#000;padding:6px;text-align:left;border-top:1px solid #000;border-bottom:1px solid #000}
   td{padding:6px;border-bottom:0.5px solid #000}
   th.r,td.r{text-align:right}
+  .cut-space{height:16mm;width:100%}
   @media print {
     @page {
       size: A4 portrait;
@@ -263,6 +264,7 @@ function buildTestA4Html(opts: {
     html, body { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; }
     .head, table { width: 100% !important; max-width: 100% !important; }
     .head { padding: 6px 10px !important; margin-bottom: 6px !important; }
+    .cut-space { height: 16mm !important; }
   }
 </style></head>
 <body>
@@ -278,6 +280,7 @@ function buildTestA4Html(opts: {
     <tbody><tr><td>${word('Sample Item')}</td><td class="r">1</td><td class="r">10.00</td><td class="r">10.00</td></tr></tbody>
   </table>
   <p style="text-align:center;margin-top:20px"><strong>${word('Printer check OK')}</strong></p>
+  <div class="cut-space"></div>
 </body></html>`;
 }
 

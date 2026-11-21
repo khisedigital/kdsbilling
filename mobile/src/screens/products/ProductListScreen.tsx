@@ -72,9 +72,10 @@ function formatPrice(product: Product) {
   const variants = product.variants || [];
   if (!variants.length) return '—';
   if (variants.length === 1) {
-    return `₹${parseFloat(String(variants[0].selling_price)).toFixed(2)}`;
+    const p = parseFloat(String(variants[0].selling_price ?? (variants[0] as any).sellingPrice));
+    return Number.isFinite(p) ? `₹${p.toFixed(2)}` : '—';
   }
-  const prices = variants.map((v) => parseFloat(String(v.selling_price)) || 0);
+  const prices = variants.map((v) => parseFloat(String(v.selling_price ?? (v as any).sellingPrice)) || 0);
   const min = Math.min(...prices);
   const max = Math.max(...prices);
   if (min === max) return `₹${min.toFixed(2)}`;

@@ -6,12 +6,20 @@ function nowIso() {
 
 function dayBoundStart(value) {
   const s = String(value || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T00:00:00`);
+    if (!isNaN(d.getTime())) return d.toISOString();
+    return `${s}T00:00:00.000Z`;
+  }
   return s;
 }
 function dayBoundEnd(value) {
   const s = String(value || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T23:59:59.999Z`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T23:59:59.999`);
+    if (!isNaN(d.getTime())) return d.toISOString();
+    return `${s}T23:59:59.999Z`;
+  }
   return s;
 }
 
@@ -316,21 +324,23 @@ function listDailyClosings(db) {
 
 function previewDailyClosingLocal(db, closingDate) {
   const day = String(closingDate || nowIso().slice(0, 10));
+  const start = dayBoundStart(day);
+  const end = dayBoundEnd(day);
   const sales = db
     .prepare(
       `SELECT IFNULL(SUM(total_amount),0) AS total FROM sales
-       WHERE status = 'completed' AND created_at LIKE ?`,
+       WHERE status = 'completed' AND (created_at LIKE ? OR (created_at >= ? AND created_at <= ?))`,
     )
-    .get(`${day}%`);
+    .get(`${day}%`, start, end);
   const payments = db
     .prepare(
       `SELECT mode, IFNULL(SUM(amount),0) AS amount
        FROM sale_payments sp
        JOIN sales s ON s.client_bill_id = sp.client_bill_id
-       WHERE s.status = 'completed' AND s.created_at LIKE ?
+       WHERE s.status = 'completed' AND (s.created_at LIKE ? OR (s.created_at >= ? AND s.created_at <= ?))
        GROUP BY mode`,
     )
-    .all(`${day}%`);
+    .all(`${day}%`, start, end);
   const byMode = { cash: 0, upi: 0, card: 0, other: 0 };
   for (const p of payments) {
     const m = String(p.mode || '').toLowerCase();
@@ -373,6 +383,55 @@ function previewDailyClosingLocal(db, closingDate) {
 function upsertProductLocal(db, product) {
   if (!product?.id) throw new Error('product.id required');
   const ts = nowIso();
+
+  // Remember existing variant stock so updating product details doesn't wipe local stock if omitted
+  const existingStockRows = db.prepare(`SELECT id, stock_qty FROM product_variants WHERE product_id = ?`).all(String(product.id));
+  const existingStockMap = new Map(existingStockRows.map((r) => [String(r.id), Number(r.stock_qty) || 0]));
+
+  const variants = (product.variants || []).map((v) => {
+    if (!v || typeof v !== 'object') return v;
+    const selling = Number(v.selling_price ?? v.sellingPrice) || 0;
+    const cost = Number(v.cost_price ?? v.costPrice) || 0;
+    const mrp = v.mrp != null && v.mrp !== '' ? Number(v.mrp) : null;
+    const stockIn = v.stockQty ?? v.stock_qty;
+    const stock = (stockIn !== undefined && stockIn !== null && stockIn !== '')
+      ? (Number(stockIn) || 0)
+      : (existingStockMap.get(String(v.id)) || 0);
+    const barcode =
+      v.barcode ||
+      (Array.isArray(v.barcodes) && v.barcodes[0] && (typeof v.barcodes[0] === 'string' ? v.barcodes[0] : v.barcodes[0].code || v.barcodes[0].barcode)) ||
+      null;
+    return {
+      ...v,
+      selling_price: selling,
+      sellingPrice: selling,
+      cost_price: cost,
+      costPrice: cost,
+      mrp,
+      stock_qty: stock,
+      stockQty: stock,
+      barcode,
+    };
+  });
+
+  const totalStock = variants.reduce((s, v) => s + (Number(v?.stockQty ?? v?.stock_qty) || 0), 0);
+  const normalizedProduct = {
+    ...product,
+    name: String(product.name || ''),
+    name_mr: product.name_mr ?? product.nameMr ?? null,
+    nameMr: product.nameMr ?? product.name_mr ?? null,
+    category_id: product.category_id ?? product.categoryId ?? null,
+    categoryId: product.categoryId ?? product.category_id ?? null,
+    brand_id: product.brand_id ?? product.brandId ?? null,
+    brandId: product.brandId ?? product.brandId ?? null,
+    status: String(product.status || 'active'),
+    is_favorite: product.is_favorite || product.isFavorite ? 1 : 0,
+    isFavorite: Boolean(product.is_favorite || product.isFavorite),
+    stockQty: totalStock,
+    stock_qty: totalStock,
+    variants,
+  };
+
   db.prepare(
     `INSERT INTO products (id, name, name_mr, category_id, brand_id, is_favorite, status, json, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -381,14 +440,14 @@ function upsertProductLocal(db, product) {
        brand_id = excluded.brand_id, is_favorite = excluded.is_favorite, status = excluded.status,
        json = excluded.json, updated_at = excluded.updated_at`,
   ).run(
-    String(product.id),
-    String(product.name || ''),
-    product.name_mr ?? product.nameMr ?? null,
-    product.category_id ?? product.categoryId ?? null,
-    product.brand_id ?? product.brandId ?? null,
-    product.is_favorite || product.isFavorite ? 1 : 0,
-    String(product.status || 'active'),
-    JSON.stringify(product),
+    String(normalizedProduct.id),
+    normalizedProduct.name,
+    normalizedProduct.name_mr,
+    normalizedProduct.category_id,
+    normalizedProduct.brand_id,
+    normalizedProduct.is_favorite,
+    normalizedProduct.status,
+    JSON.stringify(normalizedProduct),
     ts,
   );
   db.prepare(`DELETE FROM product_variants WHERE product_id = ?`).run(String(product.id));
@@ -397,17 +456,17 @@ function upsertProductLocal(db, product) {
       (id, product_id, sku, barcode, selling_price, cost_price, mrp, stock_qty, unit, json, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
-  for (const v of product.variants || []) {
+  for (const v of variants) {
     if (!v?.id) continue;
     insertV.run(
       String(v.id),
       String(product.id),
       String(v.sku || ''),
       v.barcode || null,
-      Number(v.sellingPrice ?? v.selling_price) || 0,
-      Number(v.costPrice ?? v.cost_price) || 0,
+      v.selling_price,
+      v.cost_price,
       v.mrp != null ? Number(v.mrp) : null,
-      Number(v.stockQty ?? v.stock_qty) || 0,
+      v.stock_qty,
       v.unit || null,
       JSON.stringify(v),
       ts,
@@ -565,6 +624,7 @@ function buildProfitReport(db, { from, to } = {}) {
     .all(...params);
   const items = rows.map((r) => ({
     name: r.name,
+    product_name: r.name,
     qty: Number(r.qty) || 0,
     revenue: Number(r.revenue) || 0,
     cost: Number(r.cost) || 0,
@@ -572,7 +632,41 @@ function buildProfitReport(db, { from, to } = {}) {
   }));
   const revenue = items.reduce((s, i) => s + i.revenue, 0);
   const cost = items.reduce((s, i) => s + i.cost, 0);
-  return { revenue, cost, profit: revenue - cost, items };
+  const grossProfit = revenue - cost;
+
+  const expWhere = [];
+  const expParams = [];
+  if (from) {
+    expWhere.push('expense_date >= ?');
+    expParams.push(String(from).slice(0, 10));
+  }
+  if (to) {
+    expWhere.push('expense_date <= ?');
+    expParams.push(String(to).slice(0, 10));
+  }
+  const expRow = db.prepare(
+    `SELECT IFNULL(SUM(amount), 0) AS total FROM expenses
+     ${expWhere.length ? `WHERE ${expWhere.join(' AND ')}` : ''}`
+  ).get(...expParams);
+  const expenses = Number(expRow?.total) || 0;
+  const netProfit = grossProfit - expenses;
+
+  return {
+    revenue,
+    cost,
+    profit: netProfit,
+    grossProfit,
+    expenses,
+    netProfit,
+    summary: {
+      revenue,
+      cost,
+      grossProfit,
+      expenses,
+      netProfit,
+    },
+    items,
+  };
 }
 
 function buildGstReport(db, { from, to } = {}) {
@@ -595,11 +689,19 @@ function buildGstReport(db, { from, to } = {}) {
        FROM sales WHERE ${where.join(' AND ')}`,
     )
     .get(...params);
+  const tax = Number(row?.tax) || 0;
+  const taxable = Number(row?.taxable) || 0;
+  const total = Number(row?.total) || 0;
   return {
-    taxable: Number(row?.taxable) || 0,
-    tax: Number(row?.tax) || 0,
-    total: Number(row?.total) || 0,
+    taxable,
+    tax,
+    total,
     bills: Number(row?.bills) || 0,
+    items: [
+      { tax_name: 'GST Total Tax Collected', totalTax: tax },
+      { tax_name: 'Taxable Turnover', totalTax: taxable },
+      { tax_name: 'Gross Turnover', totalTax: total },
+    ],
     note: 'Local GST summary from saved bill tax fields (detailed HSN needs server tax lines).',
   };
 }
@@ -623,12 +725,66 @@ function buildCashFlowReport(db, { from, to } = {}) {
     )
     .get(...expParams);
   const expenses = Number(exp?.n) || 0;
+
+  const purWhere = [];
+  const purParams = [];
+  if (from) {
+    purWhere.push('created_at >= ?');
+    purParams.push(dayBoundStart(from));
+  }
+  if (to) {
+    purWhere.push('created_at <= ?');
+    purParams.push(dayBoundEnd(to));
+  }
+  const purRow = db.prepare(
+    `SELECT IFNULL(SUM(total_amount), 0) AS total FROM purchases
+     ${purWhere.length ? `WHERE ${purWhere.join(' AND ')}` : ''}`
+  ).get(...purParams);
+  const purchases = Number(purRow?.total) || 0;
+
+  const salesWhere = [`s.status = 'completed'`];
+  const salesParams = [];
+  if (from) {
+    salesWhere.push('s.created_at >= ?');
+    salesParams.push(dayBoundStart(from));
+  }
+  if (to) {
+    salesWhere.push('s.created_at <= ?');
+    salesParams.push(dayBoundEnd(to));
+  }
+  const paymentRows = db.prepare(
+    `SELECT LOWER(TRIM(sp.mode)) AS payment_mode, IFNULL(SUM(sp.amount), 0) AS total
+     FROM sale_payments sp
+     JOIN sales s ON s.client_bill_id = sp.client_bill_id
+     WHERE ${salesWhere.join(' AND ')}
+     GROUP BY LOWER(TRIM(sp.mode))`
+  ).all(...salesParams);
+
+  const cashIn = paymentRows.length
+    ? paymentRows.reduce((s, r) => s + (Number(r.total) || 0), 0)
+    : sales.revenue;
+  const cashOut = expenses + purchases;
+  const netFlow = cashIn - cashOut;
+
+  const inflows = paymentRows.length
+    ? paymentRows.map((r) => ({ payment_mode: r.payment_mode || 'cash', total: Number(r.total) || 0 }))
+    : [{ payment_mode: 'cash', total: cashIn }];
+
   return {
-    inflow: sales.revenue,
-    outflow: expenses,
-    net: sales.revenue - expenses,
+    inflow: cashIn,
+    outflow: cashOut,
+    net: netFlow,
     profit: sales.profit,
     expenses,
+    purchases,
+    inflows,
+    summary: {
+      cashIn,
+      cashOut,
+      netFlow,
+      expenses,
+      purchases,
+    },
   };
 }
 

@@ -4,7 +4,7 @@ import { fetchAllProducts, fetchBrands, fetchCategories } from '../services/cata
 import { getShopSettings } from '../services/shopSettingsService';
 import { apiError } from '../utils/apiError';
 import { isDesktopOfflineCapable } from './capability';
-import { useConnectivityStore } from './connectivityStore';
+import { registerAutoSyncRunner, triggerAutoSync, useConnectivityStore } from './connectivityStore';
 import {
   listOutboxSales,
   markOutboxSaleError,
@@ -85,12 +85,25 @@ async function pushSyncQueueItem(row: {
     });
     return;
   }
+  if (type === 'profile' && op === 'update') {
+    await api.patch('/auth/profile', {
+      name: p.name,
+      phone: p.phone,
+    });
+    return;
+  }
   if (type === 'shop_settings' && op === 'update') {
     await api.patch('/shop-settings', p);
     return;
   }
   if (type === 'expense' && op === 'create') {
-    await api.post('/expenses', p);
+    await api.post('/expenses', {
+      categoryId: p.categoryId || p.category_id,
+      amount: p.amount,
+      notes: p.notes || p.note,
+      expenseDate: p.expenseDate || p.expense_date,
+      paymentMode: p.paymentMode || p.payment_mode || 'cash',
+    });
     return;
   }
   if (type === 'held_bill' && op === 'create') {
@@ -132,6 +145,10 @@ async function pushSyncQueueItem(row: {
   }
   if (type === 'product' && op === 'delete') {
     await api.delete(`/products/${row.entityId}`);
+    return;
+  }
+  if (type === 'price_bulk' && op === 'update') {
+    await api.post('/products/price-bulk', { items: (p as any).items || [] });
     return;
   }
   if (type === 'daily_closing' && (op === 'create' || op === 'update')) {
@@ -296,7 +313,7 @@ export async function pullEverythingToSqlite(): Promise<{
     return { products: 0, categories: 0, brands: 0, customers: 0, sales: 0, expenses: 0, returns: 0 };
   }
 
-  const [categories, brands, products, shop, customers, suppliers] = await Promise.all([
+  const [categories, brands, products, shop, customers, suppliers, expenseCats] = await Promise.all([
     fetchCategories(undefined, { forceNetwork: true }).catch(() => []),
     fetchBrands(undefined, { forceNetwork: true }).catch(() => []),
     fetchAllProducts({ status: 'active' }).catch(() => []),
@@ -306,6 +323,10 @@ export async function pullEverythingToSqlite(): Promise<{
       .catch(() => []),
     import('../services/inventoryService')
       .then((m) => m.fetchSuppliers(undefined, { forceNetwork: true }))
+      .catch(() => []),
+    api
+      .get('/expense-categories')
+      .then((r) => r.data?.data || [])
       .catch(() => []),
   ]);
 
@@ -332,6 +353,13 @@ export async function pullEverythingToSqlite(): Promise<{
       (await import('../store/authStore')).useAuthStore.getState().savedLogin?.shopCode ||
       'default';
     await bridge.sqliteReplaceSuppliers({ shopCode, suppliers: supplierRows });
+    if (bridge?.sqliteReplaceJsonTable && Array.isArray(expenseCats) && expenseCats.length) {
+      await bridge.sqliteReplaceJsonTable({
+        shopCode,
+        table: 'expense_categories',
+        rows: expenseCats,
+      });
+    }
   }
 
   // Bills / expenses / returns created on mobile (online) → desktop local DB.
@@ -409,10 +437,20 @@ export async function syncNow(): Promise<SyncResult> {
   }
 }
 
+registerAutoSyncRunner(syncNow);
+
 export function startOutboxSync(): () => void {
   if (!isDesktopOfflineCapable()) return () => {};
   void refreshPendingCount();
-  const onOnline = () => useConnectivityStore.getState().setOnline(true);
+  const onOnline = () => {
+    const s = useConnectivityStore.getState();
+    if (s.manualOffline) return;
+    const wasOffline = !s.online;
+    s.setOnline(true);
+    if (wasOffline && s.autoSync) {
+      void triggerAutoSync();
+    }
+  };
   const onOffline = () => useConnectivityStore.getState().setOnline(false);
   window.addEventListener('online', onOnline);
   window.addEventListener('offline', onOffline);

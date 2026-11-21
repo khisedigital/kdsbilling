@@ -646,76 +646,103 @@ export async function createProduct(
   payload: CreateProductPayload,
   opts?: { forceNetwork?: boolean },
 ): Promise<Product> {
-  if (!opts?.forceNetwork) {
+  const { hasSqliteBridge } = await import('../offline/sqliteApi');
+  const { isFullyLocalMode, localUpsertProduct, localEnqueueSync } = await import(
+    '../offline/localApi'
+  );
+
+  if (opts?.forceNetwork || !isFullyLocalMode()) {
     try {
-      const { isFullyLocalMode, localUpsertProduct, localEnqueueSync } = await import(
-        '../offline/localApi'
-      );
-      if (isFullyLocalMode()) {
-        const id =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `prod-${Date.now()}`;
-        const variantId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `var-${Date.now()}`;
-        const product = {
-          id,
-          name: payload.name,
-          name_mr: payload.nameMr ?? null,
-          category_id: payload.categoryId,
-          brand_id: payload.brandId,
-          uom_id: payload.uomId,
-          status: 'active',
-          is_favorite: false,
-          variants: (payload.variants || []).map((v, idx) => ({
-            id: v.id || `${variantId}-${idx}`,
-            sku: v.sku || '',
-            barcode: v.barcode,
-            barcodes: v.barcodes,
-            selling_price: v.sellingPrice,
-            cost_price: v.costPrice || 0,
-            mrp: v.mrp,
-            stock_qty: v.stockQty || 0,
-            sellingPrice: v.sellingPrice,
-            costPrice: v.costPrice || 0,
-            stockQty: v.stockQty || 0,
-          })),
-          sync_status: 'pending',
-        } as Product;
-        if (!product.variants?.length) {
-          product.variants = [
-            {
-              id: variantId,
-              sku: payload.sku || '',
-              barcode: payload.barcode,
-              selling_price: payload.sellingPrice,
-              cost_price: payload.costPrice || 0,
-              mrp: payload.mrp,
-              stock_qty: payload.stockQty || 0,
-              sellingPrice: payload.sellingPrice,
-              costPrice: payload.costPrice || 0,
-              stockQty: payload.stockQty || 0,
-            } as any,
-          ];
-        }
-        await localUpsertProduct(product);
-        await localEnqueueSync({
-          entityType: 'product',
-          entityId: id,
-          op: 'create',
-          payload,
-        });
-        void upsertCachedProduct(product);
-        return product;
+      const { data } = await api.post('/products', payload);
+      const product = data.data as Product;
+      if (hasSqliteBridge()) {
+        try {
+          await localUpsertProduct(product);
+        } catch {}
       }
-    } catch {
-      /* fall through */
+      void upsertCachedProduct(product);
+      return product;
+    } catch (err) {
+      if (!hasSqliteBridge()) throw err;
     }
   }
-  const { data } = await api.post('/products', payload);
-  const product = data.data as Product;
+
+  const id =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `prod-${Date.now()}`;
+  const variantId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `var-${Date.now()}`;
+  const variants = (payload.variants || []).map((v, idx) => {
+    const selling = Number(v.sellingPrice ?? (v as any).selling_price) || 0;
+    const cost = Number(v.costPrice ?? (v as any).cost_price) || 0;
+    const mrp = v.mrp != null && v.mrp !== '' ? Number(v.mrp) : null;
+    const stock = Number(v.stockQty ?? (v as any).stock_qty) || 0;
+    const barcode = v.barcode || (v.barcodes?.[0]) || null;
+    return {
+      ...v,
+      id: v.id || `${variantId}-${idx}`,
+      sku: v.sku || '',
+      barcode,
+      barcodes: v.barcodes || (barcode ? [barcode] : []),
+      selling_price: selling,
+      sellingPrice: selling,
+      cost_price: cost,
+      costPrice: cost,
+      mrp,
+      stock_qty: stock,
+      stockQty: stock,
+    };
+  });
+  if (!variants.length) {
+    const selling = Number(payload.sellingPrice) || 0;
+    const cost = Number(payload.costPrice) || 0;
+    const mrp = payload.mrp != null && payload.mrp !== '' ? Number(payload.mrp) : null;
+    const stock = Number(payload.stockQty) || 0;
+    const barcode = payload.barcode || (payload.barcodes?.[0]) || null;
+    variants.push({
+      id: variantId,
+      sku: payload.sku || '',
+      barcode,
+      barcodes: payload.barcodes || (barcode ? [barcode] : []),
+      selling_price: selling,
+      sellingPrice: selling,
+      cost_price: cost,
+      costPrice: cost,
+      mrp,
+      stock_qty: stock,
+      stockQty: stock,
+    } as any);
+  }
+  const totalStock = variants.reduce((s, v) => s + (v.stockQty || 0), 0);
+  const product = {
+    id,
+    name: payload.name,
+    name_mr: payload.nameMr ?? null,
+    nameMr: payload.nameMr ?? null,
+    category_id: payload.categoryId,
+    brand_id: payload.brandId,
+    uom_id: payload.uomId,
+    status: 'active',
+    is_favorite: false,
+    is_weight_based: !!payload.isWeightBased,
+    allow_decimal_qty: !!payload.allowDecimalQty,
+    has_variants: variants.length > 1,
+    stockQty: totalStock,
+    stock_qty: totalStock,
+    variants,
+    sync_status: 'pending',
+  } as unknown as Product;
+
+  await localUpsertProduct(product);
+  await localEnqueueSync({
+    entityType: 'product',
+    entityId: id,
+    op: 'create',
+    payload,
+  });
   void upsertCachedProduct(product);
   return product;
 }
@@ -725,78 +752,136 @@ export async function updateProduct(
   payload: UpdateProductPayload,
   opts?: { forceNetwork?: boolean },
 ): Promise<Product> {
-  if (!opts?.forceNetwork) {
+  const { hasSqliteBridge, sqliteGetProduct } = await import('../offline/sqliteApi');
+  const { isFullyLocalMode, localUpsertProduct, localEnqueueSync } = await import(
+    '../offline/localApi'
+  );
+
+  if (opts?.forceNetwork || !isFullyLocalMode()) {
     try {
-      const { isFullyLocalMode, localUpsertProduct, localEnqueueSync } = await import(
-        '../offline/localApi'
-      );
-      const { sqliteListProducts } = await import('../offline/sqliteApi');
-      if (isFullyLocalMode()) {
-        const listed = await sqliteListProducts({ search: '', limit: 1, offset: 0 });
-        // Prefer reading via search by loading all is heavy; store merge from payload + id.
-        const product = {
-          id,
-          name: payload.name,
-          name_mr: payload.nameMr,
-          category_id: payload.categoryId,
-          brand_id: payload.brandId,
-          status: 'active',
-          ...payload,
-          variants: (payload as any).variants,
-          sync_status: 'pending',
-        } as Product;
-        // If variants missing, keep existing from a targeted list search by name.
-        if (!product.variants?.length && payload.name) {
-          const found = await sqliteListProducts({ search: payload.name, limit: 20, offset: 0 });
-          const prev = (found.items || []).find((p: any) => p?.id === id) as Product | undefined;
-          if (prev) Object.assign(product, prev, { ...payload, id, sync_status: 'pending' });
-        }
-        void listed;
-        await localUpsertProduct(product);
-        await localEnqueueSync({
-          entityType: 'product',
-          entityId: id,
-          op: 'update',
-          payload: { id, ...payload },
-        });
-        void upsertCachedProduct(product);
-        return product;
+      const { data } = await api.put(`/products/${id}`, payload);
+      const product = data.data as Product;
+      if (hasSqliteBridge()) {
+        try {
+          await localUpsertProduct(product);
+        } catch {}
       }
-    } catch {
-      /* fall through */
+      void upsertCachedProduct(product);
+      return product;
+    } catch (err) {
+      if (!hasSqliteBridge()) throw err;
     }
   }
-  const { data } = await api.put(`/products/${id}`, payload);
-  const product = data.data as Product;
-  // Patch cache + notify Billing — avoid wiping cache / full catalog reload.
-  void upsertCachedProduct(product);
-  return product;
+
+  try {
+    const existing = (await sqliteGetProduct(id)) as Product | null;
+    const variantsPayload = (payload as any).variants as any[] | undefined;
+    let nextVariants = existing?.variants || [];
+    if (variantsPayload?.length) {
+      nextVariants = variantsPayload.map((vp: any, idx: number) => {
+        const existingV = (existing?.variants || []).find((v) => v.id === vp.id) || existing?.variants?.[idx];
+        const selling = Number(vp.sellingPrice ?? vp.selling_price ?? existingV?.selling_price ?? (existingV as any)?.sellingPrice) || 0;
+        const cost = Number(vp.costPrice ?? vp.cost_price ?? existingV?.cost_price ?? (existingV as any)?.costPrice) || 0;
+        const mrp = vp.mrp !== undefined ? vp.mrp : existingV?.mrp;
+        const stockIn = vp.stockQty ?? vp.stock_qty;
+        const stock = (stockIn !== undefined && stockIn !== null && stockIn !== '')
+          ? Number(stockIn)
+          : Number((existingV as any)?.stockQty ?? existingV?.stock_qty) || 0;
+        const barcode = vp.barcode !== undefined ? vp.barcode : existingV?.barcode;
+        const barcodes = vp.barcodes !== undefined ? vp.barcodes : existingV?.barcodes;
+        return {
+          ...(existingV || {}),
+          ...vp,
+          id: vp.id || existingV?.id || `var-${Date.now()}-${idx}`,
+          sku: vp.sku || existingV?.sku || '',
+          barcode: barcode || null,
+          barcodes: barcodes || (barcode ? [barcode] : []),
+          sellingPrice: selling,
+          selling_price: selling,
+          costPrice: cost,
+          cost_price: cost,
+          mrp,
+          stockQty: stock,
+          stock_qty: stock,
+        };
+      });
+    }
+
+    const totalStock = nextVariants.reduce((s, v) => s + (Number((v as any).stockQty ?? v.stock_qty) || 0), 0);
+    const merged = {
+      ...(existing || { id, status: 'active' }),
+      ...payload,
+      id,
+      name: payload.name !== undefined ? payload.name.trim() : (existing?.name || ''),
+      name_mr: payload.nameMr !== undefined ? (payload.nameMr?.trim() || null) : (existing?.name_mr || null),
+      nameMr: payload.nameMr !== undefined ? (payload.nameMr?.trim() || null) : (existing?.name_mr || null),
+      category_id: payload.categoryId !== undefined ? payload.categoryId : existing?.category_id,
+      brand_id: payload.brandId !== undefined ? payload.brandId : existing?.brand_id,
+      uom_id: payload.uomId !== undefined ? payload.uomId : (existing?.uom_id || ''),
+      tax_group_id: payload.taxGroupId !== undefined ? payload.taxGroupId : existing?.tax_group_id,
+      tax_code: payload.taxCode !== undefined ? payload.taxCode : existing?.tax_code,
+      is_weight_based: payload.isWeightBased !== undefined ? payload.isWeightBased : (existing?.is_weight_based || false),
+      allow_decimal_qty: payload.allowDecimalQty !== undefined ? payload.allowDecimalQty : (existing?.allow_decimal_qty || false),
+      has_variants: nextVariants.length > 1,
+      status: payload.status ?? existing?.status ?? 'active',
+      stockQty: totalStock,
+      stock_qty: totalStock,
+      variants: nextVariants,
+      sync_status: 'pending',
+    } as unknown as Product;
+
+    await localUpsertProduct(merged);
+    await localEnqueueSync({
+      entityType: 'product',
+      entityId: id,
+      op: 'update',
+      payload: { id, ...payload },
+    });
+    void upsertCachedProduct(merged);
+    return merged;
+  } catch (localErr) {
+    const { data } = await api.put(`/products/${id}`, payload);
+    const product = data.data as Product;
+    if (hasSqliteBridge()) {
+      try {
+        await localUpsertProduct(product);
+      } catch {}
+    }
+    void upsertCachedProduct(product);
+    return product;
+  }
 }
 
 export async function deleteProduct(id: string, opts?: { forceNetwork?: boolean }) {
-  if (!opts?.forceNetwork) {
+  const { hasSqliteBridge } = await import('../offline/sqliteApi');
+  const { isFullyLocalMode, localDeleteProduct, localEnqueueSync } = await import(
+    '../offline/localApi'
+  );
+
+  if (hasSqliteBridge()) {
     try {
-      const { isFullyLocalMode, localDeleteProduct, localEnqueueSync } = await import(
-        '../offline/localApi'
-      );
-      if (isFullyLocalMode()) {
-        await localDeleteProduct(id);
-        await localEnqueueSync({
-          entityType: 'product',
-          entityId: id,
-          op: 'delete',
-          payload: { id },
-        });
-        void invalidateCachedProducts();
-        return { deleted: true };
-      }
-    } catch {
-      /* fall through */
+      await localDeleteProduct(id);
+    } catch {}
+  }
+
+  if (opts?.forceNetwork || !isFullyLocalMode()) {
+    try {
+      const { data } = await api.delete(`/products/${id}`);
+      void invalidateCachedProducts();
+      return data.data as { deleted: boolean };
+    } catch (err) {
+      if (!hasSqliteBridge()) throw err;
     }
   }
-  const { data } = await api.delete(`/products/${id}`);
+
+  await localEnqueueSync({
+    entityType: 'product',
+    entityId: id,
+    op: 'delete',
+    payload: { id },
+  });
   void invalidateCachedProducts();
-  return data.data as { deleted: boolean };
+  return { deleted: true };
 }
 
 export async function deleteAllProducts() {
@@ -823,30 +908,118 @@ export type PriceBulkItem = {
  * Prefer dedicated bulk route. If production API is older (404 Route not found),
  * fall back to per-product PUT which already exists on live servers.
  */
+export async function syncPriceBulkToSqlite(items: PriceBulkItem[]): Promise<void> {
+  try {
+    const { hasSqliteBridge, sqliteGetProduct } = await import('../offline/sqliteApi');
+    const { localUpsertProduct } = await import('../offline/localApi');
+    if (!hasSqliteBridge() || !items?.length) return;
+
+    const byProduct = new Map<string, PriceBulkItem[]>();
+    for (const item of items) {
+      if (!item.productId) continue;
+      const list = byProduct.get(item.productId) || [];
+      list.push(item);
+      byProduct.set(item.productId, list);
+    }
+
+    for (const [productId, productItems] of byProduct) {
+      const existing = (await sqliteGetProduct(productId)) as Product | null;
+      if (!existing) continue;
+
+      const firstItem = productItems[0];
+      const nextName = firstItem.name !== undefined && firstItem.name.trim() !== '' ? firstItem.name.trim() : existing.name;
+      const nextNameMr = firstItem.nameMr !== undefined ? (firstItem.nameMr?.trim() || null) : (existing.name_mr || null);
+
+      const itemsByVariant = new Map(productItems.map((it) => [it.variantId, it]));
+
+      const nextVariants = (existing.variants || []).map((v) => {
+        const patch = itemsByVariant.get(v.id);
+        if (!patch) return v;
+        const nextSelling = patch.sellingPrice !== undefined ? patch.sellingPrice : Number(v.selling_price ?? (v as any).sellingPrice) || 0;
+        const nextCost = patch.costPrice !== undefined ? patch.costPrice : Number(v.cost_price ?? (v as any).costPrice) || 0;
+        const nextMrp = patch.mrp !== undefined ? patch.mrp : v.mrp;
+        const nextStock = patch.stockQty !== undefined ? patch.stockQty : Number((v as any).stockQty ?? v.stock_qty) || 0;
+        const nextBarcode = patch.barcode !== undefined ? patch.barcode : (v.barcode || null);
+        const nextBarcodes = patch.barcodes !== undefined ? patch.barcodes : (v.barcodes || []);
+        return {
+          ...v,
+          sellingPrice: nextSelling,
+          selling_price: nextSelling,
+          costPrice: nextCost,
+          cost_price: nextCost,
+          mrp: nextMrp,
+          stockQty: nextStock,
+          stock_qty: nextStock,
+          barcode: nextBarcode,
+          barcodes: nextBarcodes,
+        };
+      });
+
+      const totalStock = nextVariants.reduce((sum, v) => sum + (Number((v as any).stockQty ?? v.stock_qty) || 0), 0);
+      const updatedProduct: Product = {
+        ...existing,
+        name: nextName,
+        name_mr: nextNameMr,
+        nameMr: nextNameMr,
+        stockQty: totalStock,
+        stock_qty: totalStock,
+        variants: nextVariants,
+      };
+
+      await localUpsertProduct(updatedProduct);
+    }
+  } catch (err) {
+    console.warn('Failed to sync price bulk to SQLite:', err);
+  }
+}
+
+/**
+ * Prefer dedicated bulk route. If production API is older (404 Route not found),
+ * fall back to per-product PUT which already exists on live servers.
+ */
 export async function bulkUpdateVariantPricing(items: PriceBulkItem[]) {
-  const publishPricePatches = () => applyCatalogPricePatches(
-    (items || []).map((row) => ({
-      variantId: row.variantId,
-      productId: row.productId,
-      sellingPrice: row.sellingPrice,
-      costPrice: row.costPrice,
-      mrp: row.mrp,
-      name: row.name,
-      nameMr: row.nameMr,
-      stockQty: row.stockQty,
-    })),
-  );
+  const publishPricePatches = async () => {
+    await syncPriceBulkToSqlite(items);
+    await applyCatalogPricePatches(
+      (items || []).map((row) => ({
+        variantId: row.variantId,
+        productId: row.productId,
+        sellingPrice: row.sellingPrice,
+        costPrice: row.costPrice,
+        mrp: row.mrp,
+        name: row.name,
+        nameMr: row.nameMr,
+        stockQty: row.stockQty,
+        barcode: row.barcode,
+        barcodes: row.barcodes,
+      })),
+    );
+  };
 
   try {
     const { data } = await api.post('/products/price-bulk', { items });
-    // Notify Billing immediately (bump is sync inside applyCatalogPricePatches).
+    // Update SQLite and notify Billing immediately.
     await publishPricePatches();
     return data.data as { updated: number };
   } catch (err) {
+    const { hasSqliteBridge } = await import('../offline/sqliteApi');
+    const { localEnqueueSync } = await import('../offline/localApi');
     const status = (err as { response?: { status?: number } })?.response?.status;
     const code = apiErrorCode(err);
     const missingRoute = status === 404 || code === 'NOT_FOUND';
-    if (!missingRoute) throw err;
+    if (!missingRoute) {
+      if (hasSqliteBridge()) {
+        await publishPricePatches();
+        await localEnqueueSync({
+          entityType: 'price_bulk',
+          entityId: `bulk-${Date.now()}`,
+          op: 'update',
+          payload: { items },
+        });
+        return { updated: items.length };
+      }
+      throw err;
+    }
 
     for (const row of items) {
       const productId = row.productId;

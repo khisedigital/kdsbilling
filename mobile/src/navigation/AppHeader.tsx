@@ -5,6 +5,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CommonActions, useNavigation, useNavigationState } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ConnectivityDot from '../components/ConnectivityDot';
+import OnlineOfflineToggle from '../components/OnlineOfflineToggle';
 import { APP_DISPLAY_NAME } from '../constants/branding';
 import LanguageToggle from '../i18n/LanguageToggle';
 import { useT } from '../i18n';
@@ -100,6 +101,7 @@ export default function AppHeader({ title }: AppHeaderProps) {
         </View>
 
         <View style={styles.rightActions}>
+          <OnlineOfflineToggle pinned={pinned} />
           <TouchableOpacity
             onPress={goNewBill}
             style={pinned ? styles.newBillBtn : styles.newBillIconBtn}
