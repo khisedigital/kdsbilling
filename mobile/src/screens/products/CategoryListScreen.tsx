@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { Alert, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { Button, FAB, HelperText, Portal } from 'react-native-paper';
+import { Button, FAB, HelperText, Portal, TextInput } from 'react-native-paper';
 import AppDialog from '../../components/ui/AppDialog';
 import AppTextInput from '../../components/ui/AppTextInput';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -44,7 +44,11 @@ export default function CategoryListScreen({}: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [nameMr, setNameMr] = useState('');
-  const { translating: translatingMr, onMarathiChange } = useAutoMarathi(name, nameMr, setNameMr);
+  const { translating: translatingMr, onMarathiChange, onMarathiBlur, translateNow } = useAutoMarathi(
+    name,
+    nameMr,
+    setNameMr,
+  );
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -237,10 +241,20 @@ export default function CategoryListScreen({}: Props) {
               label={translatingMr ? `${t('Marathi name')} · ${t('translating…')} *` : `${t('Marathi name')} *`}
               value={nameMr}
               onChangeText={onMarathiChange}
+              onBlur={onMarathiBlur}
               mode="outlined"
               placeholder={t('मराठी नाव')}
               maxLength={150}
               style={styles.nameMr}
+              right={
+                <TextInput.Icon
+                  icon="translate"
+                  accessibilityLabel={t('Translate to Marathi')}
+                  onPress={translateNow}
+                  color={translatingMr ? colors.primary : colors.textMuted}
+                  forceTextInputFocus={false}
+                />
+              }
             />
             {error ? (
               <HelperText type="error" visible>

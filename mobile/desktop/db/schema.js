@@ -99,6 +99,20 @@ CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants (product_id)
 CREATE INDEX IF NOT EXISTS idx_variants_sku ON product_variants (sku);
 CREATE INDEX IF NOT EXISTS idx_variants_barcode ON product_variants (barcode);
 
+-- All barcodes per variant (plain + pack/quantity) for local scan/search.
+CREATE TABLE IF NOT EXISTS variant_barcodes (
+  barcode TEXT PRIMARY KEY NOT NULL,
+  variant_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  quantity REAL,
+  is_primary INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE,
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_variant_barcodes_variant ON variant_barcodes (variant_id);
+CREATE INDEX IF NOT EXISTS idx_variant_barcodes_product ON variant_barcodes (product_id);
+
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL DEFAULT '',

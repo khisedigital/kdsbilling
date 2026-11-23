@@ -43,6 +43,15 @@ export const useConnectivityStore = create<ConnectivityState>((set) => ({
         .then(({ sqliteSetMeta }) => sqliteSetMeta('auto_sync_enabled', autoSync ? '1' : '0'))
         .catch(() => {});
     }
+    if (autoSync) {
+      startPeriodicAutoSync();
+      const s = useConnectivityStore.getState();
+      if (s.online && !s.manualOffline && !s.syncing) {
+        void triggerAutoSync();
+      }
+    } else {
+      stopPeriodicAutoSync();
+    }
   },
   setPendingCount: (pendingCount) => set({ pendingCount }),
   setSyncing: (syncing) => set({ syncing }),
@@ -90,6 +99,14 @@ export async function initConnectivitySettings(): Promise<void> {
       online: finalOnline,
     });
     hydrated = true;
+    if (isAutoSync) {
+      startPeriodicAutoSync();
+      if (finalOnline && !isManualOffline) {
+        setTimeout(() => {
+          void triggerAutoSync();
+        }, 3000);
+      }
+    }
   } catch {
   } finally {
     hydrating = false;
@@ -122,6 +139,26 @@ export async function triggerAutoSync(): Promise<any> {
   }
 }
 
+let autoSyncIntervalTimer: any = null;
+const AUTO_SYNC_INTERVAL_MS = 60000;
+
+export function startPeriodicAutoSync() {
+  if (autoSyncIntervalTimer || !isDesktopOfflineCapable()) return;
+  autoSyncIntervalTimer = setInterval(() => {
+    const state = useConnectivityStore.getState();
+    if (state.autoSync && state.online && !state.manualOffline && !state.syncing) {
+      void triggerAutoSync();
+    }
+  }, AUTO_SYNC_INTERVAL_MS);
+}
+
+export function stopPeriodicAutoSync() {
+  if (autoSyncIntervalTimer) {
+    clearInterval(autoSyncIntervalTimer);
+    autoSyncIntervalTimer = null;
+  }
+}
+
 /** Start listening for online/offline. No-op outside desktop. */
 export function startConnectivityMonitor(): () => void {
   void initConnectivitySettings();
@@ -130,9 +167,9 @@ export function startConnectivityMonitor(): () => void {
   const onOnline = () => {
     const state = useConnectivityStore.getState();
     if (state.manualOffline) return;
-    const wasOffline = !state.online;
     state.setOnline(true);
-    if (wasOffline && state.autoSync) {
+    if (state.autoSync) {
+      startPeriodicAutoSync();
       void triggerAutoSync();
     }
   };

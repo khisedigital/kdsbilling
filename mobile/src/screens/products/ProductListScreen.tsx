@@ -27,6 +27,7 @@ import {
   isCatalogCacheEnabled,
   readCachedCategories,
   readCachedProducts,
+  subscribeCatalogChanges,
 } from '../../services/catalogCache';
 import {
   deleteAllProducts,
@@ -473,6 +474,19 @@ export default function ProductListScreen({ navigation }: Props) {
       });
     }, [load]),
   );
+
+  // After Sync / price edits, reload from SQLite + refreshed cache immediately.
+  useEffect(() => {
+    return subscribeCatalogChanges((revision) => {
+      if (revision === catalogRevisionSeen.current) return;
+      catalogRevisionSeen.current = revision;
+      hydratedFromCacheRef.current = false;
+      void load(searchRef.current, categoryRef.current, 1, false).then(() => {
+        lastLoadedAtRef.current = Date.now();
+        catalogRevisionSeen.current = getCatalogRevision();
+      });
+    });
+  }, [load]);
 
   const onRefresh = async () => {
     setRefreshing(true);

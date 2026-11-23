@@ -27,6 +27,8 @@ export type CatalogPricePatch = {
   stockQty?: number;
   barcode?: string;
   barcodes?: string[];
+  uomId?: string;
+  uom?: { id?: string; code: string; name?: string; type?: 'count' | 'weight' | 'volume' | 'length' } | null;
 };
 
 type CatalogChangeListener = (revision: number, pricePatches: CatalogPricePatch[]) => void;
@@ -189,7 +191,7 @@ export async function writeCachedProducts(
   }
   await writeJson(productsKey(), {
     updatedAt: Date.now(),
-    total,
+    total: Math.max(total || 0, next.length),
     items: next,
   } satisfies ProductsPayload);
 }
@@ -277,6 +279,15 @@ export async function upsertCachedProduct(product: Product): Promise<void> {
       stockQty: stockRaw !== undefined && stockRaw !== null ? Number(stockRaw) || 0 : undefined,
       barcode: firstBarcode,
       barcodes: barcodesList.length ? barcodesList : (firstBarcode ? [firstBarcode] : undefined),
+      uomId: normalized.uom_id,
+      uom: normalized.uom
+        ? {
+            id: normalized.uom.id || normalized.uom_id,
+            code: normalized.uom.code,
+            name: normalized.uom.name || normalized.uom.code,
+            type: normalized.uom.type,
+          }
+        : null,
     });
   }
 
@@ -350,6 +361,8 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
       stockQty: p.stockQty,
       barcode: p.barcode,
       barcodes: p.barcodes,
+      uomId: p.uomId,
+      uom: p.uom,
     }))))
     .catch(() => null);
 
@@ -382,13 +395,32 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
     });
     if (!touched) {
       const namePatch = clean.find((p) => p.productId && p.productId === product.id);
-      if (!namePatch || (namePatch.name === undefined && namePatch.nameMr === undefined)) {
+      if (!namePatch || (
+        namePatch.name === undefined
+        && namePatch.nameMr === undefined
+        && namePatch.uomId === undefined
+      )) {
         return product;
       }
+      const nextUom = namePatch.uom
+        ? {
+            id: namePatch.uom.id || namePatch.uomId || product.uom_id,
+            code: namePatch.uom.code,
+            name: namePatch.uom.name || namePatch.uom.code,
+            type: namePatch.uom.type || product.uom?.type || 'count',
+          }
+        : product.uom;
+      const isMeasure = nextUom?.type === 'weight' || nextUom?.type === 'volume';
       return {
         ...product,
         name: namePatch.name !== undefined ? namePatch.name : product.name,
         name_mr: namePatch.nameMr !== undefined ? namePatch.nameMr : product.name_mr,
+        uom_id: namePatch.uomId !== undefined ? namePatch.uomId : product.uom_id,
+        uom: namePatch.uomId !== undefined ? nextUom : product.uom,
+        is_weight_based: namePatch.uomId !== undefined ? isMeasure : product.is_weight_based,
+        allow_decimal_qty: namePatch.uomId !== undefined
+          ? (isMeasure || nextUom?.type === 'length')
+          : product.allow_decimal_qty,
       };
     }
     const namePatch = clean.find((p) => (
@@ -400,10 +432,25 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
         ?? (v as { stock_qty?: number }).stock_qty;
       return s + (Number(raw) || 0);
     }, 0);
+    const nextUom = namePatch?.uom
+      ? {
+          id: namePatch.uom.id || namePatch.uomId || product.uom_id,
+          code: namePatch.uom.code,
+          name: namePatch.uom.name || namePatch.uom.code,
+          type: namePatch.uom.type || product.uom?.type || 'count',
+        }
+      : product.uom;
+    const isMeasure = nextUom?.type === 'weight' || nextUom?.type === 'volume';
     return {
       ...product,
       name: namePatch?.name !== undefined ? namePatch.name : product.name,
       name_mr: namePatch?.nameMr !== undefined ? namePatch.nameMr : product.name_mr,
+      uom_id: namePatch?.uomId !== undefined ? namePatch.uomId : product.uom_id,
+      uom: namePatch?.uomId !== undefined ? nextUom : product.uom,
+      is_weight_based: namePatch?.uomId !== undefined ? isMeasure : product.is_weight_based,
+      allow_decimal_qty: namePatch?.uomId !== undefined
+        ? (isMeasure || nextUom?.type === 'length')
+        : product.allow_decimal_qty,
       stockQty: stockTotal,
       stock_qty: stockTotal,
       variants,

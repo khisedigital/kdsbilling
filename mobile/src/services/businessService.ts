@@ -30,6 +30,8 @@ export interface BillDetail {
     variant_id?: string;
     quantity: string | number;
     returned_quantity?: string | number;
+    /** Catalog unit, so a 100 g barcode prints as "100 g" and not 0.1. */
+    uom?: { code: string; name?: string; type?: 'count' | 'weight' | 'volume' | 'length' } | null;
     unit_price: string | number;
     mrp?: string | number | null;
     discount_amount?: string | number;
@@ -40,7 +42,12 @@ export interface BillDetail {
       id?: string;
       size?: string | null;
       color?: string | null;
-      product?: { id?: string; name?: string; name_mr?: string | null } | null;
+      product?: {
+        id?: string;
+        name?: string;
+        name_mr?: string | null;
+        uom?: { code: string; name?: string; type?: 'count' | 'weight' | 'volume' | 'length' } | null;
+      } | null;
     } | null;
   }>;
   payments?: Array<{
@@ -351,13 +358,53 @@ export async function updateCustomer(
 }
 
 export async function deleteCustomer(id: string) {
-  const { data } = await api.delete(`/customers/${id}`);
-  return data.data;
+  try {
+    const { isFullyLocalMode, localDeleteCustomer, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteCustomer(id);
+      await localEnqueueSync({
+        entityType: 'customer',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      return { success: true, id };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.delete(`/customers/${id}`);
+    return data.data;
+  } catch (err) {
+    const { isFullyLocalMode, localDeleteCustomer, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteCustomer(id);
+      await localEnqueueSync({
+        entityType: 'customer',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      return { success: true, id };
+    }
+    throw err;
+  }
 }
 
 export async function fetchOffers() {
-  const { data } = await api.get('/offers');
-  return data.data;
+  try {
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isOfflineNow()) return [];
+    const { data } = await api.get('/offers');
+    return data.data;
+  } catch {
+    return [];
+  }
 }
 
 export async function createReturn(
@@ -1096,8 +1143,14 @@ export async function fetchDailyClosing(id: string): Promise<DailyClosingRecord>
 }
 
 export async function fetchPrinters() {
-  const { data } = await api.get('/printers');
-  return data.data;
+  try {
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isOfflineNow()) return [];
+    const { data } = await api.get('/printers');
+    return data.data;
+  } catch {
+    return [];
+  }
 }
 
 export async function createPrinter(payload: Record<string, unknown>) {

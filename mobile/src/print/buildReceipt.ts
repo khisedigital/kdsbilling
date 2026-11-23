@@ -4,6 +4,7 @@ import { APP_DISPLAY_NAME } from '../constants/branding';
 import { billT, paymentLabel } from '../i18n';
 import { useLanguageStore } from '../i18n/languageStore';
 import { totalSaving } from '../utils/billSaving';
+import { billItemUom, formatBillQuantity, formatReceiptQuantity } from '../utils/quantity';
 import type { ThermalPrintPayload } from './PrintService';
 import { buildThermalHtml, receiptCharsForPaper } from './escpos';
 import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari } from './indicText';
@@ -112,19 +113,19 @@ export const A4_CHARS_PER_LINE = 80;
 /** Column widths always fill the paper (3 single spaces between columns). */
 function colsFor(width: number): Cols {
   if (width <= 30) {
-    // 58 mm / 2″ with left converter margin: 10+1+3+1+7+1+7 = 30
-    return { item: 10, qty: 3, rate: 7, amt: 7 };
+    // 58 mm with a left margin: 7+1+6+1+7+1+7 = 30. Qty fits "100g" / "1.5kg".
+    return { item: 7, qty: 6, rate: 7, amt: 7 };
   }
   if (width <= 32) {
-    // 12 + 1 + 3 + 1 + 7 + 1 + 7 = 32
-    return { item: 12, qty: 3, rate: 7, amt: 7 };
+    // 9 + 1 + 6 + 1 + 7 + 1 + 7 = 32
+    return { item: 9, qty: 6, rate: 7, amt: 7 };
   }
   if (width >= A4_CHARS_PER_LINE) {
-    // 51 + 1 + 6 + 1 + 10 + 1 + 10 = 80
-    return { item: 51, qty: 6, rate: 10, amt: 10 };
+    // 50 + 1 + 7 + 1 + 10 + 1 + 10 = 80
+    return { item: 50, qty: 7, rate: 10, amt: 10 };
   }
-  // 80mm Font A: 24 + 1 + 4 + 1 + 9 + 1 + 8 = 48
-  return { item: 24, qty: 4, rate: 9, amt: 8 };
+  // 80mm Font A: 21 + 1 + 7 + 1 + 9 + 1 + 8 = 48
+  return { item: 21, qty: 7, rate: 9, amt: 8 };
 }
 
 function tableHeader(width: number, cols: Cols): string {
@@ -143,11 +144,11 @@ function tableRows(
   width: number,
   cols: Cols,
   name: string,
-  qty: number,
+  qty: string,
   rate: number,
   amt: number,
 ): string[] {
-  const qtyStr = Number.isInteger(qty) ? String(qty) : String(parseFloat(qty.toFixed(3)));
+  const qtyStr = qty || '0';
   const rateStr = money(rate);
   const amtStr = money(amt);
   const nameLines = wrapWords(name, cols.item);
@@ -312,7 +313,7 @@ export function buildThermalReceipt(
         w,
         cols,
         ascii(itemPrintName(item)),
-        n(item.quantity),
+        formatReceiptQuantity(n(item.quantity), billItemUom(item)),
         n(item.unit_price),
         n(item.line_total),
       ),
@@ -370,7 +371,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
       return `<tr>
         <td class="c">${idx + 1}</td>
         <td>${escapeHtml(name)}${item.sku ? `<div class="sku">${escapeHtml(item.sku)}</div>` : ''}</td>
-        <td class="r">${escapeHtml(String(item.quantity))}</td>
+        <td class="r">${escapeHtml(formatBillQuantity(n(item.quantity), billItemUom(item)))}</td>
         <td class="r">${escapeHtml(money(item.unit_price))}</td>
         <td class="r">${escapeHtml(money(item.line_total))}</td>
       </tr>`;

@@ -393,19 +393,15 @@ export function renderGapLabelCanvas(
 
   const rowTop = y;
   const priceW = pieceWidth(ctx, priceText, bodySX, bodyH, bodyGap);
-  const qtyW = pieceWidth(ctx, qtyText, bodySX, bodyH, bodyGap);
-  const between = qtyText && priceText ? 4 : 0;
   let rightEdge = width - padRight;
   if (priceText) {
     drawPiece(ctx, priceText, rightEdge, rowTop, bodySX, bodySY, priceW + 2, 'right', bodyGap);
-    rightEdge -= priceW + between;
+    rightEdge -= priceW + 6;
   }
-  if (qtyText) {
-    drawPiece(ctx, qtyText, rightEdge, rowTop, bodySX, bodySY, qtyW + 2, 'right', bodyGap);
-    rightEdge -= qtyW + 4;
-  }
+  const hasQtyInName = qtyText && productSource.toLowerCase().includes(qtyText.toLowerCase());
+  const fullProduct = [productSource, !hasQtyInName ? qtyText : ''].filter(Boolean).join(' ');
   const leftMax = Math.max(64, rightEdge - padLeft);
-  drawPiece(ctx, productSource, padLeft, rowTop, bodySX, bodySY, leftMax, 'left', bodyGap);
+  drawPiece(ctx, fullProduct, padLeft, rowTop, bodySX, bodySY, leftMax, 'left', bodyGap);
   y = rowTop + bodyH + 3;
 
   ctx.fillStyle = '#000';
@@ -594,10 +590,18 @@ function buildNativeGapLabelUnit(content: GapLabelContent): number[] {
   const product = toPrinterText(content.productName.trim() || 'Product');
   const qty = toPrinterText(content.detail.trim());
   const price = toPrinterText((content.price || content.mrp || '').trim());
-  const right = [qty, price].filter(Boolean).join('  ');
+  const right = price;
   const rightCols = Math.min(LABEL_TEXT_COLS, right.length);
   const leftCols = Math.max(4, LABEL_TEXT_COLS - rightCols - (right ? 1 : 0));
-  const left = clipPrinterText(product, leftCols);
+  const hasQtyInName = qty && product.toLowerCase().includes(qty.toLowerCase());
+  let left = '';
+  if (hasQtyInName || !qty) {
+    left = clipPrinterText(product, leftCols);
+  } else {
+    const budgetForName = Math.max(3, leftCols - qty.length - 1);
+    const namePart = clipPrinterText(product, budgetForName);
+    left = `${namePart} ${qty}`;
+  }
   const midPad = Math.max(1, LABEL_TEXT_COLS - left.length - right.length);
   const line2 = right ? `${left}${' '.repeat(midPad)}${right}` : left;
   const code = content.barcode.trim().replace(/\s+/g, '') || '2000000000008';
@@ -771,33 +775,33 @@ function renderLabelTextBand(content: GapLabelContent, pageW = TSPL_PAGE_WIDTH):
   drawCleanText(ctx, shop, width / 2, 3);
 
   const nameY = 3 + shopSize + 4 + productSize;
-  setPrinterFont(ctx, qtySize, true);
-  const qtyW = qtyText ? ctx.measureText(qtyText).width : 0;
   setPrinterFont(ctx, priceSize, true);
   const priceW = priceText ? ctx.measureText(priceText).width : 0;
-  const between = qtyText && priceText ? 4 : 0;
-  const rightWidth = qtyW + between + priceW;
-  const leftMax = Math.max(width * 0.34, width - padLeft - padRight - rightWidth - 6);
+  if (priceText) {
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'alphabetic';
+    setPrinterFont(ctx, priceSize, true);
+    drawCleanText(ctx, priceText, width - padRight, nameY);
+  }
+
+  const hasQtyInName = qtyText && productSource.toLowerCase().includes(qtyText.toLowerCase());
+  const leftMax = Math.max(width * 0.34, width - padLeft - padRight - (priceW ? priceW + 8 : 0));
   setPrinterFont(ctx, productSize, true);
-  const productText = ellipsize(ctx, productSource, leftMax);
+  let productText = '';
+  if (hasQtyInName || !qtyText) {
+    productText = ellipsize(ctx, productSource, leftMax);
+  } else {
+    setPrinterFont(ctx, qtySize, true);
+    const qtyW = ctx.measureText(` ${qtyText}`).width;
+    setPrinterFont(ctx, productSize, true);
+    const nameMax = Math.max(20, leftMax - qtyW);
+    const namePart = ellipsize(ctx, productSource, nameMax);
+    productText = `${namePart} ${qtyText}`;
+  }
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  setPrinterFont(ctx, productSize, true);
   drawCleanText(ctx, productText, padLeft, nameY);
-  if (qtyText || priceText) {
-    ctx.textAlign = 'right';
-    let x = width - padRight;
-    if (priceText) {
-      setPrinterFont(ctx, priceSize, true);
-      drawCleanText(ctx, priceText, x, nameY);
-      x -= priceW + between;
-    }
-    if (qtyText) {
-      setPrinterFont(ctx, qtySize, true);
-      drawCleanText(ctx, qtyText, x, nameY);
-    }
-  }
   // Thicken Indic strokes so they survive thermal + TSPL invert.
   hardenToMono(ctx, width, height, { thicken: true });
   return canvas;
@@ -844,23 +848,29 @@ export function buildGapLabelTspl(
     const shopX = Math.max(leftInset, Math.floor((pageW - shop.length * shopFont.w) / 2));
     const shopY = 2;
     const bodyY = shopY + shopFont.h * shopMulY + 2;
-    const maxRightChars = Math.floor((pageW * 0.42) / bodyFont.w);
-    const detailRaw = content.detail.trim().replace(/\s+/g, '');
     const priceRaw = (content.price || content.mrp || '').trim().replace(/\s+/g, '');
-    // Keep weight first — price can shorten; empty qty looked like weight was deleted.
-    const qty = detailRaw
-      ? tsplAscii(detailRaw, Math.min(detailRaw.length, Math.max(3, maxRightChars - (priceRaw ? 4 : 0))))
-      : '';
-    const priceBudget = Math.max(0, maxRightChars - qty.length - (qty && priceRaw ? 1 : 0));
-    const price = priceRaw && priceBudget > 0 ? tsplAscii(priceRaw, priceBudget) : '';
-    const right = [qty, price].filter(Boolean).join(' ');
+    const detailRaw = content.detail.trim().replace(/\s+/g, '');
+
+    // Price is always on the right with full priority (never truncate price into '..')
+    const maxPriceChars = Math.max(8, Math.floor((pageW * 0.45) / bodyFont.w));
+    const right = priceRaw ? tsplAscii(priceRaw, maxPriceChars) : '';
     const rightW = right.length * bodyFont.w;
     const rightX = Math.max(leftInset, pageW - rightInset - rightW);
+
+    // Left has product name + weight/detail (moved to left so price is never crowded)
     const leftMax = Math.max(
       4,
       Math.floor(((right ? rightX - 6 : pageW - rightInset) - leftInset) / bodyFont.w),
     );
-    const left = tsplAscii(content.productName.trim() || 'Product', leftMax);
+    const hasDetailInName = detailRaw && content.productName.toLowerCase().includes(detailRaw.toLowerCase());
+    let left = '';
+    if (hasDetailInName || !detailRaw) {
+      left = tsplAscii(content.productName.trim() || 'Product', leftMax);
+    } else {
+      const budgetForName = Math.max(3, leftMax - detailRaw.length - 1);
+      const namePart = tsplAscii(content.productName.trim() || 'Product', budgetForName);
+      left = `${namePart} ${detailRaw}`;
+    }
     header.push(`TEXT ${shopX},${shopY},"${shopFont.id}",0,1,${shopMulY},"${shop}"`);
     header.push(`TEXT ${leftInset},${bodyY},"${bodyFont.id}",0,1,1,"${left}"`);
     if (right) header.push(`TEXT ${rightX},${bodyY},"${bodyFont.id}",0,1,1,"${right}"`);

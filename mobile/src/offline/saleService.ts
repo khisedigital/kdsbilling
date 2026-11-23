@@ -38,6 +38,7 @@ type SaleItem = {
   isCustom?: boolean;
   productName: string;
   productNameMr?: string | null;
+  uom?: { code: string; name?: string; type?: 'count' | 'weight' | 'volume' | 'length' } | null;
 };
 
 export type CreateSaleInput = {
@@ -120,6 +121,7 @@ function buildLocalBill(input: CreateSaleInput, clientBillId: string): BillDetai
         sku: '',
         variant_id: line.variantId,
         quantity: line.quantity,
+        uom: cart?.uom || null,
         unit_price: line.unitPrice,
         mrp: line.mrp ?? null,
         discount_amount: line.discountAmount || 0,

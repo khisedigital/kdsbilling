@@ -656,6 +656,7 @@ function registerIpc() {
       categories: options?.categories || [],
       brands: options?.brands || [],
       clearProducts: options?.clearProducts === true,
+      syncStock: options?.syncStock !== false,
     });
     return { ok: true, ...result };
   });
@@ -884,6 +885,38 @@ function registerIpc() {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, ...offlineDb.deleteProductLocal(db, options?.id) };
   });
+  ipcMain.handle('sqlite:delete-category', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.deleteCategoryLocal(db, options?.id) };
+  });
+  ipcMain.handle('sqlite:delete-brand', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.deleteBrandLocal(db, options?.id) };
+  });
+  ipcMain.handle('sqlite:delete-customer', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.deleteCustomerLocal(db, options?.id) };
+  });
+  ipcMain.handle('sqlite:delete-supplier', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.deleteSupplierLocal(db, options?.id) };
+  });
+  ipcMain.handle('sqlite:set-product-favorite', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.setProductFavoriteLocal(db, options?.id, options?.isFavorite) };
+  });
+  ipcMain.handle('sqlite:set-products-favorite-bulk', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return {
+      ok: true,
+      ...offlineDb.setProductsFavoriteBulkLocal(
+        db,
+        options?.categoryId,
+        options?.isFavorite,
+        options?.brandId,
+      ),
+    };
+  });
   ipcMain.handle('sqlite:add-customer-ledger', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, ...offlineDb.addCustomerLedger(db, options?.entry || {}) };
@@ -911,6 +944,18 @@ function registerIpc() {
   ipcMain.handle('sqlite:cashflow-report', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, data: offlineDb.buildCashFlowReport(db, options || {}) };
+  });
+  ipcMain.handle('sqlite:get-product-barcode-status', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, data: offlineDb.getProductBarcodeStatusLocal(db, options?.productId) };
+  });
+  ipcMain.handle('sqlite:generate-barcodes', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, data: offlineDb.generateBarcodesLocal(db, options?.variantIds) };
+  });
+  ipcMain.handle('sqlite:ensure-quantity-barcodes', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, data: offlineDb.ensureQuantityBarcodesLocal(db, options?.items) };
   });
   ipcMain.handle('sqlite:mark-sync-queue-done', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);

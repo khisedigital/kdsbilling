@@ -463,7 +463,28 @@ async function attachProductStock(db, products, branchId) {
   if (!products?.length) return products || [];
 
   const plain = products.map((p) => (typeof p.toJSON === 'function' ? p.toJSON() : { ...p }));
-  if (!branchId) {
+  let targetBranchId = branchId;
+  if (!targetBranchId && db.Branch) {
+    try {
+      const defaultBranch =
+        (await db.Branch.findOne({
+          where: { is_default: true, status: 'active' },
+          attributes: ['id'],
+        })) ||
+        (await db.Branch.findOne({
+          where: { status: 'active' },
+          attributes: ['id'],
+        }));
+      if (defaultBranch) {
+        targetBranchId = defaultBranch.id;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const variantIds = plain.flatMap((p) => (p.variants || []).map((v) => v.id)).filter(Boolean);
+  if (!variantIds.length) {
     return plain.map((p) => ({
       ...p,
       stockQty: 0,
@@ -471,20 +492,21 @@ async function attachProductStock(db, products, branchId) {
     }));
   }
 
-  const variantIds = plain.flatMap((p) => (p.variants || []).map((v) => v.id)).filter(Boolean);
-  const balances = variantIds.length
-    ? await db.StockBalance.findAll({
-        where: {
-          branch_id: branchId,
-          variant_id: { [Op.in]: variantIds },
-        },
-        attributes: ['variant_id', 'quantity'],
-      })
-    : [];
+  const where = { variant_id: { [Op.in]: variantIds } };
+  if (targetBranchId) {
+    where.branch_id = targetBranchId;
+  }
 
-  const stockByVariant = new Map(
-    balances.map((b) => [b.variant_id, parseFloat(b.quantity) || 0])
-  );
+  const balances = await db.StockBalance.findAll({
+    where,
+    attributes: ['variant_id', 'quantity'],
+  });
+
+  const stockByVariant = new Map();
+  for (const b of balances) {
+    const prev = stockByVariant.get(b.variant_id) || 0;
+    stockByVariant.set(b.variant_id, prev + (parseFloat(b.quantity) || 0));
+  }
 
   return plain.map((product) => {
     const variants = (product.variants || []).map((v) => ({
@@ -838,6 +860,21 @@ async function syncPlainBarcodes(db, variantId, entries, transaction) {
     if (own) {
       keep.add(own.id);
       resolved.push(own);
+      continue;
+    }
+    // Same variant may already own this code as a pack/quantity barcode — reclaim as plain.
+    const sameVariant = await Barcode.findOne({
+      where: { barcode: code, variant_id: variantId },
+      transaction,
+    });
+    if (sameVariant) {
+      await sameVariant.update(
+        { quantity: null, is_primary: resolved.length === 0 },
+        { transaction },
+      );
+      keep.add(sameVariant.id);
+      resolved.push(sameVariant);
+      byCode.set(code, sameVariant);
       continue;
     }
     await assertBarcodeFree(db, code, null, transaction);
@@ -1784,105 +1821,174 @@ async function bulkUpdateVariantPricing(db, branchId, userId, items) {
   }
   if (!branchId) throw new AppError('Branch required', 400, 'VALIDATION_ERROR');
 
-  const { Product, ProductVariant } = db;
+  const { Product, ProductVariant, UnitOfMeasure } = db;
   const { applyStockMovement, MOVEMENT_TYPES } = require('./stockEngine');
   const results = [];
 
   for (const raw of items) {
     const variantId = raw.variantId || raw.variant_id;
-    if (!variantId) throw new AppError('variantId is required on each row', 400, 'VALIDATION_ERROR');
+    if (!variantId) {
+      results.push({ variantId: null, ok: false, error: 'variantId required' });
+      continue;
+    }
 
-    const transaction = await db.sequelize.transaction();
-    try {
-      const variant = await ProductVariant.findOne({
-        where: { id: variantId, deleted_at: null },
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
-      if (!variant) throw new AppError(`Variant not found: ${variantId}`, 404, 'NOT_FOUND');
-
-      const product = await Product.findOne({
-        where: { id: variant.product_id, deleted_at: null },
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
-      if (!product) throw new AppError(`Product not found for variant ${variantId}`, 404, 'NOT_FOUND');
-
-      if (raw.name !== undefined) {
-        const nextName = String(raw.name || '').trim();
-        if (!nextName) throw new AppError('Product name cannot be empty', 400, 'VALIDATION_ERROR');
-        if (nextName !== product.name) {
-          await product.update({ name: nextName }, { transaction });
-        }
-      }
-
-      if (raw.nameMr !== undefined) {
-        const nextMr = cleanNameMr(raw.nameMr);
-        if ((nextMr || null) !== (product.name_mr || null)) {
-          await product.update({ name_mr: nextMr }, { transaction });
-        }
-      }
-
-      const variantUpdates = {};
-      if (raw.sellingPrice !== undefined && raw.sellingPrice !== null && raw.sellingPrice !== '') {
-        const price = parseFloat(raw.sellingPrice);
-        if (!(price > 0)) throw new AppError(`Invalid selling price for ${product.name}`, 400, 'VALIDATION_ERROR');
-        variantUpdates.selling_price = price;
-      }
-      if (raw.costPrice !== undefined && raw.costPrice !== null && raw.costPrice !== '') {
-        variantUpdates.cost_price = parseFloat(raw.costPrice) || 0;
-      }
-      if (raw.mrp !== undefined) {
-        if (raw.mrp === null || raw.mrp === '') variantUpdates.mrp = null;
-        else variantUpdates.mrp = parseFloat(raw.mrp) || 0;
-      }
-      if (Object.keys(variantUpdates).length) {
-        await variant.update(variantUpdates, { transaction });
-      }
-
-      if (Array.isArray(raw.barcodes)) {
-        await syncPlainBarcodes(db, variant.id, raw.barcodes, transaction);
-      } else if (raw.barcode !== undefined) {
-        const code = String(raw.barcode || '').trim();
-        if (code) await upsertVariantBarcode(db, variant.id, code, transaction);
-      }
-
-      if (raw.stockQty !== undefined && raw.stockQty !== null && raw.stockQty !== '') {
-        const target = parseFloat(raw.stockQty);
-        if (Number.isNaN(target) || target < 0) {
-          throw new AppError(`Invalid stock for ${product.name}`, 400, 'VALIDATION_ERROR');
-        }
-        const balance = await db.StockBalance.findOne({
-          where: { branch_id: branchId, variant_id: variant.id },
+    const applyRow = async (includeBarcodes) => {
+      const transaction = await db.sequelize.transaction();
+      try {
+        const variant = await ProductVariant.findOne({
+          where: { id: variantId, deleted_at: null },
           transaction,
           lock: transaction.LOCK.UPDATE,
         });
-        const current = parseFloat(balance?.quantity) || 0;
-        const delta = Math.round((target - current) * 1000) / 1000;
-        if (delta !== 0) {
-          await applyStockMovement(db, {
-            branchId,
-            variantId: variant.id,
-            quantityChange: delta,
-            movementType: MOVEMENT_TYPES.ADJUSTMENT,
-            referenceType: 'price_management',
-            referenceId: product.id,
-            notes: 'Price management stock edit',
-            userId,
-            allowNegative: true,
-          }, transaction);
+        if (!variant) {
+          await transaction.rollback();
+          return { variantId, ok: false, error: 'not_found' };
+        }
+
+        const product = await Product.findOne({
+          where: { id: variant.product_id, deleted_at: null },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (!product) {
+          await transaction.rollback();
+          return { variantId, ok: false, error: 'product_not_found' };
+        }
+
+        if (raw.name !== undefined) {
+          const nextName = String(raw.name || '').trim();
+          if (!nextName) throw new AppError('Product name cannot be empty', 400, 'VALIDATION_ERROR');
+          if (nextName !== product.name) {
+            await product.update({ name: nextName }, { transaction });
+          }
+        }
+
+        if (raw.nameMr !== undefined) {
+          const nextMr = cleanNameMr(raw.nameMr);
+          if ((nextMr || null) !== (product.name_mr || null)) {
+            await product.update({ name_mr: nextMr }, { transaction });
+          }
+        }
+
+        const nextUomId = raw.uomId || raw.uom_id;
+        if (nextUomId) {
+          const uom = await UnitOfMeasure.findByPk(nextUomId, { transaction });
+          if (!uom) throw new AppError('Invalid unit of measure', 400, 'VALIDATION_ERROR');
+          if (uom.id !== product.uom_id) {
+            const isMeasure = uom.type === 'weight' || uom.type === 'volume';
+            await product.update({
+              uom_id: uom.id,
+              is_weight_based: isMeasure,
+              allow_decimal_qty: isMeasure || uom.type === 'length',
+            }, { transaction });
+            await ProductVariant.update(
+              { uom_id: uom.id },
+              { where: { product_id: product.id, deleted_at: null }, transaction },
+            );
+          }
+        }
+
+        const variantUpdates = {};
+        if (raw.sellingPrice !== undefined && raw.sellingPrice !== null && raw.sellingPrice !== '') {
+          const price = parseFloat(raw.sellingPrice);
+          if (!(price > 0)) throw new AppError(`Invalid selling price for ${product.name}`, 400, 'VALIDATION_ERROR');
+          variantUpdates.selling_price = price;
+        }
+        if (raw.costPrice !== undefined && raw.costPrice !== null && raw.costPrice !== '') {
+          variantUpdates.cost_price = parseFloat(raw.costPrice) || 0;
+        }
+        if (raw.mrp !== undefined) {
+          if (raw.mrp === null || raw.mrp === '') variantUpdates.mrp = null;
+          else variantUpdates.mrp = parseFloat(raw.mrp) || 0;
+        }
+        if (Object.keys(variantUpdates).length) {
+          await variant.update(variantUpdates, { transaction });
+        }
+
+        if (includeBarcodes) {
+          if (Array.isArray(raw.barcodes)) {
+            await syncPlainBarcodes(db, variant.id, raw.barcodes, transaction);
+          } else if (raw.barcode !== undefined) {
+            const code = String(raw.barcode || '').trim();
+            if (code) await upsertVariantBarcode(db, variant.id, code, transaction);
+          }
+        }
+
+        if (raw.stockQty !== undefined && raw.stockQty !== null && raw.stockQty !== '') {
+          const target = parseFloat(raw.stockQty);
+          if (Number.isNaN(target) || target < 0) {
+            throw new AppError(`Invalid stock for ${product.name}`, 400, 'VALIDATION_ERROR');
+          }
+          const balance = await db.StockBalance.findOne({
+            where: { branch_id: branchId, variant_id: variant.id },
+            transaction,
+            lock: transaction.LOCK.UPDATE,
+          });
+          const current = parseFloat(balance?.quantity) || 0;
+          const delta = Math.round((target - current) * 1000) / 1000;
+          if (delta !== 0) {
+            await applyStockMovement(db, {
+              branchId,
+              variantId: variant.id,
+              quantityChange: delta,
+              movementType: MOVEMENT_TYPES.ADJUSTMENT,
+              referenceType: 'price_management',
+              referenceId: product.id,
+              notes: 'Price management stock edit',
+              userId,
+              allowNegative: true,
+            }, transaction);
+          }
+        }
+
+        await transaction.commit();
+        return { variantId: variant.id, productId: product.id, ok: true };
+      } catch (err) {
+        await transaction.rollback();
+        throw err;
+      }
+    };
+
+    try {
+      results.push(await applyRow(true));
+    } catch (err) {
+      const code = err?.code || err?.error?.code || '';
+      const message = String(err?.message || '');
+      const barcodeConflict =
+        code === 'BARCODE_TAKEN'
+        || /barcode .* already used/i.test(message)
+        || /listed twice/i.test(message)
+        || /duplicate/i.test(message);
+      if (barcodeConflict) {
+        // Save prices/stock even when a barcode conflicts with another product/pack.
+        try {
+          results.push({ ...(await applyRow(false)), barcodeSkipped: true });
+          continue;
+        } catch (err2) {
+          results.push({
+            variantId,
+            ok: false,
+            error: err2?.message || message || 'update_failed',
+          });
+          continue;
         }
       }
-
-      await transaction.commit();
-      results.push({ variantId: variant.id, productId: product.id, ok: true });
-    } catch (err) {
-      await transaction.rollback();
-      throw err;
+      results.push({
+        variantId,
+        ok: false,
+        error: message || 'update_failed',
+      });
     }
   }
 
-  return { updated: results.length, items: results };
+  const updated = results.filter((r) => r.ok).length;
+  if (!updated && results.length) {
+    const first = results.find((r) => r.error && r.error !== 'not_found');
+    if (first?.error && first.error !== 'not_found' && first.error !== 'product_not_found') {
+      throw new AppError(first.error, 400, 'VALIDATION_ERROR');
+    }
+  }
+  return { updated, items: results };
 }
 
 async function setProductFavorite(db, id, isFavorite) {

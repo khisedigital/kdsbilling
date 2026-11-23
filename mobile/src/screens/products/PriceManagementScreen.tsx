@@ -5,6 +5,7 @@ import {
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
@@ -37,20 +38,24 @@ import {
   type CatalogPricePatch,
 } from '../../services/catalogCache';
 import {
+  attachUnitsToProducts,
   bulkUpdateVariantPricing,
   fetchCategories,
   fetchProduct,
   fetchProducts,
+  fetchUnits,
   isProductFavorite,
   setProductFavorite,
   setProductsFavoriteBulk,
   mainBarcodeOf,
   plainBarcodesOf,
+  quantityBarcodesOf,
+  searchProducts,
   syncCatalogFromMaster,
   type PriceBulkItem,
   type SearchProductResult,
 } from '../../services/catalogService';
-import type { Category, Product } from '../../types/catalog';
+import type { Category, Product, UnitOfMeasure } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
 import { localizedLabel } from '../../utils/productName';
 import { variantLabel } from '../../utils/variantLabel';
@@ -73,15 +78,25 @@ type PriceRow = {
   categoryName: string;
   brandId: string | null;
   brandName: string;
+  uomId: string;
+  uomCode: string;
+  uomName: string;
+  uomType: UnitOfMeasure['type'] | '';
   costPrice: string;
   mrp: string;
   sellingPrice: string;
   barcode: string;
   extraBarcodes: string[];
+  /** Pack / quantity barcodes (e.g. Manuka 50g packs) — searchable, not edited as plain extras. */
+  packBarcodes: string[];
   stockQty: string;
   original: {
     name: string;
     nameMr: string;
+    uomId: string;
+    uomCode: string;
+    uomName: string;
+    uomType: UnitOfMeasure['type'] | '';
     costPrice: string;
     mrp: string;
     sellingPrice: string;
@@ -103,6 +118,9 @@ type ProductGroup = {
   isFavorite: boolean;
   categoryName: string;
   brandName: string;
+  uomId: string;
+  uomCode: string;
+  uomName: string;
   variants: PriceRow[];
 };
 
@@ -121,8 +139,10 @@ function toRows(products: Product[]): PriceRow[] {
       const mrp = moneyStr(variant.mrp);
       const sellingPrice = moneyStr(variant.selling_price ?? (variant as any).sellingPrice);
       const plains = plainBarcodesOf(variant);
+      const packs = quantityBarcodesOf(variant);
       const barcode = plains[0] || mainBarcodeOf(variant) || '';
       const extraBarcodes = plains.slice(1);
+      const packBarcodes = packs.map((p) => p.barcode).filter(Boolean);
       const stockQty = moneyStr(
         (variant as { stockQty?: number; stock_qty?: number }).stockQty
           ?? (variant as { stock_qty?: number }).stock_qty
@@ -132,6 +152,10 @@ function toRows(products: Product[]): PriceRow[] {
       const nameMr = product.name_mr || (product as any).nameMr || '';
       const isFavorite = isProductFavorite(product);
       const label = variantLabel(variant.size, variant.color) || 'Default';
+      const uomId = product.uom_id || product.uom?.id || '';
+      const uomCode = product.uom?.code || '';
+      const uomName = product.uom?.name || uomCode;
+      const uomType = product.uom?.type || '';
       rows.push({
         key: variant.id,
         productId: product.id,
@@ -144,13 +168,31 @@ function toRows(products: Product[]): PriceRow[] {
         categoryName: product.category?.name || '',
         brandId: product.brand_id || product.brand?.id || null,
         brandName: product.brand?.name || '',
+        uomId,
+        uomCode,
+        uomName,
+        uomType,
         costPrice,
         mrp,
         sellingPrice,
         barcode,
         extraBarcodes,
+        packBarcodes,
         stockQty,
-        original: { name, nameMr, costPrice, mrp, sellingPrice, barcode, extraBarcodes: [...extraBarcodes], stockQty },
+        original: {
+          name,
+          nameMr,
+          uomId,
+          uomCode,
+          uomName,
+          uomType,
+          costPrice,
+          mrp,
+          sellingPrice,
+          barcode,
+          extraBarcodes: [...extraBarcodes],
+          stockQty,
+        },
       });
     }
   }
@@ -168,12 +210,56 @@ function isDirty(row: PriceRow): boolean {
   return (
     row.name !== o.name
     || row.nameMr !== o.nameMr
+    || row.uomId !== o.uomId
     || row.costPrice !== o.costPrice
     || row.mrp !== o.mrp
     || row.sellingPrice !== o.sellingPrice
     || row.barcode !== o.barcode
     || !sameExtras(row.extraBarcodes || [], o.extraBarcodes || [])
     || row.stockQty !== o.stockQty
+  );
+}
+
+function unitCodeLabel(row: Pick<PriceRow, 'uomCode' | 'uomName'>) {
+  return (row.uomCode || row.uomName || '—').toUpperCase();
+}
+
+type UnitAnchor = {
+  measureInWindow?: (cb: (x: number, y: number, width: number, height: number) => void) => void;
+} | null;
+
+function UnitIconButton({
+  code,
+  active,
+  changed,
+  accessibilityLabel,
+  onPress,
+}: {
+  code: string;
+  active?: boolean;
+  changed?: boolean;
+  accessibilityLabel: string;
+  onPress: (anchor: UnitAnchor) => void;
+}) {
+  const wrapRef = useRef<View>(null);
+  return (
+    <View ref={wrapRef} collapsable={false}>
+      <Pressable
+        onPress={() => onPress(wrapRef.current)}
+        style={[
+          styles.unitIconBtn,
+          active && styles.unitIconBtnOpen,
+          changed && styles.unitIconBtnDirty,
+        ]}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}>
+        <Icon name="weight-kilogram" size={14} color={active || changed ? colors.primary : colors.textSecondary} />
+        <Text style={[styles.unitIconCode, (active || changed) && styles.unitIconCodeOn]} numberOfLines={1}>
+          {code}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -201,6 +287,9 @@ function groupByProduct(rows: PriceRow[]): ProductGroup[] {
         isFavorite: row.isFavorite,
         categoryName: row.categoryName,
         brandName: row.brandName,
+        uomId: row.uomId,
+        uomCode: row.uomCode,
+        uomName: row.uomName,
         variants: [],
       };
       map.set(row.productId, group);
@@ -210,6 +299,9 @@ function groupByProduct(rows: PriceRow[]): ProductGroup[] {
     group.name = row.name;
     group.nameMr = row.nameMr;
     group.isFavorite = row.isFavorite;
+    group.uomId = row.uomId;
+    group.uomCode = row.uomCode;
+    group.uomName = row.uomName;
   }
   // Keep the loaded list order while editing — re-sorting by name makes rows jump away.
   return order.map((id) => map.get(id)!);
@@ -324,7 +416,7 @@ function requiredFieldLabel(label: string) {
 export default function PriceManagementScreen({ navigation, route }: Props) {
   const t = useT();
   const ui = useLanguageStore((s) => s.ui);
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const keyboardOverlap = useKeyboardOverlap();
   /** Phone / narrow: lookup one product (scan/search), then edit — not a full catalog table. */
@@ -333,6 +425,14 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
   tRef.current = t;
   const [rows, setRows] = useState<PriceRow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [units, setUnits] = useState<UnitOfMeasure[]>([]);
+  const [unitPickerFor, setUnitPickerFor] = useState<{
+    productId: string;
+    uomId: string;
+    x: number;
+    y: number;
+    width: number;
+  } | null>(null);
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [stockFilter, setStockFilter] = useState<StockFilter>('all');
@@ -370,15 +470,62 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
   const loadSeqRef = useRef(0);
   const handledScanNonce = useRef<number | null>(null);
 
+  const enrichRowsWithUnits = useCallback((list: UnitOfMeasure[]) => {
+    if (!list.length) return;
+    const byId = new Map(list.map((u) => [u.id, u]));
+    setRows((prev) => {
+      let changed = false;
+      const next = prev.map((row) => {
+        if (!row.uomId) return row;
+        const unit = byId.get(row.uomId);
+        if (!unit) return row;
+        const codeMismatch = String(row.uomCode || '').toLowerCase() !== String(unit.code || '').toLowerCase();
+        const nameMismatch = !row.uomName || row.uomName !== unit.name;
+        const typeMismatch = row.uomType !== unit.type;
+        if (!codeMismatch && !nameMismatch && !typeMismatch) return row;
+        changed = true;
+        const fixed = {
+          ...row,
+          uomCode: unit.code,
+          uomName: unit.name,
+          uomType: unit.type,
+        };
+        // Only rewrite original when the row wasn't edited, so we heal stale cache display.
+        if (row.uomId === row.original.uomId) {
+          fixed.original = {
+            ...row.original,
+            uomId: unit.id,
+            uomCode: unit.code,
+            uomName: unit.name,
+            uomType: unit.type,
+          };
+        }
+        return fixed;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
   const loadMeta = useCallback(async () => {
     // Disk cache first so filters paint without waiting on the network.
     const cached = await readCachedCategories().catch(() => null);
     if (cached?.length) setCategories(cached);
-    setCategories((await fetchCategories().catch(() => cached || [] as Category[])) || []);
+    const [nextCategories, nextUnits] = await Promise.all([
+      fetchCategories().catch(() => cached || [] as Category[]),
+      fetchUnits().catch(() => [] as UnitOfMeasure[]),
+    ]);
+    setCategories(nextCategories || []);
+    if (nextUnits?.length) {
+      setUnits(nextUnits);
+      enrichRowsWithUnits(nextUnits);
+    }
     void syncCatalogFromMaster().then(async () => {
       setCategories((await fetchCategories().catch(() => [] as Category[])) || []);
+      const refreshedUnits = (await fetchUnits().catch(() => [] as UnitOfMeasure[])) || [];
+      setUnits(refreshedUnits);
+      enrichRowsWithUnits(refreshedUnits);
     }).catch(() => null);
-  }, []);
+  }, [enrichRowsWithUnits]);
 
   const hydrateFromCache = useCallback(async () => {
     if (!isCatalogCacheEnabled()) return false;
@@ -404,7 +551,17 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
     // block the empty-list reload after clearing search.
     if (cachedProducts?.items?.length) {
       const active = cachedProducts.items.filter((p) => p.status !== 'inactive');
-      setRows(toRows(active.slice(0, PAGE_SIZE)));
+      let products = active.slice(0, PAGE_SIZE);
+      try {
+        const unitList = units.length ? units : await fetchUnits().catch(() => [] as UnitOfMeasure[]);
+        if (unitList.length) {
+          products = attachUnitsToProducts(products, unitList);
+          if (!units.length) setUnits(unitList);
+        }
+      } catch {
+        /* keep cached rows */
+      }
+      setRows(toRows(products));
       setTotalCount(cachedProducts.total);
       setPage(1);
       setHasMore(cachedProducts.total > PAGE_SIZE);
@@ -413,7 +570,7 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
       return true;
     }
     return false;
-  }, []);
+  }, [units]);
 
   const loadSelectedProduct = useCallback(async (productId: string) => {
     if (!productId) return;
@@ -513,13 +670,40 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
     append = false,
   ) => {
     const seq = append ? loadSeqRef.current : ++loadSeqRef.current;
-    const result = await fetchProducts({
+    const q = query.trim();
+    let result = await fetchProducts({
       page: pageNum,
       limit: PAGE_SIZE,
-      search: query.trim() || undefined,
+      search: q || undefined,
       categoryId: categoryId || undefined,
       status: 'active',
     });
+    // Pack / size barcodes often miss the product-list search path — fall back to the
+    // same barcode search New Bill uses (variant_barcodes + quantity barcodes).
+    if (q && pageNum === 1 && !(result?.items || []).length) {
+      try {
+        const hits = await searchProducts(q, { categoryId });
+        const ids = [...new Set(hits.map((h) => h.productId).filter(Boolean))];
+        if (ids.length) {
+          const products = (
+            await Promise.all(ids.slice(0, 40).map((id) => fetchProduct(id).catch(() => null)))
+          ).filter(Boolean) as Product[];
+          if (products.length) {
+            result = {
+              items: products,
+              pagination: {
+                page: 1,
+                limit: products.length,
+                total: products.length,
+                totalPages: 1,
+              },
+            };
+          }
+        }
+      } catch {
+        /* keep empty list result */
+      }
+    }
     if (seq !== loadSeqRef.current) return;
     const items = result?.items || [];
     const total = result?.pagination?.total ?? items.length;
@@ -746,6 +930,8 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
         const hit = group.variants.some((row) => (
           row.variantLabel.toLowerCase().includes(q)
           || row.barcode.toLowerCase().includes(q)
+          || (row.extraBarcodes || []).some((c) => c.toLowerCase().includes(q))
+          || (row.packBarcodes || []).some((c) => c.toLowerCase().includes(q))
         ));
         if (hit && !next.has(group.productId)) {
           next.add(group.productId);
@@ -779,15 +965,35 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
       if (!target) return prev;
       return prev.map((row) => {
         if (row.key === key) return { ...row, ...patch };
-        if (patch.name !== undefined && row.productId === target.productId) {
-          return { ...row, name: patch.name };
+        if (row.productId !== target.productId) return row;
+        const shared: Partial<PriceRow> = {};
+        if (patch.name !== undefined) shared.name = patch.name;
+        if (patch.nameMr !== undefined) shared.nameMr = patch.nameMr;
+        if (patch.uomId !== undefined) {
+          shared.uomId = patch.uomId;
+          shared.uomCode = patch.uomCode ?? row.uomCode;
+          shared.uomName = patch.uomName ?? row.uomName;
+          shared.uomType = patch.uomType ?? row.uomType;
         }
-        if (patch.nameMr !== undefined && row.productId === target.productId) {
-          return { ...row, nameMr: patch.nameMr };
-        }
-        return row;
+        return Object.keys(shared).length ? { ...row, ...shared } : row;
       });
     });
+  };
+
+  const patchProductUnit = (productId: string, unit: UnitOfMeasure) => {
+    pinScrollRef.current = true;
+    editingRef.current = true;
+    setRows((prev) => prev.map((row) => (
+      row.productId === productId
+        ? {
+            ...row,
+            uomId: unit.id,
+            uomCode: unit.code,
+            uomName: unit.name,
+            uomType: unit.type,
+          }
+        : row
+    )));
   };
 
   const nameTranslateTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -818,6 +1024,10 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
       ...row,
       name: row.original.name,
       nameMr: row.original.nameMr,
+      uomId: row.original.uomId,
+      uomCode: row.original.uomCode,
+      uomName: row.original.uomName,
+      uomType: row.original.uomType,
       costPrice: row.original.costPrice,
       mrp: row.original.mrp,
       sellingPrice: row.original.sellingPrice,
@@ -851,7 +1061,7 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
         row.barcode.trim(),
         ...(row.extraBarcodes || []).map((c) => c.trim()).filter(Boolean),
       ].filter(Boolean);
-      items.push({
+      const item: PriceBulkItem = {
         variantId: row.variantId,
         productId: row.productId,
         name: row.name.trim(),
@@ -862,7 +1072,17 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
         barcode: barcodes[0] || undefined,
         barcodes: barcodes.length ? barcodes : undefined,
         stockQty: stock,
-      });
+      };
+      if (row.uomId && row.uomId !== row.original.uomId) {
+        item.uomId = row.uomId;
+        item.uom = {
+          id: row.uomId,
+          code: row.uomCode || 'pcs',
+          name: row.uomName || row.uomCode || 'pcs',
+          type: row.uomType || 'count',
+        };
+      }
+      items.push(item);
     }
 
     setSaving(true);
@@ -878,6 +1098,10 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
           original: {
             name: row.name,
             nameMr: row.nameMr,
+            uomId: row.uomId,
+            uomCode: row.uomCode,
+            uomName: row.uomName,
+            uomType: row.uomType,
             costPrice: row.costPrice,
             mrp: row.mrp,
             sellingPrice: row.sellingPrice,
@@ -1019,6 +1243,48 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
     );
   }, [categoryId, favoritingAll, selectedCategoryLabel, t]);
 
+  const openUnitPicker = (
+    productId: string,
+    uomId: string,
+    anchor: { measureInWindow?: (cb: (x: number, y: number, width: number, height: number) => void) => void } | null,
+  ) => {
+    const openAt = (x: number, y: number, width: number) => {
+      if (!units.length) {
+        setToast({ type: 'err', text: t('No units available') });
+        void fetchUnits()
+          .then((list) => {
+            if (list?.length) {
+              setUnits(list);
+              setUnitPickerFor({ productId, uomId, x, y, width });
+            }
+          })
+          .catch(() => null);
+        return;
+      }
+      setUnitPickerFor({ productId, uomId, x, y, width });
+    };
+
+    if (anchor && typeof anchor.measureInWindow === 'function') {
+      anchor.measureInWindow((x, y, width, height) => {
+        openAt(x, y + height + 4, Math.max(width, 44));
+      });
+      return;
+    }
+    openAt(24, 120, 44);
+  };
+
+  const renderUnitIconBtn = (
+    item: Pick<PriceRow, 'productId' | 'uomId' | 'uomCode' | 'uomName' | 'original'>,
+  ) => (
+    <UnitIconButton
+      code={unitCodeLabel(item)}
+      active={unitPickerFor?.productId === item.productId}
+      changed={item.uomId !== item.original.uomId}
+      accessibilityLabel={t('Change unit')}
+      onPress={(anchor) => openUnitPicker(item.productId, item.uomId, anchor)}
+    />
+  );
+
   const renderCompactCard = (
     item: PriceRow,
     opts?: { hideProductName?: boolean; showFavorite?: boolean },
@@ -1078,15 +1344,20 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
                 />
               </View>
             </View>
-            <AppTextInput
-              label={t('Product name (Marathi)')}
-              value={item.nameMr}
-              onChangeText={(nameMr) => patchRow(item.key, { nameMr })}
-              mode="outlined"
-              dense
-              style={styles.cardInput}
-              placeholder={t('मराठी नाव')}
-            />
+            <View style={styles.nameMrRow}>
+              <View style={styles.nameMrField}>
+                <AppTextInput
+                  label={t('Product name (Marathi)')}
+                  value={item.nameMr}
+                  onChangeText={(nameMr) => patchRow(item.key, { nameMr })}
+                  mode="outlined"
+                  dense
+                  style={styles.cardInput}
+                  placeholder={t('मराठी नाव')}
+                />
+              </View>
+              {renderUnitIconBtn(item)}
+            </View>
             <View style={styles.cardMeta}>
               {item.variantLabel && item.variantLabel !== 'Default' ? (
                 <View style={styles.variantBadge}>
@@ -1203,6 +1474,11 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
           style={styles.moreBarcodes}>
           <Text style={styles.moreBarcodesText}>{t('+ Add barcode')}</Text>
         </Pressable>
+        {(item.packBarcodes || []).length ? (
+          <Text style={styles.packBarcodeHint}>
+            {t('Pack barcodes')}: {(item.packBarcodes || []).join(' · ')}
+          </Text>
+        ) : null}
       </View>
     );
   };
@@ -1289,14 +1565,19 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
 
         <View style={styles.colNameMr}>
           {hideProductName ? null : (
-            <Field
-              value={item.nameMr}
-              onChangeText={(nameMr) => patchRow(item.key, { nameMr })}
-              placeholder={t('Marathi name')}
-              focused={focused && focusField === 'nameMr'}
-              onFocus={() => focus(item.key, 'nameMr')}
-              onBlur={blur}
-            />
+            <View style={styles.nameMrRow}>
+              <View style={styles.nameMrField}>
+                <Field
+                  value={item.nameMr}
+                  onChangeText={(nameMr) => patchRow(item.key, { nameMr })}
+                  placeholder={t('Marathi name')}
+                  focused={focused && focusField === 'nameMr'}
+                  onFocus={() => focus(item.key, 'nameMr')}
+                  onBlur={blur}
+                />
+              </View>
+              {renderUnitIconBtn(item)}
+            </View>
           )}
         </View>
 
@@ -1391,6 +1672,11 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
             style={styles.moreBarcodes}>
             <Text style={styles.moreBarcodesText}>{t('+ Add barcode')}</Text>
           </Pressable>
+          {(item.packBarcodes || []).length ? (
+            <Text style={styles.packBarcodeHint}>
+              {t('Pack barcodes')}: {(item.packBarcodes || []).join(' · ')}
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.colStock}>
@@ -1821,15 +2107,20 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
                         />
                       </View>
                     </View>
-                    <AppTextInput
-                      label={t('Product name (Marathi)')}
-                      value={group.nameMr}
-                      onChangeText={(nameMr) => patchRow(first.key, { nameMr })}
-                      mode="outlined"
-                      dense
-                      style={styles.cardInput}
-                      placeholder={t('मराठी नाव')}
-                    />
+                    <View style={styles.nameMrRow}>
+                      <View style={styles.nameMrField}>
+                        <AppTextInput
+                          label={t('Product name (Marathi)')}
+                          value={group.nameMr}
+                          onChangeText={(nameMr) => patchRow(first.key, { nameMr })}
+                          mode="outlined"
+                          dense
+                          style={styles.cardInput}
+                          placeholder={t('मराठी नाव')}
+                        />
+                      </View>
+                      {renderUnitIconBtn(first)}
+                    </View>
                     <Pressable
                       onPress={() => toggleExpanded(group.productId)}
                       style={styles.cardExpand}>
@@ -1910,34 +2201,41 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
                             onFocus={() => focus(`product:${group.productId}`, 'name')}
                             onBlur={blur}
                           />
-                          <Pressable
-                            onPress={() => toggleExpanded(group.productId)}
-                            style={styles.productMeta}>
-                            <View style={styles.variantBadge}>
-                              <Text style={styles.variantBadgeText}>
-                                {t('{{count}} variants', { count: group.variants.length })}
+                          <View style={styles.productMeta}>
+                            <Pressable
+                              onPress={() => toggleExpanded(group.productId)}
+                              style={styles.groupMetaHit}>
+                              <View style={styles.variantBadge}>
+                                <Text style={styles.variantBadgeText}>
+                                  {t('{{count}} variants', { count: group.variants.length })}
+                                </Text>
+                              </View>
+                              <Text style={styles.meta} numberOfLines={1}>
+                                {[group.categoryName, group.brandName].filter(Boolean).join(' · ') || '—'}
                               </Text>
-                            </View>
-                            <Text style={styles.meta} numberOfLines={1}>
-                              {[group.categoryName, group.brandName].filter(Boolean).join(' · ') || '—'}
-                            </Text>
-                            <Text style={styles.expandHint}>
-                              {expanded ? t('Hide variants') : t('Show variants')}
-                            </Text>
-                          </Pressable>
+                              <Text style={styles.expandHint}>
+                                {expanded ? t('Hide variants') : t('Show variants')}
+                              </Text>
+                            </Pressable>
+                          </View>
                         </View>
                       </View>
                     </View>
 
                     <View style={styles.colNameMr}>
-                      <Field
-                        value={group.nameMr}
-                        onChangeText={(nameMr) => patchRow(first.key, { nameMr })}
-                        placeholder={t('Marathi name')}
-                        focused={focused && focusField === 'nameMr'}
-                        onFocus={() => focus(`product:${group.productId}`, 'nameMr')}
-                        onBlur={blur}
-                      />
+                      <View style={styles.nameMrRow}>
+                        <View style={styles.nameMrField}>
+                          <Field
+                            value={group.nameMr}
+                            onChangeText={(nameMr) => patchRow(first.key, { nameMr })}
+                            placeholder={t('Marathi name')}
+                            focused={focused && focusField === 'nameMr'}
+                            onFocus={() => focus(`product:${group.productId}`, 'nameMr')}
+                            onBlur={blur}
+                          />
+                        </View>
+                        {renderUnitIconBtn(first)}
+                      </View>
                     </View>
 
                     <Pressable
@@ -2047,6 +2345,67 @@ export default function PriceManagementScreen({ navigation, route }: Props) {
         onSelect={setCategoryId}
         onClose={() => setCategoryOpen(false)}
       />
+
+      <Modal
+        visible={!!unitPickerFor}
+        transparent
+        animationType="none"
+        onRequestClose={() => setUnitPickerFor(null)}>
+        <View style={styles.unitDropdownRoot} pointerEvents="box-none">
+          <Pressable
+            style={styles.unitDropdownScrim}
+            onPress={() => setUnitPickerFor(null)}
+            accessibilityLabel={t('Dismiss')}
+          />
+          {unitPickerFor ? (
+            <View
+              style={[
+                styles.unitDropdown,
+                {
+                  top: Math.min(
+                    unitPickerFor.y,
+                    Math.max(8, height - Math.min(units.length * 40 + 16, 260) - 8),
+                  ),
+                  left: Math.min(
+                    Math.max(8, unitPickerFor.x),
+                    Math.max(8, width - 180),
+                  ),
+                  maxHeight: Math.min(260, height - 24),
+                },
+              ]}>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+                showsVerticalScrollIndicator={false}>
+                {units.map((unit) => {
+                  const active = unit.id === unitPickerFor.uomId;
+                  return (
+                    <Pressable
+                      key={unit.id}
+                      onPress={() => {
+                        patchProductUnit(unitPickerFor.productId, unit);
+                        setUnitPickerFor(null);
+                      }}
+                      style={[styles.unitDropItem, active && styles.unitDropItemOn]}>
+                      <Text
+                        style={[styles.unitDropCode, active && styles.unitDropCodeOn]}
+                        numberOfLines={1}>
+                        {unit.code.toUpperCase()}
+                      </Text>
+                      <Text
+                        style={[styles.unitDropName, active && styles.unitDropNameOn]}
+                        numberOfLines={1}>
+                        {unit.name}
+                      </Text>
+                      {active ? <Icon name="check" size={16} color={colors.primary} /> : null}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          ) : null}
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -2295,6 +2654,15 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
     marginTop: spacing.xs,
+  },
+  nameMrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  nameMrField: {
+    flex: 1,
+    minWidth: 0,
   },
   cardSummary: {
     fontSize: 13,
@@ -2580,6 +2948,12 @@ const styles = StyleSheet.create({
   },
   moreBarcodes: { marginTop: 4 },
   moreBarcodesText: { fontSize: 11, fontWeight: '600', color: colors.primary },
+  packBarcodeHint: {
+    marginTop: 4,
+    fontSize: 11,
+    color: colors.textMuted,
+    lineHeight: 15,
+  },
   extraBarcodeRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2608,12 +2982,98 @@ const styles = StyleSheet.create({
     marginTop: 6,
     minHeight: 22,
     minWidth: 0,
+    flexWrap: 'wrap',
+  },
+  groupMetaHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    minWidth: 0,
   },
   meta: {
     flex: 1,
     minWidth: 0,
     fontSize: 11,
     color: colors.textMuted,
+  },
+  unitIconBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    minWidth: 44,
+    height: 28,
+    paddingHorizontal: 7,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceVariant,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  unitIconBtnOpen: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  unitIconBtnDirty: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentLight,
+  },
+  unitIconCode: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    maxWidth: 42,
+  },
+  unitIconCodeOn: {
+    color: colors.primary,
+  },
+  unitDropdownRoot: {
+    flex: 1,
+  },
+  unitDropdownScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'transparent',
+  },
+  unitDropdown: {
+    position: 'absolute',
+    minWidth: 168,
+    maxWidth: 220,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 4,
+    ...(shadow.md as object),
+    zIndex: 50,
+  },
+  unitDropItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+  },
+  unitDropItemOn: {
+    backgroundColor: colors.primaryLight,
+  },
+  unitDropCode: {
+    minWidth: 36,
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.textSecondary,
+  },
+  unitDropCodeOn: {
+    color: colors.primary,
+  },
+  unitDropName: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  unitDropNameOn: {
+    color: colors.primary,
+    fontWeight: '700',
   },
   variantBadge: {
     flexShrink: 0,

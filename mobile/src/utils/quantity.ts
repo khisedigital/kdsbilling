@@ -59,6 +59,43 @@ function isMeasurableUom(code?: string): boolean {
   return c in WEIGHT_UNITS || c in VOLUME_UNITS;
 }
 
+/** Weight or volume units, where a barcode qty should read as 100 g / 1 kg / 250 ml. */
+export function isMeasureUom(uom?: UomInfo | null): boolean {
+  if (!uom) return false;
+  if (uom.type === 'weight' || uom.type === 'volume') return true;
+  return isMeasurableUom(uom.code);
+}
+
+type BillUomSource = {
+  uom?: UomInfo | null;
+  variant?: { product?: { uom?: UomInfo | null } | null } | null;
+};
+
+/** UOM saved on the line, or the catalog unit loaded with the bill. */
+export function billItemUom(item?: BillUomSource | null): UomInfo | null {
+  const direct = item?.uom;
+  const nested = item?.variant?.product?.uom;
+  const uom = direct?.code ? direct : nested?.code ? nested : null;
+  if (!uom?.code) return null;
+  return { code: uom.code, name: uom.name, type: uom.type };
+}
+
+/**
+ * Quantity on a bill. Weight/volume barcodes show the real amount
+ * (0.1 kg → "100 g", 0.05 kg → "50 g", 1 kg → "1 kg"). Pieces stay a number.
+ */
+export function formatBillQuantity(qty: number, uom?: UomInfo | null): string {
+  const n = Number(qty);
+  if (!Number.isFinite(n)) return '0';
+  if (!isMeasureUom(uom)) return formatNumber(n);
+  return formatQuantity(n, uom);
+}
+
+/** Same label without spaces, so a thermal qty column can fit "100g" / "1kg". */
+export function formatReceiptQuantity(qty: number, uom?: UomInfo | null): string {
+  return formatBillQuantity(qty, uom).replace(/\s+/g, '');
+}
+
 function unitFactor(code: string, uomType?: string): number | null {
   const c = code.toLowerCase();
   if (c in WEIGHT_UNITS) return WEIGHT_UNITS[c];

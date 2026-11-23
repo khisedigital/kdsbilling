@@ -39,6 +39,9 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const mobileInputRef = useRef<any>(null);
+  const passwordInputRef = useRef<any>(null);
+
   const brandOpacity = useRef(new Animated.Value(0)).current;
   const brandScale = useRef(new Animated.Value(0.92)).current;
   const formOpacity = useRef(new Animated.Value(0)).current;
@@ -196,12 +199,22 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoFocus={false}
+                  returnKeyType="next"
+                  onSubmitEditing={() => mobileInputRef.current?.focus()}
                   style={styles.input}
                   outlineColor={colors.border}
                   activeOutlineColor={colors.primary}
-                  left={<TextInput.Icon icon="storefront-outline" color={colors.primary} />}
+                  left={
+                    <TextInput.Icon
+                      icon="storefront-outline"
+                      color={colors.primary}
+                      tabIndex={-1}
+                      focusable={false}
+                    />
+                  }
                 />
                 <AppTextInput
+                  ref={mobileInputRef}
                   label={t('Mobile number')}
                   value={mobile}
                   onChangeText={setMobile}
@@ -209,29 +222,49 @@ export default function LoginScreen() {
                   keyboardType="phone-pad"
                   maxLength={10}
                   autoFocus={false}
+                  returnKeyType="next"
+                  onSubmitEditing={() => passwordInputRef.current?.focus()}
                   style={styles.input}
                   outlineColor={colors.border}
                   activeOutlineColor={colors.primary}
-                  left={<TextInput.Icon icon="cellphone" color={colors.primary} />}
+                  left={
+                    <TextInput.Icon
+                      icon="cellphone"
+                      color={colors.primary}
+                      tabIndex={-1}
+                      focusable={false}
+                    />
+                  }
                 />
               </>
             )}
 
             <AppTextInput
+              ref={passwordInputRef}
               label={t('Password')}
               value={password}
               onChangeText={setPassword}
               mode="outlined"
               secureTextEntry={!showPassword}
               autoFocus={false}
+              returnKeyType="done"
               style={styles.input}
               outlineColor={colors.border}
               activeOutlineColor={colors.primary}
-              left={<TextInput.Icon icon="lock-outline" color={colors.primary} />}
+              left={
+                <TextInput.Icon
+                  icon="lock-outline"
+                  color={colors.primary}
+                  tabIndex={-1}
+                  focusable={false}
+                />
+              }
               right={
                 <TextInput.Icon
                   icon={showPassword ? 'eye-off-outline' : 'eye-outline'}
                   onPress={() => setShowPassword((v) => !v)}
+                  tabIndex={-1}
+                  focusable={false}
                 />
               }
               onSubmitEditing={handleLogin}

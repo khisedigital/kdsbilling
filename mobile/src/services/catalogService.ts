@@ -30,6 +30,95 @@ function normalizeNameMr<T extends { name_mr?: string | null; nameMr?: string | 
   return { ...row, name_mr, nameMr: name_mr };
 }
 
+/** Keep embedded `uom` in sync with `uom_id` (stale cache often keeps pcs while id is kg). */
+export function attachUnitsToProducts(products: Product[], units: UnitOfMeasure[]): Product[] {
+  if (!products?.length || !units?.length) return products || [];
+  const byId = new Map(units.map((u) => [u.id, u]));
+  return products.map((product) => {
+    const uomId = product.uom_id || (product as { uomId?: string }).uomId || product.uom?.id || '';
+    if (!uomId) return product;
+    const unit = byId.get(uomId);
+    if (!unit) return product;
+    const embedded = product.uom;
+    const matches = embedded
+      && (embedded.id === unit.id || !embedded.id)
+      && String(embedded.code || '').toLowerCase() === String(unit.code || '').toLowerCase()
+      && (embedded.type || unit.type) === unit.type;
+    if (matches && product.uom_id === unit.id) {
+      // Still normalize id onto embedded uom when missing.
+      if (embedded && !embedded.id) {
+        return { ...product, uom: { ...embedded, id: unit.id, name: unit.name, type: unit.type } };
+      }
+      return product;
+    }
+    const isMeasure = unit.type === 'weight' || unit.type === 'volume';
+    return {
+      ...product,
+      uom_id: unit.id,
+      uom: {
+        id: unit.id,
+        code: unit.code,
+        name: unit.name,
+        type: unit.type,
+      },
+      // Heal weight/decimal flags when embedded unit was wrong (pcs vs kg).
+      is_weight_based: isMeasure,
+      allow_decimal_qty: isMeasure || unit.type === 'length',
+    };
+  });
+}
+
+async function resolveUnitById(uomId: string): Promise<UnitOfMeasure | null> {
+  if (!uomId) return null;
+  try {
+    const units = await fetchUnits();
+    return units.find((u) => u.id === uomId) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist healed uom onto local SQLite + AsyncStorage when embedded unit was wrong. */
+async function healCachedProductUnits(products: Product[], units: UnitOfMeasure[]): Promise<Product[]> {
+  const healed = attachUnitsToProducts(products, units);
+  const dirty = healed.filter((next, i) => {
+    const prev = products[i];
+    return (
+      prev?.uom?.code !== next.uom?.code
+      || prev?.uom_id !== next.uom_id
+      || prev?.is_weight_based !== next.is_weight_based
+    );
+  });
+  if (!dirty.length) return healed;
+
+  try {
+    const { hasSqliteBridge } = await import('../offline/sqliteApi');
+    const { localUpsertProduct } = await import('../offline/localApi');
+    if (hasSqliteBridge()) {
+      for (const product of dirty.slice(0, 200)) {
+        void localUpsertProduct(product).catch(() => null);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    if (isCatalogCacheEnabled()) {
+      const cached = await readCachedProducts();
+      if (cached?.items?.length) {
+        const byId = new Map(dirty.map((p) => [p.id, p]));
+        const items = cached.items.map((row) => byId.get(row.id) || row);
+        await writeCachedProducts(items, cached.total || items.length, 'replace');
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return healed;
+}
+
 export async function fetchCategories(
   search?: string,
   opts?: { forceNetwork?: boolean },
@@ -101,6 +190,16 @@ export async function syncCatalogFromMaster(options?: {
   const lastAt = relink ? lastMasterSyncRelinkAt : lastMasterSyncAt;
   if (!force && lastAt > 0 && now - lastAt < MASTER_SYNC_TTL_MS) {
     return { ...EMPTY_MASTER_SYNC };
+  }
+
+  try {
+    const { isFullyLocalMode } = await import('../offline/localApi');
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isFullyLocalMode() || isOfflineNow()) {
+      return { ...EMPTY_MASTER_SYNC };
+    }
+  } catch {
+    /* fall through */
   }
 
   // Share one in-flight request so concurrent screens all see create/update counts.
@@ -224,10 +323,48 @@ export async function updateCategory(id: string, payload: {
 }
 
 export async function deleteCategory(id: string) {
-  const { data } = await api.delete(`/categories/${id}`);
-  // Deleting a category unlinks products — refresh both caches next load.
-  void invalidateCatalogCache();
-  return data.data;
+  try {
+    const { isFullyLocalMode, localDeleteCategory, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteCategory(id);
+      await localEnqueueSync({
+        entityType: 'category',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      void invalidateCachedCategories();
+      void invalidateCatalogCache();
+      return { success: true, id };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.delete(`/categories/${id}`);
+    void invalidateCachedCategories();
+    void invalidateCatalogCache();
+    return data.data;
+  } catch (err) {
+    const { isFullyLocalMode, localDeleteCategory, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteCategory(id);
+      await localEnqueueSync({
+        entityType: 'category',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      void invalidateCachedCategories();
+      void invalidateCatalogCache();
+      return { success: true, id };
+    }
+    throw err;
+  }
 }
 
 export async function fetchBrands(
@@ -331,18 +468,122 @@ export async function updateBrand(id: string, payload: {
 }
 
 export async function deleteBrand(id: string) {
-  const { data } = await api.delete(`/brands/${id}`);
-  return data.data;
+  try {
+    const { isFullyLocalMode, localDeleteBrand, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteBrand(id);
+      await localEnqueueSync({
+        entityType: 'brand',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      void invalidateCatalogCache();
+      return { success: true, id };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.delete(`/brands/${id}`);
+    void invalidateCatalogCache();
+    return data.data;
+  } catch (err) {
+    const { isFullyLocalMode, localDeleteBrand, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteBrand(id);
+      await localEnqueueSync({
+        entityType: 'brand',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      void invalidateCatalogCache();
+      return { success: true, id };
+    }
+    throw err;
+  }
 }
+
+export const DEFAULT_OFFLINE_UNITS: UnitOfMeasure[] = [
+  { id: 'u-pcs', code: 'pcs', name: 'Pieces', type: 'count' },
+  { id: 'u-kg', code: 'kg', name: 'Kilograms', type: 'weight' },
+  { id: 'u-g', code: 'g', name: 'Grams', type: 'weight' },
+  { id: 'u-l', code: 'l', name: 'Liters', type: 'volume' },
+  { id: 'u-ml', code: 'ml', name: 'Milliliters', type: 'volume' },
+  { id: 'u-m', code: 'm', name: 'Meters', type: 'length' },
+  { id: 'u-box', code: 'box', name: 'Box', type: 'count' },
+  { id: 'u-pack', code: 'pack', name: 'Pack', type: 'count' },
+];
 
 export async function fetchUnits(): Promise<UnitOfMeasure[]> {
-  const { data } = await api.get('/units');
-  return data.data;
+  try {
+    const { isFullyLocalMode } = await import('../offline/localApi');
+    const { getDesktopBridge } = await import('../desktop/bridge');
+    const b = getDesktopBridge();
+    if (b?.sqliteListJsonTable) {
+      const { useAuthStore } = await import('../store/authStore');
+      const shopCode = useAuthStore.getState().savedLogin?.shopCode || 'default';
+      const res = await b.sqliteListJsonTable({ shopCode, table: 'units' });
+      if (Array.isArray(res?.items) && res.items.length) {
+        return res.items as UnitOfMeasure[];
+      }
+    }
+    if (isFullyLocalMode()) {
+      return DEFAULT_OFFLINE_UNITS;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isOfflineNow()) return DEFAULT_OFFLINE_UNITS;
+    const { data } = await api.get('/units');
+    return data.data;
+  } catch {
+    return DEFAULT_OFFLINE_UNITS;
+  }
 }
 
+export const DEFAULT_OFFLINE_TAX_GROUPS: TaxGroup[] = [
+  { id: 'tg-0', name: 'GST 0%', total_rate: 0 },
+  { id: 'tg-5', name: 'GST 5%', total_rate: 5 },
+  { id: 'tg-12', name: 'GST 12%', total_rate: 12 },
+  { id: 'tg-18', name: 'GST 18%', total_rate: 18 },
+  { id: 'tg-28', name: 'GST 28%', total_rate: 28 },
+];
+
 export async function fetchTaxGroups(): Promise<TaxGroup[]> {
-  const { data } = await api.get('/tax-groups');
-  return data.data;
+  try {
+    const { isFullyLocalMode } = await import('../offline/localApi');
+    const { getDesktopBridge } = await import('../desktop/bridge');
+    const b = getDesktopBridge();
+    if (b?.sqliteListJsonTable) {
+      const { useAuthStore } = await import('../store/authStore');
+      const shopCode = useAuthStore.getState().savedLogin?.shopCode || 'default';
+      const res = await b.sqliteListJsonTable({ shopCode, table: 'tax_groups' });
+      if (Array.isArray(res?.items) && res.items.length) {
+        return res.items as TaxGroup[];
+      }
+    }
+    if (isFullyLocalMode()) {
+      return DEFAULT_OFFLINE_TAX_GROUPS;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isOfflineNow()) return DEFAULT_OFFLINE_TAX_GROUPS;
+    const { data } = await api.get('/tax-groups');
+    return data.data;
+  } catch {
+    return DEFAULT_OFFLINE_TAX_GROUPS;
+  }
 }
 
 export async function fetchProducts(params?: {
@@ -356,6 +597,8 @@ export async function fetchProducts(params?: {
   view?: 'pos' | 'full';
   /** Skip writing AsyncStorage (caller writes once after full download). */
   skipCacheWrite?: boolean;
+  /** Force fetching directly from API, bypassing SQLite catalog cache. */
+  forceNetwork?: boolean;
 }): Promise<Paginated<Product>> {
   const page = params?.page || 1;
   const pageLimit = params?.limit || 200;
@@ -363,7 +606,7 @@ export async function fetchProducts(params?: {
   try {
     const { shouldUseLocalCatalog } = await import('../offline/localCatalog');
     const { sqliteListProducts } = await import('../offline/sqliteApi');
-    if (shouldUseLocalCatalog()) {
+    if (!params?.forceNetwork && shouldUseLocalCatalog()) {
       const search = String(params?.search || '').trim();
       const listed = await sqliteListProducts({
         search: search || undefined,
@@ -379,6 +622,14 @@ export async function fetchProducts(params?: {
       }
       if (params?.status) {
         items = items.filter((p) => String(p.status || 'active') === params.status);
+      }
+      try {
+        const units = await fetchUnits();
+        if (units.length) {
+          items = await healCachedProductUnits(items, units);
+        }
+      } catch {
+        /* keep raw items */
       }
       const total = Number(listed.total) || items.length + (page - 1) * pageLimit;
       return {
@@ -406,9 +657,25 @@ export async function fetchProducts(params?: {
       view: params?.view,
     },
   });
-  const result = data.data as Paginated<Product>;
+  // Normalize both `{ items, pagination }` and rare array / double-wrapped shapes.
+  const raw = data?.data ?? data;
+  const items: Product[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.items)
+      ? raw.items
+      : Array.isArray(raw?.data?.items)
+        ? raw.data.items
+        : [];
+  const pagination = (!Array.isArray(raw) && raw?.pagination) || {
+    page,
+    limit: pageLimit,
+    total: items.length,
+    totalPages: 1,
+  };
+  const result: Paginated<Product> = { items, pagination };
   // Only the full unfiltered catalog may replace/merge the disk cache.
   // List/Price Management page-size browses must not wipe Billing's cached catalog.
+  // Sync pulls pass skipCacheWrite and write once after the full download.
   if (
     !params?.skipCacheWrite
     && isCatalogCacheEnabled()
@@ -435,21 +702,30 @@ export async function fetchAllProducts(params?: {
   categoryId?: string;
   brandId?: string;
   status?: string;
+  forceNetwork?: boolean;
+  /**
+   * Desktop sync should use the full product payload so brand/uom/variants are complete.
+   * Billing/mobile can keep the lean POS pages.
+   */
+  preferFull?: boolean;
   /** Called after each page with the accumulated product list (favorites first). */
   onPage?: (products: Product[], loaded: number, total: number) => void;
 }): Promise<Product[]> {
-  // Smaller pages on native — big JSON payloads OOM / timeout on phones.
+  // Keep pages moderate — full product payloads are heavy; still page until done.
   const pageSize = 200;
-  const all: Product[] = [];
+  const byId = new Map<string, Product>();
   let page = 1;
   let totalPages = 1;
   let total = 0;
   // Prefer lean POS payload; fall back to full list if variants are missing (older API).
-  let view: 'pos' | 'full' = 'pos';
+  // Sync pulls start on full so mobile-created products are not dropped by lean quirks.
+  let view: 'pos' | 'full' = params?.preferFull ? 'full' : 'pos';
+
+  const snapshot = () => sortFavoritesFirst([...byId.values()]);
 
   const emit = () => {
-    const sorted = sortFavoritesFirst(all);
-    params?.onPage?.(sorted, all.length, total || all.length);
+    const sorted = snapshot();
+    params?.onPage?.(sorted, byId.size, total || byId.size);
     return sorted;
   };
 
@@ -464,6 +740,7 @@ export async function fetchAllProducts(params?: {
         status: params?.status,
         view: view === 'pos' ? 'pos' : undefined,
         skipCacheWrite: true,
+        forceNetwork: params?.forceNetwork,
       });
       const items = result?.items || [];
       const reportedTotal = result?.pagination?.total ?? 0;
@@ -481,40 +758,62 @@ export async function fetchAllProducts(params?: {
         continue;
       }
 
-      all.push(...items);
-      total = reportedTotal || all.length;
-      totalPages = result?.pagination?.totalPages || 1;
+      for (const row of items) {
+        if (row?.id) byId.set(String(row.id), row);
+      }
+      total = reportedTotal || byId.size;
+      const serverLimit = Number(result?.pagination?.limit) || pageSize;
+      totalPages = Number(result?.pagination?.totalPages)
+        || Math.max(1, Math.ceil(total / serverLimit));
       emit();
-      if (page >= totalPages || items.length < pageSize) break;
+      // Stop only when the server says we're past the last page, or this page was empty.
+      // Do NOT stop solely because items.length < pageSize — server may clamp the limit.
+      if (page >= totalPages || items.length === 0) break;
       page += 1;
       if (page > 500) break;
     } catch (err) {
       // First-page lean failure → retry full list (matches Product screen).
-      if (page === 1 && view === 'pos' && !all.length) {
+      if (page === 1 && view === 'pos' && !byId.size) {
         view = 'full';
         continue;
       }
       // Keep what we already downloaded so Billing is not empty after a late-page failure.
-      if (all.length) {
+      if (byId.size) {
         emit();
         break;
       }
       throw err;
     }
   }
-  return sortFavoritesFirst(all);
+  return snapshot();
 }
-export async function fetchProduct(id: string): Promise<Product> {
+export async function fetchProduct(
+  id: string,
+  options?: { forceNetwork?: boolean },
+): Promise<Product> {
+  const healOne = async (product: Product): Promise<Product> => {
+    try {
+      const units = await fetchUnits();
+      if (!units.length) return product;
+      const [healed] = await healCachedProductUnits([product], units);
+      return healed || product;
+    } catch {
+      return product;
+    }
+  };
+
   const { shouldUseLocalCatalog } = await import('../offline/localCatalog');
-  if (shouldUseLocalCatalog()) {
-    const { sqliteGetProduct } = await import('../offline/sqliteApi');
-    const local = await sqliteGetProduct(id);
-    if (local) return local as Product;
-    // Desktop local mode: never fall back to live — server stock is often stale/negative.
-    const cached = await readCachedProducts();
-    const hit = cached?.items?.find((p) => p.id === id);
-    if (hit) return hit;
-    throw new Error('Product not found in local catalog');
+  if (!options?.forceNetwork && shouldUseLocalCatalog()) {
+    try {
+      const { sqliteGetProduct } = await import('../offline/sqliteApi');
+      const local = await sqliteGetProduct(id);
+      if (local) return healOne(local as Product);
+      const cached = await readCachedProducts();
+      const hit = cached?.items?.find((p) => p.id === id);
+      if (hit) return healOne(hit);
+    } catch {
+      /* fall through to network */
+    }
   }
   const { data } = await api.get(`/products/${id}`);
   return data.data;
@@ -547,14 +846,50 @@ export function sortFavoritesFirst<T extends {
 }
 
 export async function setProductFavorite(id: string, isFavorite: boolean): Promise<{ id: string; isFavorite: boolean }> {
-  const { data } = await api.put(`/products/${id}/favorite`, { isFavorite });
-  const row = data.data || {};
-  const next = !!(row.isFavorite ?? row.is_favorite ?? isFavorite);
-  void patchCachedProductFavorite(id, next);
-  return {
-    id: row.id || id,
-    isFavorite: next,
-  };
+  try {
+    const { isFullyLocalMode, localSetProductFavorite, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localSetProductFavorite(id, isFavorite);
+      void patchCachedProductFavorite(id, isFavorite);
+      await localEnqueueSync({
+        entityType: 'product',
+        entityId: id,
+        op: 'favorite',
+        payload: { isFavorite },
+      });
+      return { id, isFavorite };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.put(`/products/${id}/favorite`, { isFavorite });
+    const row = data.data || {};
+    const next = !!(row.isFavorite ?? row.is_favorite ?? isFavorite);
+    void patchCachedProductFavorite(id, next);
+    return {
+      id: row.id || id,
+      isFavorite: next,
+    };
+  } catch (err) {
+    const { isFullyLocalMode, localSetProductFavorite, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localSetProductFavorite(id, isFavorite);
+      void patchCachedProductFavorite(id, isFavorite);
+      await localEnqueueSync({
+        entityType: 'product',
+        entityId: id,
+        op: 'favorite',
+        payload: { isFavorite },
+      });
+      return { id, isFavorite };
+    }
+    throw err;
+  }
 }
 
 /** Favorite / unfavorite every product in a category (optionally also brand). */
@@ -563,18 +898,60 @@ export async function setProductsFavoriteBulk(params: {
   brandId?: string | null;
   isFavorite: boolean;
 }): Promise<{ updated: number; isFavorite: boolean }> {
-  const { data } = await api.post('/products/favorites/bulk', {
-    categoryId: params.categoryId,
-    brandId: params.brandId || undefined,
-    isFavorite: params.isFavorite,
-  });
-  const row = data.data || {};
-  const next = !!(row.isFavorite ?? params.isFavorite);
-  void patchCachedProductsFavoriteByCategory(params.categoryId, next);
-  return {
-    updated: Number(row.updated) || 0,
-    isFavorite: next,
-  };
+  try {
+    const { isFullyLocalMode, localSetProductsFavoriteBulk, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      const res = (await localSetProductsFavoriteBulk(params)) as { updated?: number } | null;
+      void patchCachedProductsFavoriteByCategory(params.categoryId, params.isFavorite);
+      await localEnqueueSync({
+        entityType: 'product_favorites_bulk',
+        entityId: `fav-bulk-${Date.now()}`,
+        op: 'update',
+        payload: params,
+      });
+      return {
+        updated: Number(res?.updated) || 0,
+        isFavorite: params.isFavorite,
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.post('/products/favorites/bulk', {
+      categoryId: params.categoryId,
+      brandId: params.brandId || undefined,
+      isFavorite: params.isFavorite,
+    });
+    const row = data.data || {};
+    const next = !!(row.isFavorite ?? params.isFavorite);
+    void patchCachedProductsFavoriteByCategory(params.categoryId, next);
+    return {
+      updated: Number(row.updated) || 0,
+      isFavorite: next,
+    };
+  } catch (err) {
+    const { isFullyLocalMode, localSetProductsFavoriteBulk, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      const res = (await localSetProductsFavoriteBulk(params)) as { updated?: number } | null;
+      void patchCachedProductsFavoriteByCategory(params.categoryId, params.isFavorite);
+      await localEnqueueSync({
+        entityType: 'product_favorites_bulk',
+        entityId: `fav-bulk-${Date.now()}`,
+        op: 'update',
+        payload: params,
+      });
+      return {
+        updated: Number(res?.updated) || 0,
+        isFavorite: params.isFavorite,
+      };
+    }
+    throw err;
+  }
 }
 
 export interface GeneratedBarcode {
@@ -622,24 +999,241 @@ export interface ProductBarcodeStatus {
   variants: VariantBarcodeStatus[];
 }
 
+function computeEan13CheckDigit(first12: string): string {
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) sum += Number(first12[i]) * (i % 2 === 0 ? 1 : 3);
+  return String((10 - (sum % 10)) % 10);
+}
+
+function checkValidEan13(value: string): boolean {
+  const code = String(value || '').trim();
+  if (!/^\d{13}$/.test(code)) return false;
+  return computeEan13CheckDigit(code.slice(0, 12)) === code[12];
+}
+
+function generateRandomEan13(): string {
+  let body = '20';
+  while (body.length < 12) body += String(Math.floor(Math.random() * 10));
+  return body + computeEan13CheckDigit(body);
+}
+
+function classifyLocalBarcodeType(value: string): 'ean13' | 'code128' | 'other' {
+  const code = String(value || '').trim().toUpperCase();
+  if (checkValidEan13(code)) return 'ean13';
+  if (code.startsWith('KDSPOZ') && code.length >= 14) return 'code128';
+  return 'other';
+}
+
+async function buildLocalBarcodeStatus(productId: string): Promise<ProductBarcodeStatus | null> {
+  try {
+    const product = await fetchProduct(productId);
+    if (!product || !product.id) return null;
+
+    const variants = product.variants || [];
+    const hasVariants = Boolean(
+      product.hasVariants || (product as any).has_variants || variants.length > 1 || variants.some((v) => Boolean(v.size || v.color))
+    );
+
+    const resultVariants: VariantBarcodeStatus[] = variants.map((v) => {
+      const plainCodes = (v.barcodes || []).map((b) => (typeof b === 'string' ? b : (b as any)?.barcode || '')).filter(Boolean);
+      const primaryCode = v.barcode || plainCodes[0] || null;
+      const primaryType = primaryCode ? classifyLocalBarcodeType(primaryCode) : null;
+      const status: VariantBarcodeStatusKind = primaryCode ? 'available' : 'missing';
+
+      const alternateBarcodes = plainCodes
+        .filter((code) => code !== primaryCode)
+        .map((code) => ({
+          barcode: code,
+          barcodeType: classifyLocalBarcodeType(code),
+          status: 'available' as VariantBarcodeStatusKind,
+        }));
+
+      const quantityBarcodes: QuantityBarcodeStatus[] = ((v as any).quantityBarcodes || []).map((qb: any) => ({
+        quantity: Number(qb.quantity),
+        barcode: qb.barcode || null,
+        barcodeType: qb.barcode ? classifyLocalBarcodeType(qb.barcode) : null,
+        status: qb.barcode ? ('available' as VariantBarcodeStatusKind) : ('missing' as VariantBarcodeStatusKind),
+      }));
+
+      return {
+        variantId: v.id,
+        sku: v.sku || '',
+        size: v.size || null,
+        color: v.color || null,
+        mrp: v.mrp != null ? Number(v.mrp) : null,
+        sellingPrice: Number(v.sellingPrice ?? (v as any).selling_price) || 0,
+        costPrice: Number(v.costPrice ?? (v as any).cost_price) || 0,
+        barcode: primaryCode,
+        barcodeType: primaryType,
+        status,
+        stockQty: v.stockQty ?? (v as any).stock_qty ?? null,
+        alternateBarcodes,
+        quantityBarcodes,
+      };
+    });
+
+    return {
+      productId: product.id,
+      productName: product.name,
+      hasVariants,
+      uom: (product as any).uom || null,
+      variants: resultVariants,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Assigns a number-only EAN-13 to each listed variant that has none. Replaces letter barcodes (KDSPOZ…). Never overwrites manufacturer barcodes. */
 export async function generateBarcodes(variantIds: string[]): Promise<GeneratedBarcode[]> {
-  const { data } = await api.post('/products/barcodes/generate', { variantIds });
-  return data.data;
+  const { hasSqliteBridge, sqliteGenerateBarcodes } = await import('../offline/sqliteApi');
+  const { shouldUseLocalCatalog, isFullyLocalMode } = await import('../offline/localCatalog');
+
+  if (hasSqliteBridge() && (shouldUseLocalCatalog() || isFullyLocalMode())) {
+    try {
+      const generated = await sqliteGenerateBarcodes(variantIds);
+      if (Array.isArray(generated) && generated.length) {
+        return generated;
+      }
+    } catch (e) {
+      console.warn('[KDSPOZ] local barcode generation failed, falling back to API:', e);
+    }
+  }
+
+  try {
+    const { data } = await api.post('/products/barcodes/generate', { variantIds });
+    return data.data;
+  } catch (err) {
+    if (hasSqliteBridge()) {
+      try {
+        const localFallback = await sqliteGenerateBarcodes(variantIds);
+        if (Array.isArray(localFallback) && localFallback.length) {
+          return localFallback;
+        }
+      } catch {}
+    }
+    throw err;
+  }
+}
+
+function sameProductName(a: unknown, b: unknown): boolean {
+  return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+}
+
+function codesOnProduct(product: Product): Set<string> {
+  const codes = new Set<string>();
+  for (const variant of product.variants || []) {
+    for (const code of allBarcodesOf(variant)) {
+      const key = String(code || '').trim().toLowerCase();
+      if (key) codes.add(key);
+    }
+  }
+  return codes;
+}
+
+/**
+ * Desktop save keeps a local id. Sync creates a different id on the server, and the
+ * phone lists that one. Label lookup of the local id is a 404 — find the synced row.
+ */
+async function syncedTwinProductId(localId: string): Promise<string | null> {
+  const { hasSqliteBridge, sqliteGetProduct, sqliteListProducts } = await import('../offline/sqliteApi');
+  if (!hasSqliteBridge()) return null;
+  const local = (await sqliteGetProduct(localId)) as Product | null;
+  if (!local?.name) return null;
+  const { items } = await sqliteListProducts({ search: local.name, limit: 40 });
+  const localCodes = codesOnProduct(local);
+  const others = (items as Product[]).filter(
+    (product) => product?.id && product.id !== localId && sameProductName(product.name, local.name),
+  );
+  if (!others.length) return null;
+  if (localCodes.size) {
+    const byCode = others.filter((product) =>
+      [...codesOnProduct(product)].some((code) => localCodes.has(code)),
+    );
+    if (byCode.length === 1) return byCode[0].id;
+    if (byCode.length > 1) return null;
+  }
+  const live = others.filter(
+    (product) => String((product as { sync_status?: string }).sync_status || '') !== 'pending',
+  );
+  if (live.length === 1) return live[0].id;
+  if (others.length === 1) return others[0].id;
+  return null;
 }
 
 /** Active variants + Available / Missing / Duplicate barcode status. Does not generate. */
 export async function fetchProductBarcodeStatus(productId: string): Promise<ProductBarcodeStatus> {
-  const { data } = await api.get(`/products/${productId}/barcode-status`);
-  return data.data;
+  const { hasSqliteBridge, sqliteGetProductBarcodeStatus } = await import('../offline/sqliteApi');
+  const { shouldUseLocalCatalog, isFullyLocalMode } = await import('../offline/localCatalog');
+
+  // Try SQLite directly if desktop / local mode
+  if (hasSqliteBridge() && (shouldUseLocalCatalog() || isFullyLocalMode())) {
+    try {
+      const local = await sqliteGetProductBarcodeStatus(productId);
+      if (local && local.productId) {
+        return local as ProductBarcodeStatus;
+      }
+    } catch (err) {
+      console.warn('[KDSPOZ] sqlite barcode status error:', err);
+    }
+  }
+
+  const load = async (id: string) => {
+    const { data } = await api.get(`/products/${id}/barcode-status`);
+    return data.data as ProductBarcodeStatus;
+  };
+  try {
+    return await load(productId);
+  } catch (err) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 404 || !status) {
+      const twinId = await syncedTwinProductId(productId).catch(() => null);
+      if (twinId && twinId !== productId) {
+        try {
+          return await load(twinId);
+        } catch {}
+      }
+      const localFallback = await buildLocalBarcodeStatus(productId);
+      if (localFallback) {
+        return localFallback;
+      }
+    }
+    throw err;
+  }
 }
 
 /** Reuses or creates the barcode that stands for each variant + quantity. */
 export async function ensureQuantityBarcodes(
   items: { variantId: string; quantity: number }[],
 ): Promise<{ variantId: string; quantity: number; barcode: string; generated: boolean }[]> {
-  const { data } = await api.post('/products/barcodes/quantity', { items });
-  return data.data;
+  const { hasSqliteBridge, sqliteEnsureQuantityBarcodes } = await import('../offline/sqliteApi');
+  const { shouldUseLocalCatalog, isFullyLocalMode } = await import('../offline/localCatalog');
+
+  if (hasSqliteBridge() && (shouldUseLocalCatalog() || isFullyLocalMode())) {
+    try {
+      const res = await sqliteEnsureQuantityBarcodes(items);
+      if (Array.isArray(res) && res.length) {
+        return res;
+      }
+    } catch (e) {
+      console.warn('[KDSPOZ] local quantity barcodes failed, falling back to API:', e);
+    }
+  }
+
+  try {
+    const { data } = await api.post('/products/barcodes/quantity', { items });
+    return data.data;
+  } catch (err) {
+    if (hasSqliteBridge()) {
+      try {
+        const local = await sqliteEnsureQuantityBarcodes(items);
+        if (Array.isArray(local) && local.length) {
+          return local;
+        }
+      } catch {}
+    }
+    throw err;
+  }
 }
 
 export async function createProduct(
@@ -717,6 +1311,7 @@ export async function createProduct(
     } as any);
   }
   const totalStock = variants.reduce((s, v) => s + (v.stockQty || 0), 0);
+  const createdUnit = payload.uomId ? await resolveUnitById(payload.uomId) : null;
   const product = {
     id,
     name: payload.name,
@@ -725,6 +1320,14 @@ export async function createProduct(
     category_id: payload.categoryId,
     brand_id: payload.brandId,
     uom_id: payload.uomId,
+    uom: createdUnit
+      ? {
+          id: createdUnit.id,
+          code: createdUnit.code,
+          name: createdUnit.name,
+          type: createdUnit.type,
+        }
+      : undefined,
     status: 'active',
     is_favorite: false,
     is_weight_based: !!payload.isWeightBased,
@@ -808,6 +1411,23 @@ export async function updateProduct(
     }
 
     const totalStock = nextVariants.reduce((s, v) => s + (Number((v as any).stockQty ?? v.stock_qty) || 0), 0);
+    const nextUomId = payload.uomId !== undefined ? payload.uomId : (existing?.uom_id || '');
+    let nextUom = existing?.uom;
+    if (payload.uomId !== undefined && payload.uomId) {
+      const unit = await resolveUnitById(payload.uomId);
+      if (unit) {
+        nextUom = {
+          id: unit.id,
+          code: unit.code,
+          name: unit.name,
+          type: unit.type,
+        };
+      } else if (existing?.uom && existing.uom_id === payload.uomId) {
+        nextUom = existing.uom;
+      } else {
+        nextUom = existing?.uom ? { ...existing.uom, id: payload.uomId } : undefined;
+      }
+    }
     const merged = {
       ...(existing || { id, status: 'active' }),
       ...payload,
@@ -817,7 +1437,8 @@ export async function updateProduct(
       nameMr: payload.nameMr !== undefined ? (payload.nameMr?.trim() || null) : (existing?.name_mr || null),
       category_id: payload.categoryId !== undefined ? payload.categoryId : existing?.category_id,
       brand_id: payload.brandId !== undefined ? payload.brandId : existing?.brand_id,
-      uom_id: payload.uomId !== undefined ? payload.uomId : (existing?.uom_id || ''),
+      uom_id: nextUomId,
+      uom: nextUom,
       tax_group_id: payload.taxGroupId !== undefined ? payload.taxGroupId : existing?.tax_group_id,
       tax_code: payload.taxCode !== undefined ? payload.taxCode : existing?.tax_code,
       is_weight_based: payload.isWeightBased !== undefined ? payload.isWeightBased : (existing?.is_weight_based || false),
@@ -902,6 +1523,9 @@ export type PriceBulkItem = {
   /** All plain barcodes (first = primary). Prefer over single barcode when set. */
   barcodes?: string[];
   stockQty?: number;
+  /** Product-level unit of measure. */
+  uomId?: string;
+  uom?: { id?: string; code: string; name?: string; type?: 'count' | 'weight' | 'volume' | 'length' } | null;
 };
 
 /**
@@ -929,6 +1553,18 @@ export async function syncPriceBulkToSqlite(items: PriceBulkItem[]): Promise<voi
       const firstItem = productItems[0];
       const nextName = firstItem.name !== undefined && firstItem.name.trim() !== '' ? firstItem.name.trim() : existing.name;
       const nextNameMr = firstItem.nameMr !== undefined ? (firstItem.nameMr?.trim() || null) : (existing.name_mr || null);
+      const uomPatch = productItems.find((it) => it.uomId)?.uomId;
+      const uomInfo = productItems.find((it) => it.uom)?.uom;
+      const nextUomId = uomPatch || existing.uom_id;
+      const nextUom = uomInfo
+        ? {
+            id: (uomInfo as any).id || nextUomId,
+            code: uomInfo.code,
+            name: uomInfo.name || uomInfo.code,
+            type: uomInfo.type || existing.uom?.type || 'count',
+          }
+        : existing.uom;
+      const isMeasure = nextUom?.type === 'weight' || nextUom?.type === 'volume';
 
       const itemsByVariant = new Map(productItems.map((it) => [it.variantId, it]));
 
@@ -961,6 +1597,12 @@ export async function syncPriceBulkToSqlite(items: PriceBulkItem[]): Promise<voi
         name: nextName,
         name_mr: nextNameMr,
         nameMr: nextNameMr,
+        uom_id: nextUomId,
+        uom: nextUom,
+        is_weight_based: uomPatch ? isMeasure : existing.is_weight_based,
+        allow_decimal_qty: uomPatch
+          ? (isMeasure || nextUom?.type === 'length')
+          : existing.allow_decimal_qty,
         stockQty: totalStock,
         stock_qty: totalStock,
         variants: nextVariants,
@@ -992,9 +1634,28 @@ export async function bulkUpdateVariantPricing(items: PriceBulkItem[]) {
         stockQty: row.stockQty,
         barcode: row.barcode,
         barcodes: row.barcodes,
+        uomId: row.uomId,
+        uom: row.uom,
       })),
     );
   };
+
+  try {
+    const { isFullyLocalMode, localEnqueueSync } = await import('../offline/localApi');
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isFullyLocalMode() && isOfflineNow()) {
+      await publishPricePatches();
+      await localEnqueueSync({
+        entityType: 'price_bulk',
+        entityId: `bulk-${Date.now()}`,
+        op: 'update',
+        payload: { items },
+      });
+      return { updated: items.length };
+    }
+  } catch {
+    /* fall through */
+  }
 
   try {
     const { data } = await api.post('/products/price-bulk', { items });
@@ -1029,6 +1690,13 @@ export async function bulkUpdateVariantPricing(items: PriceBulkItem[]) {
       await updateProduct(productId, {
         name: row.name,
         nameMr: row.nameMr,
+        uomId: row.uomId,
+        isWeightBased: row.uom
+          ? (row.uom.type === 'weight' || row.uom.type === 'volume')
+          : undefined,
+        allowDecimalQty: row.uom
+          ? (row.uom.type === 'weight' || row.uom.type === 'volume' || row.uom.type === 'length')
+          : undefined,
         variantId: row.variantId,
         sellingPrice: row.sellingPrice,
         costPrice: row.costPrice,
@@ -1102,11 +1770,60 @@ export interface SearchProductResult {
   categoryName?: string | null;
 }
 
+type NormalizedBarcode = {
+  barcode: string;
+  is_primary: boolean;
+  quantity: number | null;
+};
+
+/** Normalize string | object barcodes (and legacy quantityBarcodes) into one list. */
+export function normalizedBarcodesOf(
+  variant: ProductVariant & {
+    barcode?: string | null;
+    quantityBarcodes?: Array<{ barcode?: string; quantity?: string | number | null }>;
+  },
+): NormalizedBarcode[] {
+  const out: NormalizedBarcode[] = [];
+  const seen = new Set<string>();
+  const push = (code: unknown, quantity: unknown, isPrimary: boolean) => {
+    const barcode = String(code || '').trim();
+    if (!barcode) return;
+    const key = barcode.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    let qty: number | null = null;
+    if (quantity != null && quantity !== '') {
+      const n = parseFloat(String(quantity));
+      if (Number.isFinite(n) && n > 0) qty = n;
+    }
+    out.push({ barcode, is_primary: !!isPrimary, quantity: qty });
+  };
+
+  for (const b of variant.barcodes || []) {
+    if (typeof b === 'string') {
+      push(b, null, out.length === 0);
+      continue;
+    }
+    if (!b || typeof b !== 'object') continue;
+    push(
+      (b as { barcode?: string; code?: string }).barcode
+        || (b as { code?: string }).code,
+      (b as { quantity?: string | number | null }).quantity,
+      !!(b as { is_primary?: boolean }).is_primary,
+    );
+  }
+  for (const qb of variant.quantityBarcodes || []) {
+    push(qb?.barcode, qb?.quantity, false);
+  }
+  if (variant.barcode) push(variant.barcode, null, true);
+  return out;
+}
+
 /** Primary first, then plain barcodes, then quantity barcodes. */
 export function sortedBarcodes(variant: ProductVariant) {
-  const rank = (b: NonNullable<ProductVariant['barcodes']>[number]) =>
+  const rank = (b: NormalizedBarcode) =>
     b.is_primary ? 0 : b.quantity == null ? 1 : 2;
-  return [...(variant.barcodes || [])].sort((a, b) => rank(a) - rank(b));
+  return normalizedBarcodesOf(variant).sort((a, b) => rank(a) - rank(b));
 }
 
 /** The variant's main barcode (never a quantity barcode). */
@@ -1123,11 +1840,16 @@ export function plainBarcodesOf(variant: ProductVariant): string[] {
 }
 
 export function quantityBarcodesOf(variant: ProductVariant): { barcode: string; quantity: number }[] {
-  return (variant.barcodes || [])
+  return sortedBarcodes(variant)
     .filter((b) => b.quantity != null)
-    .map((b) => ({ barcode: b.barcode, quantity: parseFloat(String(b.quantity)) }))
+    .map((b) => ({ barcode: b.barcode, quantity: b.quantity as number }))
     .filter((b) => b.quantity > 0)
     .sort((a, b) => a.quantity - b.quantity);
+}
+
+/** Every scannable code on a variant (plain + pack). */
+export function allBarcodesOf(variant: ProductVariant): string[] {
+  return sortedBarcodes(variant).map((b) => b.barcode).filter(Boolean);
 }
 
 /**

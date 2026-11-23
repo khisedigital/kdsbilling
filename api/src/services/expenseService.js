@@ -188,7 +188,8 @@ async function createDailyClosing(db, branchId, userId, data) {
     where: { branch_id: branchId, closing_date: closingDate },
   });
   if (existing) {
-    throw new AppError('This register is already closed for today', 409, 'DUPLICATE');
+    // Offline sync / second close for the same day → update, don't 409.
+    return updateDailyClosing(db, branchId, userId, existing.id, data);
   }
 
   const payments = await paymentBreakdownForDay(db, branchId, closingDate);
@@ -236,37 +237,85 @@ async function createDailyClosing(db, branchId, userId, data) {
   if (remarks) noteParts.push(remarks);
   if (varianceReason) noteParts.push(`Difference reason: ${varianceReason}`);
 
-  const created = await db.DailyClosing.create({
-    branch_id: branchId,
-    closing_date: closingDate,
-    opening_cash: openingCash,
-    expected_cash: expectedCash,
-    actual_cash: actualCash,
-    variance,
-    total_sales: totalSales,
-    total_expenses: cashExpenses,
-    notes: noteParts.length ? noteParts.join('\n') : null,
-    details: serializeClosingDetails(details),
-    created_by: userId,
-  });
+  const isValidUuid = (val) =>
+    typeof val === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
 
-  const withCreator = await db.DailyClosing.findByPk(created.id, {
-    include: [{ model: db.User, as: 'creator', attributes: ['id', 'name'], required: false }],
-  });
-  return formatClosingRow(withCreator || created);
+  const closingId = isValidUuid(data.id) ? data.id : undefined;
+
+  try {
+    const created = await db.DailyClosing.create({
+      ...(closingId ? { id: closingId } : {}),
+      branch_id: branchId,
+      closing_date: closingDate,
+      opening_cash: openingCash,
+      expected_cash: expectedCash,
+      actual_cash: actualCash,
+      variance,
+      total_sales: totalSales,
+      total_expenses: cashExpenses,
+      notes: noteParts.length ? noteParts.join('\n') : null,
+      details: serializeClosingDetails(details),
+      created_by: userId,
+    });
+
+    const withCreator = await db.DailyClosing.findByPk(created.id, {
+      include: [{ model: db.User, as: 'creator', attributes: ['id', 'name'], required: false }],
+    });
+    return formatClosingRow(withCreator || created);
+  } catch (err) {
+    // Race: another device/sync created the same branch+date while we were inserting.
+    if (err?.name === 'SequelizeUniqueConstraintError') {
+      const raced = await db.DailyClosing.findOne({
+        where: { branch_id: branchId, closing_date: closingDate },
+      });
+      if (raced) {
+        return updateDailyClosing(db, branchId, userId, raced.id, data);
+      }
+    }
+    throw err;
+  }
 }
 
 async function updateDailyClosing(db, branchId, userId, id, data) {
-  const existing = await db.DailyClosing.findOne({
-    where: { id, branch_id: branchId },
-  });
-  if (!existing) {
-    throw new AppError('Closing not found', 404, 'NOT_FOUND');
+  let existing = null;
+  if (id && id !== 'undefined' && id !== 'null') {
+    try {
+      existing = await db.DailyClosing.findOne({
+        where: { id, branch_id: branchId },
+      });
+    } catch {
+      existing = null;
+    }
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const targetDate = data.closingDate || today;
-  if (existing.closing_date !== targetDate && existing.closing_date !== today) {
+  const targetDate = data?.closingDate || data?.closing_date || null;
+
+  // Fallback 1: Lookup by closing_date if not found by id (e.g. offline temporary ID)
+  if (!existing && targetDate) {
+    existing = await db.DailyClosing.findOne({
+      where: { branch_id: branchId, closing_date: targetDate },
+    });
+  }
+
+  // Fallback 2: Lookup by date if id itself is formatted as YYYY-MM-DD
+  if (!existing && typeof id === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(id)) {
+    existing = await db.DailyClosing.findOne({
+      where: { branch_id: branchId, closing_date: id },
+    });
+  }
+
+  // Fallback 3: Upsert/create if closing does not exist yet on server (e.g. offline closing synced via update)
+  if (!existing) {
+    if (targetDate) {
+      return createDailyClosing(db, branchId, userId, { ...data, closingDate: targetDate });
+    }
+    throw new AppError('Closing not found', 404, 'NOT_FOUND');
+  }
+
+  const effectiveTargetDate = targetDate || today;
+  if (existing.closing_date !== effectiveTargetDate && existing.closing_date !== today) {
     throw new AppError("Only today's register can be edited", 400, 'VALIDATION_ERROR');
   }
 
@@ -346,13 +395,29 @@ async function listClosings(db, branchId) {
 }
 
 async function getDailyClosing(db, branchId, id) {
-  const row = await db.DailyClosing.findOne({
-    where: { id, branch_id: branchId },
-    include: [
-      { model: db.User, as: 'creator', attributes: ['id', 'name'], required: false },
-      { model: db.Branch, as: 'branch', attributes: ['id', 'name', 'code'], required: false },
-    ],
-  });
+  let row = null;
+  if (id && id !== 'undefined' && id !== 'null') {
+    try {
+      row = await db.DailyClosing.findOne({
+        where: { id, branch_id: branchId },
+        include: [
+          { model: db.User, as: 'creator', attributes: ['id', 'name'], required: false },
+          { model: db.Branch, as: 'branch', attributes: ['id', 'name', 'code'], required: false },
+        ],
+      });
+    } catch {
+      row = null;
+    }
+  }
+  if (!row && typeof id === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(id)) {
+    row = await db.DailyClosing.findOne({
+      where: { branch_id: branchId, closing_date: id },
+      include: [
+        { model: db.User, as: 'creator', attributes: ['id', 'name'], required: false },
+        { model: db.Branch, as: 'branch', attributes: ['id', 'name', 'code'], required: false },
+      ],
+    });
+  }
   if (!row) throw new AppError('Closing not found', 404, 'NOT_FOUND');
   return formatClosingRow(row);
 }

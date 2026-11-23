@@ -153,7 +153,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   }
 
   const primaryVariant = product.variants?.[0];
-  const sellPrice = primaryVariant ? parseFloat(String(primaryVariant.selling_price)) : 0;
+  const sellPrice = primaryVariant ? parseFloat(String(primaryVariant.selling_price ?? (primaryVariant as any).sellingPrice)) || 0 : 0;
   // Prefer variant rows (local SQLite / API). Do not trust stale product.stockQty.
   const variantStockTotal = (product.variants || []).reduce((s, v) => s + variantStockOf(v), 0);
   const stockQty = (product.variants?.length || 0) > 0
@@ -254,7 +254,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             <View key={v.id} style={styles.variant}>
               <View style={styles.variantHead}>
                 <Text style={typography.h3}>{v.sku}</Text>
-                <Text style={typography.moneySm}>₹{parseFloat(String(v.selling_price)).toFixed(2)}</Text>
+                <Text style={typography.moneySm}>₹{(parseFloat(String(v.selling_price ?? (v as any).sellingPrice)) || 0).toFixed(2)}</Text>
               </View>
               <Text style={typography.bodySm}>
                 {[v.size, v.color].filter(Boolean).join(' · ') || t('Default variant')}
@@ -262,7 +262,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
               <Text style={typography.caption}>
                 {t('Stock {{qty}}', { qty: formatQuantity(vStock, uomInfo) })}
                 {' · '}
-                {t('Cost ₹{{amount}}', { amount: parseFloat(String(v.cost_price)).toFixed(2) })}
+                {t('Cost ₹{{amount}}', { amount: (parseFloat(String(v.cost_price ?? (v as any).costPrice)) || 0).toFixed(2) })}
                 {mainCode ? ` · ${mainCode}` : ''}
               </Text>
               {extraCodes.map((code) => (

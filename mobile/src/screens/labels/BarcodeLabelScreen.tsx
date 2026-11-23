@@ -278,7 +278,9 @@ function LabelPreview({
     runs.push({ bar: false, n: quiet });
   }
 
-  const right = [qtyLabel, price].filter(Boolean).join(' ');
+  const hasQtyInName = qtyLabel && (productName || '').toLowerCase().includes(qtyLabel.toLowerCase());
+  const productWithQty = [productName || t('Product'), !hasQtyInName ? qtyLabel : ''].filter(Boolean).join(' ');
+  const right = price;
 
   return (
     <View style={[styles.previewCard, { width, height }]}>
@@ -287,7 +289,7 @@ function LabelPreview({
       </Text>
       <View style={styles.previewRow}>
         <Text style={styles.previewProduct} numberOfLines={1}>
-          {productName || t('Product')}
+          {productWithQty}
         </Text>
         <Text style={styles.previewRight} numberOfLines={1}>
           {right || '—'}
@@ -343,6 +345,7 @@ export default function BarcodeLabelScreen() {
   rowsRef.current = rows;
   const extraPacksRef = useRef<{ variantId: string; barcode?: string | null; quantity: number }[]>([]);
   const searchUomRef = useRef<ProductBarcodeStatus['uom']>(null);
+  const lastSelectedProductRef = useRef<SearchProductResult | null>(null);
   const [loadingProduct, setLoadingProduct] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [previewRowKey, setPreviewRowKey] = useState<string | null>(null);
@@ -520,6 +523,50 @@ export default function BarcodeLabelScreen() {
           selectPackQty,
         });
       } catch (err) {
+        // Robust fallback: if fetch failed, build from the selected search result item
+        const lastSelected = lastSelectedProductRef.current;
+        if (lastSelected && lastSelected.productId === productId) {
+          const plain = (lastSelected.barcodes || []).map((b) => (typeof b === 'string' ? b : String(b))).filter(Boolean);
+          const primaryBarcode = plain[0] || null;
+          const fallbackData: ProductBarcodeStatus = {
+            productId: lastSelected.productId,
+            productName: lastSelected.productName,
+            hasVariants: false,
+            uom: lastSelected.uom || searchUomRef.current || null,
+            variants: [
+              {
+                variantId: lastSelected.variantId,
+                sku: lastSelected.sku || '',
+                size: lastSelected.size || null,
+                color: lastSelected.color || null,
+                mrp: lastSelected.mrp != null ? Number(lastSelected.mrp) : null,
+                sellingPrice: Number(lastSelected.sellingPrice) || 0,
+                costPrice: Number(lastSelected.costPrice) || 0,
+                barcode: primaryBarcode,
+                barcodeType: primaryBarcode && /^\d{13}$/.test(primaryBarcode) ? 'ean13' : null,
+                status: primaryBarcode ? 'available' : 'missing',
+                alternateBarcodes: plain.slice(1).map((code) => ({
+                  barcode: code,
+                  barcodeType: /^\d{13}$/.test(code) ? ('ean13' as const) : null,
+                  status: 'available' as VariantBarcodeStatusKind,
+                })),
+                quantityBarcodes: (lastSelected.quantityBarcodes || []).map((qb) => ({
+                  quantity: Number(qb.quantity),
+                  barcode: qb.barcode || null,
+                  barcodeType: qb.barcode && /^\d{13}$/.test(qb.barcode) ? ('ean13' as const) : null,
+                  status: (qb.barcode ? 'available' : 'missing') as VariantBarcodeStatusKind,
+                })),
+              },
+            ],
+          };
+          applyBarcodeStatus(fallbackData, {
+            preferSelectAvailable: false,
+            preserveRows: preserveSelection ? rowsRef.current : undefined,
+            selectPackQty,
+          });
+          return;
+        }
+
         setProductMeta(null);
         setRows([]);
         showStatus('err', err instanceof Error ? t(err.message) : t('Could not load barcodes.'));
@@ -535,6 +582,7 @@ export default function BarcodeLabelScreen() {
       showStatus('err', t('Selected product has no id.'));
       return;
     }
+    lastSelectedProductRef.current = item;
     extraPacksRef.current = (item.quantityBarcodes || []).map((pack) => ({
       variantId: item.variantId,
       barcode: pack.barcode,
@@ -545,6 +593,7 @@ export default function BarcodeLabelScreen() {
   };
 
   const clearProduct = () => {
+    lastSelectedProductRef.current = null;
     setProductMeta(null);
     setRows([]);
     extraPacksRef.current = [];

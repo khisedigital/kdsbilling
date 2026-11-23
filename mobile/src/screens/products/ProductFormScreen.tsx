@@ -205,7 +205,11 @@ export default function ProductFormScreen({ navigation, route }: Props) {
 
   const [name, setName] = useState('');
   const [nameMr, setNameMr] = useState('');
-  const { translating: translatingMr, onMarathiChange } = useAutoMarathi(name, nameMr, setNameMr);
+  const { translating: translatingMr, onMarathiChange, onMarathiBlur, translateNow } = useAutoMarathi(
+    name,
+    nameMr,
+    setNameMr,
+  );
   const [description, setDescription] = useState('');
   const [sku, setSku] = useState('');
   const [barcode, setBarcode] = useState('');
@@ -295,7 +299,9 @@ export default function ProductFormScreen({ navigation, route }: Props) {
       setMultiSizes(useSizes);
       setVariantId(first?.id || null);
       const loadedStock =
-        product.stockQty ?? variants.reduce((sum, v) => sum + (v.stockQty || 0), 0);
+        product.stockQty ??
+        (product as any).stock_qty ??
+        variants.reduce((sum, v) => sum + Number((v as any).stockQty ?? (v as any).stock_qty ?? 0), 0);
       setMainStockQty(sanitizeStockInput(String(loadedStock || 0)));
 
       if (first) {
@@ -311,8 +317,8 @@ export default function ProductFormScreen({ navigation, route }: Props) {
             barcode: numericBarcode(b.barcode),
           })),
         );
-        setCostPrice(String(parseFloat(String(first.cost_price)) || ''));
-        setSellingPrice(String(parseFloat(String(first.selling_price)) || ''));
+        setCostPrice(String(parseFloat(String(first.cost_price ?? (first as any).costPrice)) || ''));
+        setSellingPrice(String(parseFloat(String(first.selling_price ?? (first as any).sellingPrice)) || ''));
         setMrp(first.mrp ? String(parseFloat(String(first.mrp))) : '');
         setColor(first.color || '');
       }
@@ -336,10 +342,10 @@ export default function ProductFormScreen({ navigation, route }: Props) {
               sku: v.sku || '',
               barcode: plains[0] || numericBarcode(mainBarcodeOf(v)),
               extraBarcodes: plains.slice(1),
-              sellingPrice: String(parseFloat(String(v.selling_price)) || ''),
-              costPrice: String(parseFloat(String(v.cost_price)) || ''),
+              sellingPrice: String(parseFloat(String(v.selling_price ?? (v as any).sellingPrice)) || ''),
+              costPrice: String(parseFloat(String(v.cost_price ?? (v as any).costPrice)) || ''),
               mrp: v.mrp != null && v.mrp !== '' ? String(parseFloat(String(v.mrp)) || '') : '',
-              stockQty: String(v.stockQty ?? 0),
+              stockQty: String((v as any).stockQty ?? (v as any).stock_qty ?? 0),
             };
           }),
         );
@@ -787,10 +793,20 @@ export default function ProductFormScreen({ navigation, route }: Props) {
         label={translatingMr ? t('Product name (Marathi) · translating…') : t('Product name (Marathi)')}
         value={nameMr}
         onChangeText={onMarathiChange}
+        onBlur={onMarathiBlur}
         mode="outlined"
         style={styles.input}
         placeholder={t('मराठी नाव')}
         maxLength={200}
+        right={
+          <TextInput.Icon
+            icon="translate"
+            accessibilityLabel={t('Translate to Marathi')}
+            onPress={translateNow}
+            color={translatingMr ? colors.primary : colors.textMuted}
+            forceTextInputFocus={false}
+          />
+        }
       />
 
       <View style={styles.priceRow}>

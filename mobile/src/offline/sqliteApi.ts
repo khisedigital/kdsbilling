@@ -39,10 +39,158 @@ export async function sqliteReplaceCatalog(payload: {
   categories?: unknown[];
   brands?: unknown[];
   clearProducts?: boolean;
+  syncStock?: boolean;
 }) {
   const bridge = getDesktopBridge();
   if (!bridge?.sqliteReplaceCatalog) return null;
   return bridge.sqliteReplaceCatalog({ shopCode: shopCode(), ...payload });
+}
+
+/** Drop heavy nested fields so Electron IPC can serialize large catalogs reliably. */
+export function slimProductForSqlite(product: any): any {
+  if (!product || typeof product !== 'object') return product;
+  const variants = Array.isArray(product.variants)
+    ? product.variants.map((v: any) => {
+        if (!v || typeof v !== 'object') return v;
+        const barcodes = Array.isArray(v.barcodes)
+          ? v.barcodes
+              .map((b: any) => {
+                if (typeof b === 'string') return { barcode: b, is_primary: false, quantity: null };
+                const qtyRaw = b?.quantity;
+                const qty =
+                  qtyRaw != null && qtyRaw !== '' && Number.isFinite(Number(qtyRaw)) && Number(qtyRaw) > 0
+                    ? Number(qtyRaw)
+                    : null;
+                return {
+                  barcode: String(b?.barcode || b?.code || '').trim(),
+                  is_primary: !!b?.is_primary,
+                  ...(qty != null ? { quantity: qty } : { quantity: null }),
+                };
+              })
+              .filter((b: { barcode: string }) => !!b.barcode)
+          : [];
+        // Preserve pack barcodes even if API nested them separately.
+        if (Array.isArray(v.quantityBarcodes)) {
+          for (const qb of v.quantityBarcodes) {
+            const code = String(qb?.barcode || qb?.code || '').trim();
+            const qty = Number(qb?.quantity);
+            if (!code || !Number.isFinite(qty) || qty <= 0) continue;
+            if (barcodes.some((b: any) => b.barcode === code)) continue;
+            barcodes.push({ barcode: code, is_primary: false, quantity: qty });
+          }
+        }
+        const plain = barcodes.find((b: any) => b.quantity == null) || barcodes[0];
+        return {
+          id: v.id,
+          sku: v.sku,
+          size: v.size,
+          color: v.color,
+          status: v.status,
+          barcode: v.barcode || plain?.barcode || null,
+          barcodes,
+          selling_price: v.selling_price ?? v.sellingPrice,
+          sellingPrice: v.sellingPrice ?? v.selling_price,
+          cost_price: v.cost_price ?? v.costPrice,
+          costPrice: v.costPrice ?? v.cost_price,
+          mrp: v.mrp,
+          stock_qty: v.stock_qty ?? v.stockQty,
+          stockQty: v.stockQty ?? v.stock_qty,
+          unit: v.unit,
+          isWeightBased: v.isWeightBased,
+          allowDecimalQty: v.allowDecimalQty,
+        };
+      })
+    : [];
+  return {
+    id: product.id,
+    name: product.name,
+    name_mr: product.name_mr ?? product.nameMr ?? null,
+    nameMr: product.nameMr ?? product.name_mr ?? null,
+    description: product.description,
+    category_id: product.category_id ?? product.categoryId ?? null,
+    categoryId: product.categoryId ?? product.category_id ?? null,
+    brand_id: product.brand_id ?? product.brandId ?? null,
+    brandId: product.brandId ?? product.brand_id ?? null,
+    uom_id: product.uom_id ?? product.uomId,
+    uomId: product.uomId ?? product.uom_id,
+    tax_group_id: product.tax_group_id ?? product.taxGroupId ?? null,
+    tax_code: product.tax_code ?? product.taxCode ?? null,
+    is_weight_based: product.is_weight_based ?? product.isWeightBased,
+    allow_decimal_qty: product.allow_decimal_qty ?? product.allowDecimalQty,
+    has_variants: product.has_variants ?? product.hasVariants,
+    is_favorite: product.is_favorite ?? product.isFavorite,
+    isFavorite: product.isFavorite ?? product.is_favorite,
+    status: product.status || 'active',
+    stockQty: product.stockQty ?? product.stock_qty,
+    stock_qty: product.stock_qty ?? product.stockQty,
+    uom: product.uom
+      ? { id: product.uom.id, code: product.uom.code, name: product.uom.name, type: product.uom.type }
+      : undefined,
+    category: product.category
+      ? {
+          id: product.category.id,
+          name: product.category.name,
+          name_mr: product.category.name_mr ?? product.category.nameMr,
+        }
+      : undefined,
+    brand: product.brand
+      ? { id: product.brand.id, name: product.brand.name }
+      : undefined,
+    variants,
+  };
+}
+
+/**
+ * Upsert catalog in small IPC chunks — a single multi‑MB replace often fails
+ * silently on Electron and leaves desktop missing mobile-created products.
+ */
+export async function sqliteReplaceCatalogBatched(payload: {
+  products?: unknown[];
+  categories?: unknown[];
+  brands?: unknown[];
+  clearProducts?: boolean;
+  syncStock?: boolean;
+  productChunkSize?: number;
+}): Promise<{ products: number; categories: number; brands: number }> {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteReplaceCatalog) {
+    return { products: 0, categories: 0, brands: 0 };
+  }
+  const code = shopCode();
+  const products = (payload.products || []).map(slimProductForSqlite);
+  const categories = payload.categories || [];
+  const brands = payload.brands || [];
+  const chunkSize = Math.max(25, Math.min(150, payload.productChunkSize || 75));
+
+  // Masters first (small). clearProducts only on the first product chunk.
+  await bridge.sqliteReplaceCatalog({
+    shopCode: code,
+    products: [],
+    categories,
+    brands,
+    clearProducts: false,
+    syncStock: payload.syncStock !== false,
+  });
+
+  let written = 0;
+  if (!products.length) {
+    return { products: 0, categories: categories.length, brands: brands.length };
+  }
+
+  for (let i = 0; i < products.length; i += chunkSize) {
+    const chunk = products.slice(i, i + chunkSize);
+    const clear = payload.clearProducts === true && i === 0;
+    await bridge.sqliteReplaceCatalog({
+      shopCode: code,
+      products: chunk,
+      categories: [],
+      brands: [],
+      clearProducts: clear,
+      syncStock: payload.syncStock !== false,
+    });
+    written += chunk.length;
+  }
+  return { products: written, categories: categories.length, brands: brands.length };
 }
 
 export async function sqliteListProducts(opts?: {
@@ -81,7 +229,20 @@ export async function sqliteListBrands() {
 export async function sqliteReplaceCustomers(customers: unknown[]) {
   const bridge = getDesktopBridge();
   if (!bridge?.sqliteReplaceCustomers) return null;
-  return bridge.sqliteReplaceCustomers({ shopCode: shopCode(), customers });
+  const rows = Array.isArray(customers) ? customers : [];
+  const code = shopCode();
+  const chunkSize = 200;
+  if (rows.length <= chunkSize) {
+    return bridge.sqliteReplaceCustomers({ shopCode: code, customers: rows });
+  }
+  let last: unknown = null;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    last = await bridge.sqliteReplaceCustomers({
+      shopCode: code,
+      customers: rows.slice(i, i + chunkSize),
+    });
+  }
+  return last;
 }
 
 export async function sqliteListCustomers(opts?: { search?: string; limit?: number }) {
@@ -163,4 +324,82 @@ export async function sqlitePendingCount(): Promise<number> {
   if (!bridge?.sqlitePendingCount) return 0;
   const result = await bridge.sqlitePendingCount({ shopCode: shopCode() });
   return Number(result?.pending) || 0;
+}
+
+export async function sqliteGetProductBarcodeStatus(productId: string) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteGetProductBarcodeStatus || !productId) return null;
+  const result = await bridge.sqliteGetProductBarcodeStatus({ shopCode: shopCode(), productId: String(productId) });
+  return result?.data ?? null;
+}
+
+export async function sqliteGenerateBarcodes(variantIds: string[]) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteGenerateBarcodes) return [];
+  const result = await bridge.sqliteGenerateBarcodes({ shopCode: shopCode(), variantIds });
+  return result?.data ?? [];
+}
+
+export async function sqliteEnsureQuantityBarcodes(items: { variantId: string; quantity: number }[]) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteEnsureQuantityBarcodes) return [];
+  const result = await bridge.sqliteEnsureQuantityBarcodes({ shopCode: shopCode(), items });
+  return result?.data ?? [];
+}
+
+export async function sqliteDeleteCategory(id: string) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteDeleteCategory || !id) return { deleted: false };
+  const result = await bridge.sqliteDeleteCategory({ shopCode: shopCode(), id: String(id) });
+  return result ?? { deleted: false };
+}
+
+export async function sqliteDeleteBrand(id: string) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteDeleteBrand || !id) return { deleted: false };
+  const result = await bridge.sqliteDeleteBrand({ shopCode: shopCode(), id: String(id) });
+  return result ?? { deleted: false };
+}
+
+export async function sqliteDeleteCustomer(id: string) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteDeleteCustomer || !id) return { deleted: false };
+  const result = await bridge.sqliteDeleteCustomer({ shopCode: shopCode(), id: String(id) });
+  return result ?? { deleted: false };
+}
+
+export async function sqliteDeleteSupplier(id: string) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteDeleteSupplier || !id) return { deleted: false };
+  const result = await bridge.sqliteDeleteSupplier({ shopCode: shopCode(), id: String(id) });
+  return result ?? { deleted: false };
+}
+
+export async function sqliteSetProductFavorite(id: string, isFavorite: boolean) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteSetProductFavorite || !id) return { id, isFavorite };
+  const result = await bridge.sqliteSetProductFavorite({
+    shopCode: shopCode(),
+    id: String(id),
+    isFavorite: !!isFavorite,
+  });
+  return result ?? { id, isFavorite };
+}
+
+export async function sqliteSetProductsFavoriteBulk(params: {
+  categoryId: string;
+  isFavorite: boolean;
+  brandId?: string | null;
+}) {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteSetProductsFavoriteBulk || !params.categoryId) {
+    return { updated: 0, isFavorite: !!params.isFavorite };
+  }
+  const result = await bridge.sqliteSetProductsFavoriteBulk({
+    shopCode: shopCode(),
+    categoryId: String(params.categoryId),
+    isFavorite: !!params.isFavorite,
+    brandId: params.brandId || null,
+  });
+  return result ?? { updated: 0, isFavorite: !!params.isFavorite };
 }

@@ -19,6 +19,103 @@ function dbPathFor(userDataPath, shopCode) {
   return path.join(dir, 'kdspoz.sqlite');
 }
 
+/** Normalize barcode rows from API / cache into { barcode, quantity, is_primary }. */
+function normalizeBarcodeRows(variant) {
+  const out = [];
+  const seen = new Set();
+  const push = (code, quantity, isPrimary) => {
+    const barcode = String(code || '').trim();
+    if (!barcode || seen.has(barcode)) return;
+    seen.add(barcode);
+    let qty = null;
+    if (quantity != null && quantity !== '') {
+      const n = Number(quantity);
+      if (Number.isFinite(n) && n > 0) qty = n;
+    }
+    out.push({ barcode, quantity: qty, is_primary: isPrimary ? 1 : 0 });
+  };
+
+  const list = Array.isArray(variant?.barcodes) ? variant.barcodes : [];
+  for (const b of list) {
+    if (typeof b === 'string') {
+      push(b, null, out.length === 0);
+      continue;
+    }
+    if (!b || typeof b !== 'object') continue;
+    push(b.barcode || b.code, b.quantity, !!b.is_primary);
+  }
+  // Legacy top-level barcode / quantityBarcodes fields.
+  if (variant?.barcode) push(variant.barcode, null, true);
+  if (Array.isArray(variant?.quantityBarcodes)) {
+    for (const qb of variant.quantityBarcodes) {
+      if (!qb) continue;
+      if (typeof qb === 'string') continue;
+      push(qb.barcode || qb.code, qb.quantity, false);
+    }
+  }
+  return out;
+}
+
+function primaryPlainBarcode(variant) {
+  const rows = normalizeBarcodeRows(variant);
+  const plain = rows.find((r) => r.quantity == null);
+  return (plain || rows[0] || {}).barcode || null;
+}
+
+function replaceVariantBarcodes(db, productId, variantId, variant) {
+  db.prepare(`DELETE FROM variant_barcodes WHERE variant_id = ?`).run(String(variantId));
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO variant_barcodes (barcode, variant_id, product_id, quantity, is_primary)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+  for (const row of normalizeBarcodeRows(variant)) {
+    insert.run(
+      row.barcode,
+      String(variantId),
+      String(productId),
+      row.quantity,
+      row.is_primary,
+    );
+  }
+}
+
+/** One-time backfill so already-synced shops get pack barcodes searchable. */
+function backfillVariantBarcodes(db) {
+  const countRow = db.prepare(`SELECT COUNT(*) AS n FROM variant_barcodes`).get();
+  if (Number(countRow?.n) > 0) return;
+  const variants = db.prepare(`SELECT id, product_id, barcode, json FROM product_variants`).all();
+  if (!variants.length) return;
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO variant_barcodes (barcode, variant_id, product_id, quantity, is_primary)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+  db.exec('BEGIN');
+  try {
+    for (const row of variants) {
+      let parsed = null;
+      try {
+        parsed = row.json ? JSON.parse(row.json) : null;
+      } catch {
+        parsed = null;
+      }
+      const source = parsed && typeof parsed === 'object'
+        ? parsed
+        : { barcode: row.barcode, barcodes: row.barcode ? [row.barcode] : [] };
+      for (const bc of normalizeBarcodeRows(source)) {
+        insert.run(bc.barcode, String(row.id), String(row.product_id), bc.quantity, bc.is_primary);
+      }
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+}
+
 function migrate(db) {
   db.exec(SCHEMA_SQL);
   // Ensure newer columns exist on DBs created before schema v2.
@@ -27,9 +124,14 @@ function migrate(db) {
   } catch {
     /* already exists */
   }
+  try {
+    backfillVariantBarcodes(db);
+  } catch {
+    /* ignore backfill errors on corrupt rows */
+  }
   db.prepare(
     'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-  ).run('schema_version', '2');
+  ).run('schema_version', '3');
 }
 
 /**
@@ -93,8 +195,9 @@ function readShopSettings(db) {
 }
 
 /** Upsert catalog snapshot. Pass clearProducts:true on a full replace sync. */
-function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false } = {}) {
+function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false, syncStock = true } = {}) {
   const ts = nowIso();
+  const allowSyncStock = syncStock !== false ? 1 : 0;
   const upsertCat = db.prepare(
     `INSERT INTO categories (id, name, name_mr, sort_order, status, json, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -128,8 +231,11 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
        selling_price = excluded.selling_price,
        cost_price = excluded.cost_price,
        mrp = excluded.mrp,
-       -- Keep local stock. Catalog pull from live must not wipe offline adds/sales.
-       stock_qty = product_variants.stock_qty,
+       stock_qty = CASE
+         WHEN ? = 1 THEN excluded.stock_qty
+         WHEN product_variants.stock_qty = 0 AND excluded.stock_qty > 0 THEN excluded.stock_qty
+         ELSE product_variants.stock_qty
+       END,
        unit = excluded.unit,
        json = excluded.json,
        updated_at = excluded.updated_at`,
@@ -140,6 +246,7 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
     // Default: upsert only (update existing + insert new). Never wipe the whole catalog
     // unless an explicit clearProducts flag is passed.
     if (clearProducts === true && Array.isArray(products)) {
+      db.exec('DELETE FROM variant_barcodes;');
       db.exec('DELETE FROM product_variants;');
       db.exec('DELETE FROM products;');
     }
@@ -172,12 +279,28 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
       const variantsIn = Array.isArray(p.variants) ? p.variants : [];
       const variantsOut = variantsIn.map((v) => {
         if (!v?.id) return v;
+        const incomingStock = Number(v.stockQty ?? v.stock_qty ?? 0) || 0;
+        const barcodeRows = normalizeBarcodeRows(v);
+        const plain = primaryPlainBarcode(v);
+        const withCodes = {
+          ...v,
+          barcode: plain || v.barcode || null,
+          barcodes: barcodeRows.map((r) => ({
+            barcode: r.barcode,
+            is_primary: !!r.is_primary,
+            ...(r.quantity != null ? { quantity: r.quantity } : {}),
+          })),
+        };
+        if (allowSyncStock === 1 || clearProducts === true) {
+          return { ...withCodes, stockQty: incomingStock, stock_qty: incomingStock };
+        }
         const local = db
           .prepare(`SELECT stock_qty FROM product_variants WHERE id = ?`)
           .get(String(v.id));
-        if (!local || clearProducts === true) return v;
-        const qty = Number(local.stock_qty) || 0;
-        return { ...v, stockQty: qty, stock_qty: qty };
+        if (!local) return { ...withCodes, stockQty: incomingStock, stock_qty: incomingStock };
+        const localQty = Number(local.stock_qty) || 0;
+        const qty = localQty === 0 && incomingStock > 0 ? incomingStock : localQty;
+        return { ...withCodes, stockQty: qty, stock_qty: qty };
       });
       const productStock = variantsOut.reduce(
         (s, v) => s + (Number(v?.stockQty ?? v?.stock_qty) || 0),
@@ -202,10 +325,17 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
       );
       for (const v of variantsOut) {
         if (!v?.id) continue;
-        const barcode =
-          v.barcode ||
-          (Array.isArray(v.barcodes) && v.barcodes[0] && (v.barcodes[0].code || v.barcodes[0])) ||
-          null;
+        // Prefer plain (non-pack) barcode in the column; pack codes live in variant_barcodes.
+        const barcode = primaryPlainBarcode(v);
+        const variantJson = {
+          ...v,
+          barcode: barcode || v.barcode || null,
+          barcodes: normalizeBarcodeRows(v).map((r) => ({
+            barcode: r.barcode,
+            is_primary: !!r.is_primary,
+            quantity: r.quantity,
+          })),
+        };
         upsertVariant.run(
           String(v.id),
           String(p.id),
@@ -216,9 +346,11 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
           v.mrp != null ? Number(v.mrp) : null,
           Number(v.stockQty ?? v.stock_qty) || 0,
           v.unit || null,
-          JSON.stringify(v),
+          JSON.stringify(variantJson),
           ts,
+          allowSyncStock,
         );
+        replaceVariantBarcodes(db, p.id, v.id, variantJson);
       }
     }
     setMeta(db, 'catalog_updated_at', ts);
@@ -298,6 +430,7 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
     const like = `%${safe}%`;
     const prefix = `${safe}%`;
     // Exact / prefix matches first so "Sugar" beats "… sugar free …" in long catalogs.
+    // Include variant_barcodes so pack/quantity barcodes (250g, 1kg packs) are findable.
     const orderSql = `ORDER BY
            CASE
              WHEN name = ? COLLATE NOCASE THEN 0
@@ -308,32 +441,66 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
            END,
            is_favorite DESC,
            name COLLATE NOCASE`;
-    if (cat) {
-      rows = db
-        .prepare(
-          `SELECT json FROM products
-           WHERE status = 'active' AND category_id = ? AND (
-             name LIKE ? COLLATE NOCASE
-             OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
-             OR id IN (SELECT product_id FROM product_variants WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE)
-           )
-           ${orderSql}
-           LIMIT ? OFFSET ?`,
-        )
-        .all(cat, like, like, like, like, safe, safe, prefix, prefix, lim, off);
-    } else {
-      rows = db
+    const runSearch = (withPackIndex) => {
+      const packClause = withPackIndex
+        ? `OR id IN (
+             SELECT product_id FROM variant_barcodes
+             WHERE barcode = ? COLLATE NOCASE OR barcode LIKE ? COLLATE NOCASE
+           )`
+        : '';
+      // Also match barcodes embedded in product JSON (pack codes) when index is empty/old.
+      const jsonClause = `OR json LIKE ?`;
+      const jsonLike = `%"barcode":"${safe}"%`;
+      if (cat) {
+        return db
+          .prepare(
+            `SELECT json FROM products
+             WHERE status = 'active' AND category_id = ? AND (
+               name LIKE ? COLLATE NOCASE
+               OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
+               OR id IN (
+                 SELECT product_id FROM product_variants
+                 WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE
+               )
+               ${packClause}
+               ${jsonClause}
+             )
+             ${orderSql}
+             LIMIT ? OFFSET ?`,
+          )
+          .all(
+            ...(withPackIndex
+              ? [cat, like, like, like, like, safe, like, jsonLike, safe, safe, prefix, prefix, lim, off]
+              : [cat, like, like, like, like, jsonLike, safe, safe, prefix, prefix, lim, off]),
+          );
+      }
+      return db
         .prepare(
           `SELECT json FROM products
            WHERE status = 'active' AND (
              name LIKE ? COLLATE NOCASE
              OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
-             OR id IN (SELECT product_id FROM product_variants WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE)
+             OR id IN (
+               SELECT product_id FROM product_variants
+               WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE
+             )
+             ${packClause}
+             ${jsonClause}
            )
            ${orderSql}
            LIMIT ? OFFSET ?`,
         )
-        .all(like, like, like, like, safe, safe, prefix, prefix, lim, off);
+        .all(
+          ...(withPackIndex
+            ? [like, like, like, like, safe, like, jsonLike, safe, safe, prefix, prefix, lim, off]
+            : [like, like, like, like, jsonLike, safe, safe, prefix, prefix, lim, off]),
+        );
+    };
+    try {
+      rows = runSearch(true);
+    } catch {
+      // Older DB without variant_barcodes — still search JSON + primary barcode column.
+      rows = runSearch(false);
     }
   } else if (cat) {
     rows = db
@@ -813,6 +980,54 @@ function listSales(db, { search = '', status, from, to, limit = 500, offset = 0 
   };
 }
 
+/** Fill missing line units from the local catalog so old bills still print 100g / 1kg. */
+function attachSaleItemUoms(db, bill) {
+  const items = Array.isArray(bill?.items) ? bill.items : [];
+  const missingIds = [...new Set(
+    items
+      .filter((item) => !item?.uom?.code && !item?.variant?.product?.uom?.code)
+      .map((item) => String(item?.variant_id || item?.variantId || '').trim())
+      .filter(Boolean),
+  )];
+  if (!missingIds.length) return bill;
+  let rows = [];
+  try {
+    const placeholders = missingIds.map(() => '?').join(',');
+    rows = db.prepare(
+      `SELECT v.id AS variant_id, v.unit AS unit_code, p.json AS product_json
+       FROM product_variants v
+       JOIN products p ON p.id = v.product_id
+       WHERE v.id IN (${placeholders})`,
+    ).all(...missingIds);
+  } catch {
+    return bill;
+  }
+  const byVariant = new Map();
+  for (const row of rows) {
+    let uom = null;
+    try {
+      const product = JSON.parse(row.product_json || '{}');
+      if (product?.uom?.code) uom = product.uom;
+    } catch {
+      uom = null;
+    }
+    const code = String(uom?.code || row.unit_code || '').trim();
+    if (!code) continue;
+    byVariant.set(String(row.variant_id), {
+      code,
+      name: uom?.name || code,
+      type: uom?.type || null,
+    });
+  }
+  if (!byVariant.size) return bill;
+  bill.items = items.map((item) => {
+    if (item?.uom?.code || item?.variant?.product?.uom?.code) return item;
+    const uom = byVariant.get(String(item?.variant_id || item?.variantId || ''));
+    return uom ? { ...item, uom } : item;
+  });
+  return bill;
+}
+
 function getSale(db, id) {
   const key = String(id || '').trim();
   if (!key) return null;
@@ -823,7 +1038,7 @@ function getSale(db, id) {
     .get(key, key, key);
   if (!row) return null;
   try {
-    const bill = JSON.parse(row.bill_json || '{}');
+    const bill = attachSaleItemUoms(db, JSON.parse(row.bill_json || '{}'));
     return {
       ...bill,
       id: row.server_bill_id || row.client_bill_id,

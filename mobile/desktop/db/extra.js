@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -291,6 +293,12 @@ function upsertSupplier(db, supplier) {
 function saveDailyClosing(db, row) {
   const id = String(row.id || '').trim();
   if (!id) throw new Error('closing.id required');
+  const closingDate = String(row.closing_date || row.closingDate || nowIso().slice(0, 10));
+  try {
+    db.prepare(`DELETE FROM daily_closings WHERE closing_date = ? AND id != ?`).run(closingDate, id);
+  } catch {
+    /* ignore */
+  }
   db.prepare(
     `INSERT INTO daily_closings (id, closing_date, json, sync_status, created_at)
      VALUES (?, ?, ?, ?, ?)
@@ -300,7 +308,7 @@ function saveDailyClosing(db, row) {
        sync_status = excluded.sync_status`,
   ).run(
     id,
-    String(row.closing_date || row.closingDate || nowIso().slice(0, 10)),
+    closingDate,
     JSON.stringify(row),
     row.syncStatus || 'pending',
     row.created_at || nowIso(),
@@ -397,10 +405,35 @@ function upsertProductLocal(db, product) {
     const stock = (stockIn !== undefined && stockIn !== null && stockIn !== '')
       ? (Number(stockIn) || 0)
       : (existingStockMap.get(String(v.id)) || 0);
-    const barcode =
-      v.barcode ||
-      (Array.isArray(v.barcodes) && v.barcodes[0] && (typeof v.barcodes[0] === 'string' ? v.barcodes[0] : v.barcodes[0].code || v.barcodes[0].barcode)) ||
-      null;
+    const barcodeRows = [];
+    const seen = new Set();
+    const pushBc = (code, quantity, isPrimary) => {
+      const barcode = String(code || '').trim();
+      if (!barcode || seen.has(barcode)) return;
+      seen.add(barcode);
+      let qty = null;
+      if (quantity != null && quantity !== '') {
+        const n = Number(quantity);
+        if (Number.isFinite(n) && n > 0) qty = n;
+      }
+      barcodeRows.push({
+        barcode,
+        is_primary: !!isPrimary,
+        ...(qty != null ? { quantity: qty } : {}),
+      });
+    };
+    for (const b of Array.isArray(v.barcodes) ? v.barcodes : []) {
+      if (typeof b === 'string') pushBc(b, null, barcodeRows.length === 0);
+      else if (b && typeof b === 'object') pushBc(b.barcode || b.code, b.quantity, !!b.is_primary);
+    }
+    if (v.barcode) pushBc(v.barcode, null, true);
+    if (Array.isArray(v.quantityBarcodes)) {
+      for (const qb of v.quantityBarcodes) {
+        if (qb && typeof qb === 'object') pushBc(qb.barcode || qb.code, qb.quantity, false);
+      }
+    }
+    const plain = barcodeRows.find((r) => r.quantity == null) || barcodeRows[0];
+    const barcode = plain?.barcode || null;
     return {
       ...v,
       selling_price: selling,
@@ -411,6 +444,7 @@ function upsertProductLocal(db, product) {
       stock_qty: stock,
       stockQty: stock,
       barcode,
+      barcodes: barcodeRows,
     };
   });
 
@@ -450,11 +484,16 @@ function upsertProductLocal(db, product) {
     JSON.stringify(normalizedProduct),
     ts,
   );
+  db.prepare(`DELETE FROM variant_barcodes WHERE product_id = ?`).run(String(product.id));
   db.prepare(`DELETE FROM product_variants WHERE product_id = ?`).run(String(product.id));
   const insertV = db.prepare(
     `INSERT INTO product_variants
       (id, product_id, sku, barcode, selling_price, cost_price, mrp, stock_qty, unit, json, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const insertBc = db.prepare(
+    `INSERT OR REPLACE INTO variant_barcodes (barcode, variant_id, product_id, quantity, is_primary)
+     VALUES (?, ?, ?, ?, ?)`,
   );
   for (const v of variants) {
     if (!v?.id) continue;
@@ -471,14 +510,111 @@ function upsertProductLocal(db, product) {
       JSON.stringify(v),
       ts,
     );
+    for (const b of Array.isArray(v.barcodes) ? v.barcodes : []) {
+      const code = typeof b === 'string' ? b : b?.barcode || b?.code;
+      if (!code) continue;
+      const qtyRaw = typeof b === 'object' ? b.quantity : null;
+      const qty = qtyRaw != null && qtyRaw !== '' && Number(qtyRaw) > 0 ? Number(qtyRaw) : null;
+      insertBc.run(
+        String(code).trim(),
+        String(v.id),
+        String(product.id),
+        qty,
+        typeof b === 'object' && b.is_primary ? 1 : 0,
+      );
+    }
   }
   return { id: String(product.id) };
 }
 
 function deleteProductLocal(db, id) {
+  db.prepare(`DELETE FROM variant_barcodes WHERE product_id = ?`).run(String(id));
   db.prepare(`DELETE FROM product_variants WHERE product_id = ?`).run(String(id));
   db.prepare(`DELETE FROM products WHERE id = ?`).run(String(id));
   return { deleted: true };
+}
+
+function deleteCategoryLocal(db, id) {
+  const catId = String(id || '').trim();
+  if (!catId) return { deleted: false };
+  db.prepare(`DELETE FROM categories WHERE id = ?`).run(catId);
+  db.prepare(`UPDATE products SET category_id = NULL WHERE category_id = ?`).run(catId);
+  return { deleted: true, id: catId };
+}
+
+function deleteBrandLocal(db, id) {
+  const bid = String(id || '').trim();
+  if (!bid) return { deleted: false };
+  db.prepare(`DELETE FROM brands WHERE id = ?`).run(bid);
+  db.prepare(`UPDATE products SET brand_id = NULL WHERE brand_id = ?`).run(bid);
+  return { deleted: true, id: bid };
+}
+
+function deleteCustomerLocal(db, id) {
+  const cid = String(id || '').trim();
+  if (!cid) return { deleted: false };
+  db.prepare(`DELETE FROM customers WHERE id = ?`).run(cid);
+  return { deleted: true, id: cid };
+}
+
+function deleteSupplierLocal(db, id) {
+  const sid = String(id || '').trim();
+  if (!sid) return { deleted: false };
+  db.prepare(`DELETE FROM suppliers WHERE id = ?`).run(sid);
+  return { deleted: true, id: sid };
+}
+
+function setProductFavoriteLocal(db, id, isFavorite) {
+  const pid = String(id || '').trim();
+  if (!pid) return { id: pid, isFavorite: !!isFavorite };
+  const favVal = isFavorite ? 1 : 0;
+  const now = nowIso();
+  db.prepare(`UPDATE products SET is_favorite = ?, updated_at = ? WHERE id = ?`).run(favVal, now, pid);
+  const row = db.prepare(`SELECT json FROM products WHERE id = ?`).get(pid);
+  if (row?.json) {
+    try {
+      const prod = JSON.parse(row.json);
+      prod.is_favorite = !!isFavorite;
+      prod.isFavorite = !!isFavorite;
+      db.prepare(`UPDATE products SET json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(prod), now, pid);
+    } catch {
+      /* ignore parse error */
+    }
+  }
+  return { id: pid, isFavorite: !!isFavorite };
+}
+
+function setProductsFavoriteBulkLocal(db, categoryId, isFavorite, brandId) {
+  const cat = String(categoryId || '').trim();
+  if (!cat) return { updated: 0, isFavorite: !!isFavorite };
+  const favVal = isFavorite ? 1 : 0;
+  const now = nowIso();
+  const bid = brandId ? String(brandId).trim() : null;
+  const rows = bid
+    ? db.prepare(`SELECT id, json FROM products WHERE category_id = ? AND brand_id = ?`).all(cat, bid)
+    : db.prepare(`SELECT id, json FROM products WHERE category_id = ?`).all(cat);
+  const updateStmt = db.prepare(`UPDATE products SET is_favorite = ?, json = ?, updated_at = ? WHERE id = ?`);
+  let count = 0;
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      let prod = {};
+      try {
+        prod = JSON.parse(r.json);
+      } catch {
+        prod = {};
+      }
+      prod.is_favorite = !!isFavorite;
+      prod.isFavorite = !!isFavorite;
+      updateStmt.run(favVal, JSON.stringify(prod), now, r.id);
+      count++;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw err;
+  }
+  return { updated: count, isFavorite: !!isFavorite };
 }
 
 function addCustomerLedger(db, entry) {
@@ -788,6 +924,347 @@ function buildCashFlowReport(db, { from, to } = {}) {
   };
 }
 
+function ean13CheckDigit(first12) {
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) sum += Number(first12[i]) * (i % 2 === 0 ? 1 : 3);
+  return String((10 - (sum % 10)) % 10);
+}
+
+function isValidEan13(value) {
+  const code = String(value || '').trim();
+  if (!/^\d{13}$/.test(code)) return false;
+  return ean13CheckDigit(code.slice(0, 12)) === code[12];
+}
+
+function randomInStoreEan13() {
+  let body = '20';
+  while (body.length < 12) {
+    if (crypto.randomInt) {
+      body += String(crypto.randomInt(0, 10));
+    } else {
+      body += String(Math.floor(Math.random() * 10));
+    }
+  }
+  return body + ean13CheckDigit(body);
+}
+
+function detectBarcodeType(value) {
+  const code = String(value || '').trim().toUpperCase();
+  if (isValidEan13(code)) return 'ean13';
+  if (code.startsWith('KDSPOZ') && code.length >= 14) return 'code128';
+  return 'other';
+}
+
+function getProductBarcodeStatusLocal(db, productId) {
+  if (!productId) return null;
+  const pRow = db.prepare(`SELECT json FROM products WHERE id = ?`).get(String(productId));
+  if (!pRow?.json) return null;
+
+  let product;
+  try {
+    product = JSON.parse(pRow.json);
+  } catch {
+    return null;
+  }
+
+  const variants = Array.isArray(product.variants) ? product.variants : [];
+
+  // Read all barcode rows from variant_barcodes for this product
+  let bcRows = [];
+  try {
+    bcRows = db.prepare(
+      `SELECT barcode, variant_id, product_id, quantity, is_primary FROM variant_barcodes WHERE product_id = ?`
+    ).all(String(productId));
+  } catch {
+    bcRows = [];
+  }
+
+  // Collect all plain barcodes for occupancy check
+  const plainCodes = [];
+  for (const b of bcRows) {
+    const code = String(b.barcode || '').trim();
+    if (code && !plainCodes.includes(code)) plainCodes.push(code);
+  }
+  for (const v of variants) {
+    const code = String(v.barcode || '').trim();
+    if (code && !plainCodes.includes(code)) plainCodes.push(code);
+  }
+
+  // Count occupancy across ALL products in SQLite database for duplicate detection
+  const occupancyByCode = {};
+  if (plainCodes.length) {
+    try {
+      const placeholders = plainCodes.map(() => '?').join(',');
+      const occRows = db.prepare(
+        `SELECT barcode, COUNT(DISTINCT variant_id) as c FROM variant_barcodes WHERE barcode IN (${placeholders}) GROUP BY barcode`
+      ).all(...plainCodes);
+      for (const row of occRows) {
+        occupancyByCode[String(row.barcode).trim()] = Number(row.c) || 1;
+      }
+    } catch {}
+  }
+
+  // Also check duplicates within this product's variants
+  const seenInProduct = new Map();
+  for (const v of variants) {
+    const code = String(v.barcode || '').trim();
+    if (code) {
+      seenInProduct.set(code, (seenInProduct.get(code) || 0) + 1);
+    }
+  }
+  for (const [code, count] of seenInProduct.entries()) {
+    if (count > 1) {
+      occupancyByCode[code] = Math.max(occupancyByCode[code] || 0, count);
+    }
+  }
+
+  const hasVariants = Boolean(
+    product.has_variants || product.hasVariants || variants.length > 1 || variants.some((v) => Boolean(v.size || v.color))
+  );
+
+  const uom = product.uom
+    ? {
+        code: product.uom.code,
+        name: product.uom.name,
+        type: product.uom.type,
+      }
+    : null;
+
+  const resultVariants = variants.map((v) => {
+    // Find barcodes belonging to this variant from variant_barcodes table
+    const varBc = bcRows.filter((b) => String(b.variant_id) === String(v.id));
+    const barcodeList = varBc.length
+      ? varBc.map((r) => ({
+          barcode: String(r.barcode).trim(),
+          quantity: r.quantity != null && Number(r.quantity) > 0 ? Number(r.quantity) : null,
+          is_primary: Boolean(r.is_primary),
+        }))
+      : [];
+
+    // Also include any barcodes in v.barcodes or v.barcode if not in barcodeList
+    const seenCodes = new Set(barcodeList.map((b) => b.barcode));
+    for (const b of Array.isArray(v.barcodes) ? v.barcodes : []) {
+      const code = String(typeof b === 'string' ? b : b?.barcode || b?.code || '').trim();
+      if (!code || seenCodes.has(code)) continue;
+      seenCodes.add(code);
+      const qty = typeof b === 'object' && b?.quantity != null && Number(b.quantity) > 0 ? Number(b.quantity) : null;
+      barcodeList.push({
+        barcode: code,
+        quantity: qty,
+        is_primary: typeof b === 'object' && Boolean(b.is_primary),
+      });
+    }
+    if (v.barcode) {
+      const code = String(v.barcode).trim();
+      if (code && !seenCodes.has(code)) {
+        seenCodes.add(code);
+        barcodeList.unshift({ barcode: code, quantity: null, is_primary: true });
+      }
+    }
+    for (const qb of Array.isArray(v.quantityBarcodes) ? v.quantityBarcodes : []) {
+      const code = String(qb?.barcode || qb?.code || '').trim();
+      const qty = qb?.quantity != null && Number(qb.quantity) > 0 ? Number(qb.quantity) : null;
+      if (code && !seenCodes.has(code)) {
+        seenCodes.add(code);
+        barcodeList.push({ barcode: code, quantity: qty, is_primary: false });
+      }
+    }
+
+    const plainBarcodes = barcodeList.filter((b) => b.quantity == null || Number(b.quantity) <= 0);
+    const primaryBc = plainBarcodes.find((b) => b.is_primary) || plainBarcodes[0];
+    const primaryCode = primaryBc?.barcode ? String(primaryBc.barcode).trim() : (v.barcode ? String(v.barcode).trim() : null);
+
+    const primaryStatus = !primaryCode
+      ? 'missing'
+      : ((occupancyByCode[primaryCode] || 1) > 1 ? 'duplicate' : 'available');
+
+    const primaryType = primaryCode ? detectBarcodeType(primaryCode) : null;
+
+    const alternateBarcodes = plainBarcodes
+      .filter((b) => b.barcode && String(b.barcode).trim() !== primaryCode)
+      .map((b) => {
+        const code = String(b.barcode).trim();
+        return {
+          barcode: code,
+          barcodeType: detectBarcodeType(code),
+          status: (occupancyByCode[code] || 1) > 1 ? 'duplicate' : 'available',
+        };
+      });
+
+    const quantityBarcodes = barcodeList
+      .filter((b) => b.quantity != null && Number(b.quantity) > 0)
+      .map((b) => {
+        const code = b.barcode ? String(b.barcode).trim() : null;
+        return {
+          quantity: Number(b.quantity),
+          barcode: code,
+          barcodeType: code ? detectBarcodeType(code) : null,
+          status: !code ? 'missing' : ((occupancyByCode[code] || 1) > 1 ? 'duplicate' : 'available'),
+        };
+      })
+      .sort((a, b) => a.quantity - b.quantity);
+
+    return {
+      variantId: String(v.id),
+      sku: String(v.sku || ''),
+      size: v.size || null,
+      color: v.color || null,
+      mrp: v.mrp != null && v.mrp !== '' ? Number(v.mrp) : null,
+      sellingPrice: Number(v.selling_price ?? v.sellingPrice) || 0,
+      costPrice: Number(v.cost_price ?? v.costPrice) || 0,
+      barcode: primaryCode,
+      barcodeType: primaryType,
+      status: primaryStatus,
+      stockQty: v.stock_qty ?? v.stockQty ?? null,
+      alternateBarcodes,
+      quantityBarcodes,
+    };
+  });
+
+  return {
+    productId: String(product.id),
+    productName: String(product.name || ''),
+    hasVariants,
+    uom,
+    variants: resultVariants,
+  };
+}
+
+function generateBarcodesLocal(db, variantIds) {
+  const ids = [...new Set((Array.isArray(variantIds) ? variantIds : []).filter(Boolean).map(String))];
+  if (!ids.length) return [];
+
+  const results = [];
+  const now = nowIso();
+
+  const generateUniqueEan13 = () => {
+    for (let attempts = 0; attempts < 1000; attempts += 1) {
+      const code = randomInStoreEan13();
+      const existing = db.prepare(`SELECT barcode FROM variant_barcodes WHERE barcode = ?`).get(code);
+      if (!existing) return code;
+    }
+    throw new Error('Could not generate unique barcode after 1000 attempts');
+  };
+
+  for (const variantId of ids) {
+    const vRow = db.prepare(`SELECT id, product_id, sku, barcode, json FROM product_variants WHERE id = ?`).get(variantId);
+    if (!vRow) continue;
+
+    const existingCode = String(vRow.barcode || '').trim();
+    if (existingCode && /^\d{4,18}$/.test(existingCode)) {
+      results.push({ variantId, barcode: existingCode, generated: false });
+      continue;
+    }
+
+    const newCode = generateUniqueEan13();
+
+    db.prepare(
+      `INSERT OR REPLACE INTO variant_barcodes (barcode, variant_id, product_id, quantity, is_primary)
+       VALUES (?, ?, ?, NULL, 1)`
+    ).run(newCode, variantId, String(vRow.product_id));
+
+    db.prepare(`UPDATE product_variants SET barcode = ?, updated_at = ? WHERE id = ?`).run(newCode, now, variantId);
+
+    const pRow = db.prepare(`SELECT json FROM products WHERE id = ?`).get(String(vRow.product_id));
+    if (pRow?.json) {
+      try {
+        const prod = JSON.parse(pRow.json);
+        if (Array.isArray(prod.variants)) {
+          for (const v of prod.variants) {
+            if (String(v.id) === variantId) {
+              v.barcode = newCode;
+              const bcs = Array.isArray(v.barcodes) ? v.barcodes : [];
+              const existingIdx = bcs.findIndex((b) => (typeof b === 'string' ? b : b?.barcode) === existingCode);
+              if (existingIdx >= 0) {
+                bcs[existingIdx] = { barcode: newCode, quantity: null, is_primary: true };
+              } else {
+                bcs.unshift({ barcode: newCode, quantity: null, is_primary: true });
+              }
+              v.barcodes = bcs;
+            }
+          }
+          db.prepare(`UPDATE products SET json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(prod), now, String(vRow.product_id));
+        }
+      } catch (err) {
+        console.warn('[KDSPOZ] update product json error:', err);
+      }
+    }
+
+    results.push({ variantId, barcode: newCode, generated: true });
+  }
+
+  return results;
+}
+
+function ensureQuantityBarcodesLocal(db, items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return [];
+
+  const results = [];
+  const now = nowIso();
+
+  const generateUniqueEan13 = () => {
+    for (let attempts = 0; attempts < 1000; attempts += 1) {
+      const code = randomInStoreEan13();
+      const existing = db.prepare(`SELECT barcode FROM variant_barcodes WHERE barcode = ?`).get(code);
+      if (!existing) return code;
+    }
+    throw new Error('Could not generate unique barcode');
+  };
+
+  for (const item of list) {
+    const variantId = String(item.variantId || '');
+    const quantity = Number(item.quantity);
+    if (!variantId || !(quantity > 0)) continue;
+
+    const vRow = db.prepare(`SELECT id, product_id, sku, barcode, json FROM product_variants WHERE id = ?`).get(variantId);
+    if (!vRow) continue;
+
+    const existing = db.prepare(
+      `SELECT barcode FROM variant_barcodes WHERE variant_id = ? AND ABS(quantity - ?) < 0.0001`
+    ).get(variantId, quantity);
+
+    if (existing?.barcode) {
+      results.push({ variantId, quantity, barcode: String(existing.barcode), generated: false });
+      continue;
+    }
+
+    const newCode = generateUniqueEan13();
+    db.prepare(
+      `INSERT OR REPLACE INTO variant_barcodes (barcode, variant_id, product_id, quantity, is_primary)
+       VALUES (?, ?, ?, ?, 0)`
+    ).run(newCode, variantId, String(vRow.product_id), quantity);
+
+    const pRow = db.prepare(`SELECT json FROM products WHERE id = ?`).get(String(vRow.product_id));
+    if (pRow?.json) {
+      try {
+        const prod = JSON.parse(pRow.json);
+        if (Array.isArray(prod.variants)) {
+          for (const v of prod.variants) {
+            if (String(v.id) === variantId) {
+              const qb = Array.isArray(v.quantityBarcodes) ? v.quantityBarcodes : [];
+              const matchIdx = qb.findIndex((q) => Math.abs(Number(q?.quantity) - quantity) < 0.0001);
+              if (matchIdx >= 0) {
+                qb[matchIdx] = { barcode: newCode, quantity };
+              } else {
+                qb.push({ barcode: newCode, quantity });
+              }
+              v.quantityBarcodes = qb;
+            }
+          }
+          db.prepare(`UPDATE products SET json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(prod), now, String(vRow.product_id));
+        }
+      } catch (err) {
+        console.warn('[KDSPOZ] update product json error:', err);
+      }
+    }
+
+    results.push({ variantId, quantity, barcode: newCode, generated: true });
+  }
+
+  return results;
+}
+
 module.exports = {
   saveReturn,
   listReturns,
@@ -802,6 +1279,12 @@ module.exports = {
   previewDailyClosingLocal,
   upsertProductLocal,
   deleteProductLocal,
+  deleteCategoryLocal,
+  deleteBrandLocal,
+  deleteCustomerLocal,
+  deleteSupplierLocal,
+  setProductFavoriteLocal,
+  setProductsFavoriteBulkLocal,
   addCustomerLedger,
   listCustomerLedger,
   saveStockMovement,
@@ -809,4 +1292,7 @@ module.exports = {
   buildProfitReport,
   buildGstReport,
   buildCashFlowReport,
+  getProductBarcodeStatusLocal,
+  generateBarcodesLocal,
+  ensureQuantityBarcodesLocal,
 };

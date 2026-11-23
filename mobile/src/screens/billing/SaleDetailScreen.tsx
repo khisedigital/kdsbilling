@@ -23,6 +23,7 @@ import { enqueueSavedPrint } from '../../print/printRequestQueue';
 import { useCartStore } from '../../store/cartStore';
 import { canProcessReturn, itemRemainingQty } from '../../utils/billStatus';
 import { totalSaving } from '../../utils/billSaving';
+import { billItemUom, formatBillQuantity } from '../../utils/quantity';
 import { formatDateTime, getCreatedAt, parseApiDate } from '../../utils/formatDate';
 import { colors } from '../../theme/colors';
 import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
@@ -314,13 +315,13 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
                 <View style={{ flex: 1, paddingRight: spacing.md }}>
                   <Text style={styles.itemName} numberOfLines={2}>{item.product_name}</Text>
                   <Text style={styles.itemMeta}>
-                    {formatQty(item.quantity)} × {money(item.unit_price)}
+                    {formatBillQuantity(sold, billItemUom(item))} × {money(item.unit_price)}
                   </Text>
                   {returned > 0.0005 ? (
                     <Text style={styles.itemNote}>
                       {t('Returned {{returned}} · Left {{left}}', {
-                        returned: formatQty(returned),
-                        left: formatQty(left),
+                        returned: formatBillQuantity(returned, billItemUom(item)),
+                        left: formatBillQuantity(left, billItemUom(item)),
                       })}
                     </Text>
                   ) : null}

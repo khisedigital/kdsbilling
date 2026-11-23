@@ -193,7 +193,7 @@ function buildReceiptPayload(
     items: (bill.items || []).map((i) => ({
       name: itemPrintName(i, lang, masterNameMrByEnglish),
       sku: i.sku,
-      qty: parseFloat(i.quantity),
+      qty: formatBillQty(i.quantity, itemUom(i)),
       price: parseFloat(i.unit_price),
       total: parseFloat(i.line_total),
       taxes: i.taxes?.map((t) => ({ name: t.tax_name, amount: parseFloat(t.tax_amount) })),
@@ -366,8 +366,45 @@ function moneyCell(amount) {
 }
 
 function tableCols(charsPerLine) {
-  if (charsPerLine <= 32) return { item: 12, qty: 3, rate: 7, amt: 7 };
-  return { item: 18, qty: 4, rate: 8, amt: 9 };
+  // Qty is wide enough for a barcode weight: 100g, 50g, 1.5kg.
+  if (charsPerLine <= 32) return { item: 9, qty: 6, rate: 7, amt: 7 };
+  if (charsPerLine <= 42) return { item: 15, qty: 7, rate: 8, amt: 9 };
+  return { item: 18, qty: 7, rate: 8, amt: 9 };
+}
+
+function itemUom(item) {
+  if (item?.uom?.code) return item.uom;
+  return item?.variant?.product?.uom || item?.ProductVariant?.product?.uom || null;
+}
+
+/** 0.1 kg → "100 g", 0.05 kg → "50 g", 1 → "1 kg". Pieces stay a number. */
+function formatBillQty(qty, uom) {
+  const n = parseFloat(qty);
+  if (!Number.isFinite(n)) return '0';
+  const code = String(uom?.code || '').toLowerCase();
+  const type = uom?.type;
+  const weight = type === 'weight' || ['g', 'gm', 'gram', 'grams', 'kg', 'kgs', 'kilogram', 'kilograms'].includes(code);
+  const volume = type === 'volume' || ['ml', 'l', 'ltr', 'litre', 'liter', 'liters'].includes(code);
+  if (!weight && !volume) {
+    return Number.isInteger(n) ? String(n) : String(parseFloat(n.toFixed(3)));
+  }
+  if (code === 'kg' || (weight && !code)) {
+    if (n < 1) {
+      const grams = Math.round(n * 1000);
+      return grams >= 1000 ? '1 kg' : `${grams} g`;
+    }
+    return `${parseFloat(n.toFixed(4))} kg`;
+  }
+  if (code === 'g' || code === 'gm' || code === 'gram' || code === 'grams') return `${Math.round(n)} g`;
+  if (code === 'ltr' || code === 'l' || code === 'litre' || code === 'liter') {
+    if (n < 1) {
+      const ml = Math.round(n * 1000);
+      return ml >= 1000 ? '1 ltr' : `${ml} ml`;
+    }
+    return `${parseFloat(n.toFixed(4))} ltr`;
+  }
+  if (code === 'ml') return `${Math.round(n)} ml`;
+  return Number.isInteger(n) ? `${n} ${uom.code}` : `${parseFloat(n.toFixed(3))} ${uom.code}`;
 }
 
 function tableHeaderLine(charsPerLine, copy) {
@@ -382,8 +419,14 @@ function tableHeaderLine(charsPerLine, copy) {
 
 function tableItemLines(charsPerLine, name, qty, rate, amt) {
   const c = tableCols(charsPerLine);
-  const qtyNum = parseFloat(qty);
-  const qtyStr = Number.isInteger(qtyNum) ? String(qtyNum) : String(parseFloat(qtyNum.toFixed(3)));
+  const rawQty = String(qty ?? '').trim();
+  const qtyStr = /[a-z]/i.test(rawQty)
+    ? rawQty.replace(/\s+/g, '')
+    : (() => {
+      const qtyNum = parseFloat(rawQty);
+      if (!Number.isFinite(qtyNum)) return '0';
+      return Number.isInteger(qtyNum) ? String(qtyNum) : String(parseFloat(qtyNum.toFixed(3)));
+    })();
   const rateStr = moneyCell(rate);
   const amtStr = moneyCell(amt);
   const nameLines = wrapWords(sanitizeThermalText(name), c.item);

@@ -35,6 +35,7 @@ import { radius, shadow, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
 import { totalSaving } from '../../utils/billSaving';
 import { printedCartLineName, screenProductName } from '../../utils/productName';
+import { formatBillQuantity, isMeasureUom, parseQuantityForUom } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
 
 type DiscountMode = 'amount' | 'percent';
@@ -218,6 +219,7 @@ export default function WideBillPanel() {
           isCustom: item.isCustom === true,
           productName: item.productName,
           productNameMr: item.productNameMr ?? null,
+          uom: item.uom || null,
         })),
         language: useLanguageStore.getState().bill,
         billDiscountAmount,
@@ -283,15 +285,7 @@ export default function WideBillPanel() {
     };
   }, [view, customerQuery]);
 
-  const formatCartQty = (item: CartItem) => {
-    const qty = item.quantity;
-    if (!item.allowDecimalQty) {
-      return qty % 1 === 0 ? String(qty) : qty.toFixed(2);
-    }
-    // Plain number for the inline input (no "kg"/"g" suffix).
-    if (Number.isInteger(qty)) return String(qty);
-    return String(Math.round(qty * 1000) / 1000);
-  };
+  const formatCartQty = (item: CartItem) => formatBillQuantity(item.quantity, item.uom);
 
   const clearQtyDraft = (variantId: string) => {
     setQtyDrafts((prev) => {
@@ -311,12 +305,15 @@ export default function WideBillPanel() {
 
   const commitInlineQty = (item: CartItem, raw: string) => {
     const cleaned = raw.trim().replace(',', '.');
-    const parsed = parseFloat(cleaned);
-    if (!cleaned || Number.isNaN(parsed) || parsed <= 0) {
+    const measure = isMeasureUom(item.uom);
+    const parsed = measure
+      ? parseQuantityForUom(cleaned, item.uom)
+      : parseFloat(cleaned);
+    if (!cleaned || parsed == null || Number.isNaN(parsed) || parsed <= 0) {
       clearQtyDraft(item.variantId);
       return;
     }
-    const next = item.allowDecimalQty
+    const next = item.allowDecimalQty || measure
       ? Math.round(parsed * 1000) / 1000
       : Math.max(1, Math.round(parsed));
     updateQty(item.variantId, next);
@@ -325,9 +322,11 @@ export default function WideBillPanel() {
 
   // Draft only while typing — commit on blur so preview/split/round-off are not reset every keystroke.
   const onInlineQtyChange = (item: CartItem, value: string) => {
-    const sanitized = item.allowDecimalQty
-      ? value.replace(/[^0-9.,]/g, '')
-      : value.replace(/[^0-9]/g, '');
+    const sanitized = isMeasureUom(item.uom)
+      ? value.replace(/[^0-9.,a-zA-Z ]/g, '')
+      : item.allowDecimalQty
+        ? value.replace(/[^0-9.,]/g, '')
+        : value.replace(/[^0-9]/g, '');
     setQtyDrafts((prev) => ({ ...prev, [item.variantId]: sanitized }));
   };
 
@@ -542,6 +541,7 @@ export default function WideBillPanel() {
           sku: '',
           variant_id: line.variantId,
           quantity: line.quantity,
+          uom: cart?.uom || null,
           unit_price: line.unitPrice,
           mrp: cart?.mrp ?? null,
           discount_amount: line.discountAmount || 0,
@@ -621,6 +621,7 @@ export default function WideBillPanel() {
           isCustom: item.isCustom === true,
           productName: item.productName,
           productNameMr: item.productNameMr ?? null,
+          uom: item.uom || null,
         })),
         language: useLanguageStore.getState().bill,
         billDiscountAmount,
@@ -1435,7 +1436,7 @@ const styles = StyleSheet.create({
   },
   colProduct: { flex: 1.4, minWidth: 0 },
   colRateHead: { width: 104, alignItems: 'flex-end', justifyContent: 'center' },
-  colQtyHead: { width: 128, alignItems: 'center', justifyContent: 'center' },
+  colQtyHead: { width: 148, alignItems: 'center', justifyContent: 'center' },
   colAmountHead: { width: 78, alignItems: 'flex-end', justifyContent: 'center' },
   thEnd: { textAlign: 'right', width: '100%' },
   thCenter: { textAlign: 'center', width: '100%' },
@@ -1461,7 +1462,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  colQty: { width: 128, alignItems: 'center' },
+  colQty: { width: 148, alignItems: 'center' },
   colAmount: {
     width: 78,
     fontSize: 13,
@@ -1488,7 +1489,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qtyInput: {
-    width: 53,
+    width: 68,
     height: 28.56, // +2%
     paddingVertical: 0,
     paddingHorizontal: 4,

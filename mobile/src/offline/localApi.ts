@@ -144,6 +144,17 @@ export const localPreviewDailyClosing = (closingDate?: string) =>
   call<{ data: any }>('sqlitePreviewDailyClosing', { closingDate }).then((r) => r?.data || null);
 export const localUpsertProduct = (product: unknown) => call('sqliteUpsertProduct', { product });
 export const localDeleteProduct = (id: string) => call('sqliteDeleteProduct', { id });
+export const localDeleteCategory = (id: string) => call('sqliteDeleteCategory', { id });
+export const localDeleteBrand = (id: string) => call('sqliteDeleteBrand', { id });
+export const localDeleteCustomer = (id: string) => call('sqliteDeleteCustomer', { id });
+export const localDeleteSupplier = (id: string) => call('sqliteDeleteSupplier', { id });
+export const localSetProductFavorite = (id: string, isFavorite: boolean) =>
+  call('sqliteSetProductFavorite', { id, isFavorite });
+export const localSetProductsFavoriteBulk = (params: {
+  categoryId: string;
+  isFavorite: boolean;
+  brandId?: string | null;
+}) => call('sqliteSetProductsFavoriteBulk', params);
 export const localAddCustomerLedger = (entry: unknown) => call('sqliteAddCustomerLedger', { entry });
 export const localListCustomerLedger = (customerId: string) =>
   call<{ items: any[] }>('sqliteListCustomerLedger', { customerId }).then((r) => r?.items || []);

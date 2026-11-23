@@ -67,6 +67,12 @@ const billIncludes = (db) => [
           as: 'product',
           attributes: ['id', 'name', 'name_mr'],
           required: false,
+          include: [{
+            model: db.UnitOfMeasure,
+            as: 'uom',
+            attributes: ['id', 'code', 'name', 'type'],
+            required: false,
+          }],
         }],
       },
     ],

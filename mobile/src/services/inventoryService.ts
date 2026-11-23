@@ -59,8 +59,15 @@ export interface PurchaseBill {
 }
 
 export async function fetchBranches(): Promise<Branch[]> {
-  const { data } = await api.get('/branches');
-  return data.data;
+  const fallback: Branch[] = [{ id: 'main', name: 'Main Branch', code: 'MAIN' }];
+  try {
+    const { isOfflineNow } = await import('../offline/connectivityStore');
+    if (isOfflineNow()) return fallback;
+    const { data } = await api.get('/branches');
+    return data.data?.length ? data.data : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export async function fetchStockBalances(params?: {
@@ -388,13 +395,93 @@ export async function updateSupplier(
   id: string,
   payload: { name?: string; phone?: string; email?: string; address?: string; taxNumber?: string },
 ): Promise<Supplier> {
-  const { data } = await api.put(`/suppliers/${id}`, payload);
-  return data.data;
+  try {
+    const { isFullyLocalMode, localUpsertSupplier, localListSuppliers, localEnqueueSync } =
+      await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+      const existing = ((await localListSuppliers()) as Supplier[]).find((s) => s.id === id);
+      const supplier = {
+        ...(existing || { id, status: 'active' }),
+        ...payload,
+        id,
+        syncStatus: 'pending',
+      } as Supplier;
+      await localUpsertSupplier(supplier);
+      await localEnqueueSync({
+        entityType: 'supplier',
+        entityId: id,
+        op: 'update',
+        payload: supplier,
+      });
+      return supplier;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.put(`/suppliers/${id}`, payload);
+    return data.data;
+  } catch (err) {
+    const { isFullyLocalMode, localUpsertSupplier, localListSuppliers, localEnqueueSync } =
+      await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+      const existing = ((await localListSuppliers()) as Supplier[]).find((s) => s.id === id);
+      const supplier = {
+        ...(existing || { id, status: 'active' }),
+        ...payload,
+        id,
+        syncStatus: 'pending',
+      } as Supplier;
+      await localUpsertSupplier(supplier);
+      await localEnqueueSync({
+        entityType: 'supplier',
+        entityId: id,
+        op: 'update',
+        payload: supplier,
+      });
+      return supplier;
+    }
+    throw err;
+  }
 }
 
 export async function deleteSupplier(id: string) {
-  const { data } = await api.delete(`/suppliers/${id}`);
-  return data.data;
+  try {
+    const { isFullyLocalMode, localDeleteSupplier, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteSupplier(id);
+      await localEnqueueSync({
+        entityType: 'supplier',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      return { success: true, id };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { data } = await api.delete(`/suppliers/${id}`);
+    return data.data;
+  } catch (err) {
+    const { isFullyLocalMode, localDeleteSupplier, localEnqueueSync } = await import(
+      '../offline/localApi'
+    );
+    if (isFullyLocalMode()) {
+      await localDeleteSupplier(id);
+      await localEnqueueSync({
+        entityType: 'supplier',
+        entityId: id,
+        op: 'delete',
+        payload: { id },
+      });
+      return { success: true, id };
+    }
+    throw err;
+  }
 }
 
 export async function fetchPurchaseBills(page = 1, params?: { limit?: number; search?: string }) {

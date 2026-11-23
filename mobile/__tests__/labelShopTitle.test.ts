@@ -58,4 +58,38 @@ describe('label shop title font size and centering', () => {
       else (global as { document?: unknown }).document = previous;
     }
   });
+
+  it('moves weight to the left with product name so price does not truncate into ".." when weight is 500g', () => {
+    const label500g = {
+      shopName: 'MAHALAXMI SUPER MARKET',
+      productName: 'Tur Dal',
+      detail: '500g',
+      barcode: '2000000000008',
+      mrp: '₹120',
+      price: '₹120',
+    };
+    const bytes = buildGapLabelTspl(label500g, 1, 28);
+    const text = String.fromCharCode(...bytes);
+    // Product line should contain "Tur Dal 500g" on the left
+    expect(text).toMatch(/TEXT \d+,\d+,"3",0,1,1,"Tur Dal 500g"/);
+    // Price line should contain full "Rs.120" on the right, NOT "Rs.." or "Rs..."
+    expect(text).toMatch(/TEXT \d+,\d+,"3",0,1,1,"Rs\.120"/);
+    expect(text).not.toContain('..');
+  });
+
+  it('does not duplicate weight if product name already contains it', () => {
+    const label = {
+      shopName: 'MAHALAXMI SUPER MARKET',
+      productName: 'Moong Dal 500g',
+      detail: '500g',
+      barcode: '2000000000008',
+      mrp: '₹90',
+      price: '₹85',
+    };
+    const bytes = buildGapLabelTspl(label, 1, 28);
+    const text = String.fromCharCode(...bytes);
+    expect(text).toMatch(/TEXT \d+,\d+,"3",0,1,1,"Moong Dal 500g"/);
+    expect(text).not.toContain('Moong Dal 500g 500g');
+    expect(text).toMatch(/TEXT \d+,\d+,"3",0,1,1,"Rs\.85"/);
+  });
 });

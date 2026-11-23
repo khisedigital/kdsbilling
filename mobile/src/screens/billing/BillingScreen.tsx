@@ -47,7 +47,7 @@ import { colors } from '../../theme/colors';
 import { common, radius, shadow, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
 import { totalSaving } from '../../utils/billSaving';
-import { formatQuantity } from '../../utils/quantity';
+import { formatBillQuantity } from '../../utils/quantity';
 import { screenProductName } from '../../utils/productName';
 import { variantLabel } from '../../utils/variantLabel';
 import ProductGridTile from './ProductGridTile';
@@ -89,7 +89,14 @@ function productSearchBlob(product: SearchProductResult) {
     product.size || '',
     product.color || '',
     ...(product.barcodes || []),
+    // Pack / quantity barcodes (Manuka 50g, sugar 250g, etc.) must match in New Bill.
+    ...((product.quantityBarcodes || []).map((b) => b.barcode)),
   ].join('\0').toLowerCase();
+}
+
+function looksLikeBarcode(value: string) {
+  const q = value.trim();
+  return q.length >= 4 && /^\d+$/.test(q);
 }
 
 function productMatches(product: SearchProductResult, query: string, blob?: string) {
@@ -327,6 +334,14 @@ export default function BillingScreen({ navigation, route }: Props) {
           : patch.barcode !== undefined
             ? [patch.barcode]
             : row.barcodes;
+        const nextUom = patch.uom
+          ? {
+              code: patch.uom.code,
+              name: patch.uom.name || patch.uom.code,
+              type: patch.uom.type || row.uom?.type,
+            }
+          : row.uom;
+        const isMeasure = nextUom?.type === 'weight' || nextUom?.type === 'volume';
         return {
           ...row,
           variantId: patch.variantId || row.variantId,
@@ -337,6 +352,11 @@ export default function BillingScreen({ navigation, route }: Props) {
           mrp: patch.mrp !== undefined ? patch.mrp : row.mrp,
           stockQty: patch.stockQty !== undefined ? patch.stockQty : row.stockQty,
           barcodes: nextBarcodes,
+          uom: patch.uomId !== undefined ? nextUom : row.uom,
+          isWeightBased: patch.uomId !== undefined ? isMeasure : row.isWeightBased,
+          allowDecimalQty: patch.uomId !== undefined
+            ? (isMeasure || nextUom?.type === 'length')
+            : row.allowDecimalQty,
         };
       });
       if (changed) nextCatalog = next;
@@ -632,11 +652,13 @@ export default function BillingScreen({ navigation, route }: Props) {
   }, [q]);
 
   useEffect(() => {
-    if (q.length < 2) {
+    // Names need 2+ chars; pack barcodes are numeric — search as soon as they look like a scan.
+    if (q.length < 2 && !looksLikeBarcode(q)) {
       setRemoteResults([]);
       setSearching(false);
       return;
     }
+    const delay = looksLikeBarcode(q) ? 60 : 280;
     const timer = setTimeout(async () => {
       setSearching(true);
       try {
@@ -646,7 +668,7 @@ export default function BillingScreen({ navigation, route }: Props) {
       } finally {
         setSearching(false);
       }
-    }, 280);
+    }, delay);
     return () => clearTimeout(timer);
   }, [q]);
 
@@ -1126,11 +1148,7 @@ export default function BillingScreen({ navigation, route }: Props) {
         </View>
         <View style={styles.lineBottom}>
           <QtyStepper
-            value={
-              item.allowDecimalQty
-                ? formatQuantity(item.quantity, item.uom)
-                : item.quantity
-            }
+            value={formatBillQuantity(item.quantity, item.uom)}
             onDecrease={() => {
               const step = item.allowDecimalQty ? cartQtyStep(item.uom?.code) : 1;
               const next = Math.round((item.quantity - step) * 1000) / 1000;

@@ -90,6 +90,11 @@ function productToSearchRows(product: Product): SearchProductResult[] {
       const code = typeof b === 'string' ? b : b?.barcode || b?.code;
       if (code && !barcodes.includes(String(code))) barcodes.push(String(code));
     }
+    // Include pack/quantity barcodes so stock/purchase search finds Manuka-style packs.
+    for (const b of (vv as { quantityBarcodes?: Array<{ barcode?: string }> }).quantityBarcodes || []) {
+      const code = b?.barcode;
+      if (code && !barcodes.includes(String(code))) barcodes.push(String(code));
+    }
     rows.push({
       variantId: vv.id,
       productId: product.id,

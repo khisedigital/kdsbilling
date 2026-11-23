@@ -131,6 +131,8 @@ try {
     const p1 = products.find((p) => p.id === 'p1');
     const p2 = products.find((p) => p.id === 'p2');
     assert(p1?.name === 'Product One Updated', 'p1 updated');
+    assert(p1?.variants?.[0]?.stockQty === 12, `p1 variant stock expected 12 got ${p1?.variants?.[0]?.stockQty}`);
+    assert(p1?.stockQty === 12, `p1 total stock expected 12 got ${p1?.stockQty}`);
     assert(p2, 'p2 preserved after upsert pull');
     const catA = cats.find((c) => c.id === 'c1');
     assert(catA?.name === 'Cat A Updated', 'category updated');
@@ -191,6 +193,38 @@ try {
     ok('Product create/edit/delete (local)');
   } catch (e) {
     fail('Product create/edit/delete (local)', e);
+  }
+
+  // --- Product barcode status & generation (local) ---
+  try {
+    db.upsertProductLocal(conn, {
+      id: 'p-barcode-test',
+      name: 'Barcode Test Item',
+      status: 'active',
+      variants: [{ id: 'v-b1', sku: 'BAR1', selling_price: 150, cost_price: 100, stock_qty: 10 }],
+    });
+    const status1 = db.getProductBarcodeStatusLocal(conn, 'p-barcode-test');
+    assert(status1?.productId === 'p-barcode-test', 'barcode status product id');
+    assert(status1?.variants?.[0]?.status === 'missing', 'barcode initial status missing');
+
+    const gen = db.generateBarcodesLocal(conn, ['v-b1']);
+    assert(gen?.[0]?.barcode && gen[0].generated === true, 'barcode generated');
+
+    const status2 = db.getProductBarcodeStatusLocal(conn, 'p-barcode-test');
+    assert(status2?.variants?.[0]?.status === 'available', 'barcode now available');
+    assert(status2?.variants?.[0]?.barcode === gen[0].barcode, 'barcode matched');
+
+    const pack = db.ensureQuantityBarcodesLocal(conn, [{ variantId: 'v-b1', quantity: 5 }]);
+    assert(pack?.[0]?.barcode && pack[0].quantity === 5, 'pack barcode generated');
+
+    const status3 = db.getProductBarcodeStatusLocal(conn, 'p-barcode-test');
+    assert(status3?.variants?.[0]?.quantityBarcodes?.length === 1, 'quantity barcode attached');
+    assert(status3?.variants?.[0]?.quantityBarcodes?.[0]?.quantity === 5, 'quantity barcode qty 5');
+
+    db.deleteProductLocal(conn, 'p-barcode-test');
+    ok('Product barcode status & generation (local)');
+  } catch (e) {
+    fail('Product barcode status & generation (local)', e);
   }
 
   // --- Billing / sales ---
@@ -401,9 +435,59 @@ try {
     db.replaceJsonTable(conn, 'expense_categories', [{ id: 'ec1', name: 'Tea/Coffee' }, { id: 'ec3', name: 'Misc' }]);
     const rows = db.listJsonTable(conn, 'expense_categories');
     assert(rows.length >= 3, `expense_categories expected >=3 got ${rows.length}`);
-    ok('JSON masters upsert (expense_categories)', `count=${rows.length}`);
+
+    db.replaceJsonTable(conn, 'tax_groups', [
+      { id: 'tg-0', name: 'GST 0%', total_rate: 0 },
+      { id: 'tg-18', name: 'GST 18%', total_rate: 18 },
+    ]);
+    const taxRows = db.listJsonTable(conn, 'tax_groups');
+    assert(taxRows.length >= 2, `tax_groups expected >=2 got ${taxRows.length}`);
+    ok('JSON masters upsert (expense_categories + tax_groups)', `count=${rows.length}, taxes=${taxRows.length}`);
   } catch (e) {
     fail('JSON masters upsert (expense_categories)', e);
+  }
+
+  // --- Local Deletes & Favorites ---
+  try {
+    // Product favorite toggle
+    const favResult = db.setProductFavoriteLocal(conn, 'p1', true);
+    assert(favResult.isFavorite === true, 'p1 set favorite');
+    const p1AfterFav = db.getProduct(conn, 'p1');
+    assert(p1AfterFav?.is_favorite === true || p1AfterFav?.isFavorite === true, 'p1 is favorite in db');
+
+    // Bulk favorite by category
+    const bulkFavResult = db.setProductsFavoriteBulkLocal(conn, 'c1', false);
+    assert(bulkFavResult.isFavorite === false, 'bulk favorite reset');
+    const p1AfterBulk = db.getProduct(conn, 'p1');
+    assert(!p1AfterBulk?.is_favorite && !p1AfterBulk?.isFavorite, 'p1 is no longer favorite');
+
+    // Delete category
+    const delCat = db.deleteCategoryLocal(conn, 'c2');
+    assert(delCat.deleted, 'category c2 deleted');
+    const catList = db.listCategories(conn);
+    assert(!catList.some((c) => c.id === 'c2'), 'c2 gone from list');
+
+    // Delete brand
+    const delBrand = db.deleteBrandLocal(conn, 'b2');
+    assert(delBrand.deleted, 'brand b2 deleted');
+    const brandList = db.listBrands(conn);
+    assert(!brandList.some((b) => b.id === 'b2'), 'b2 gone from list');
+
+    // Delete customer
+    const delCust = db.deleteCustomerLocal(conn, 'cu1');
+    assert(delCust.deleted, 'customer cu1 deleted');
+    const custList = db.listCustomers(conn);
+    assert(!custList.some((c) => c.id === 'cu1'), 'cu1 gone from list');
+
+    // Delete supplier
+    const delSup = db.deleteSupplierLocal(conn, 's1');
+    assert(delSup.deleted, 'supplier s1 deleted');
+    const supList = db.listSuppliers(conn);
+    assert(!supList.some((s) => s.id === 's1'), 's1 gone from list');
+
+    ok('Local Deletes & Favorites', 'category, brand, customer, supplier, product favorite tested');
+  } catch (e) {
+    fail('Local Deletes & Favorites', e);
   }
 } finally {
   try {

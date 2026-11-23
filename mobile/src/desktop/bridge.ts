@@ -81,6 +81,7 @@ export type DesktopBridge = {
     categories?: unknown[];
     brands?: unknown[];
     clearProducts?: boolean;
+    syncStock?: boolean;
   }) => Promise<{ ok: boolean; products?: number }>;
   sqliteListProducts?: (options: {
     shopCode: string;
@@ -162,6 +163,16 @@ export type DesktopBridge = {
   sqliteListJsonTable?: (options: { shopCode: string; table: string }) => Promise<{ ok: boolean; items: any[] }>;
   sqliteSaveExpense?: (options: { shopCode: string; expense: unknown }) => Promise<{ ok: boolean }>;
   sqliteListExpenses?: (options: Record<string, unknown>) => Promise<{ ok: boolean; items: any[] }>;
+  sqliteDeleteProduct?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean }>;
+  sqliteDeleteCategory?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;
+  sqliteDeleteBrand?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;
+  sqliteDeleteCustomer?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;
+  sqliteDeleteSupplier?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;
+  sqliteSetProductFavorite?: (options: { shopCode: string; id: string; isFavorite: boolean }) => Promise<{ ok: boolean; id: string; isFavorite: boolean }>;
+  sqliteSetProductsFavoriteBulk?: (options: { shopCode: string; categoryId: string; isFavorite: boolean; brandId?: string | null }) => Promise<{ ok: boolean; updated: number; isFavorite: boolean }>;
+  sqliteGetProductBarcodeStatus?: (options: { shopCode: string; productId: string }) => Promise<{ ok: boolean; data: any }>;
+  sqliteGenerateBarcodes?: (options: { shopCode: string; variantIds: string[] }) => Promise<{ ok: boolean; data: any[] }>;
+  sqliteEnsureQuantityBarcodes?: (options: { shopCode: string; items: { variantId: string; quantity: number }[] }) => Promise<{ ok: boolean; data: any[] }>;
   /** Extra local entity / report / sync-queue IPC (desktop offline). */
   [key: string]: any;
 };

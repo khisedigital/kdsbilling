@@ -30,7 +30,7 @@ import { colors } from '../../theme/colors';
 import { common, radius, spacing } from '../../theme/layout';
 import { totalSaving } from '../../utils/billSaving';
 import { printedCartLineName, screenProductName } from '../../utils/productName';
-import { formatQuantity } from '../../utils/quantity';
+import { formatBillQuantity } from '../../utils/quantity';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Payment'>;
 type DiscountMode = 'amount' | 'percent';
@@ -187,6 +187,7 @@ export default function PaymentScreen({ navigation }: Props) {
           isCustom: i.isCustom === true,
           productName: i.productName,
           productNameMr: i.productNameMr ?? null,
+          uom: i.uom || null,
         })),
         language: useLanguageStore.getState().bill,
         billDiscountAmount,
@@ -370,6 +371,7 @@ export default function PaymentScreen({ navigation }: Props) {
           sku: '',
           variant_id: line.variantId,
           quantity: line.quantity,
+          uom: cart?.uom || null,
           unit_price: line.unitPrice,
           mrp: cart?.mrp ?? null,
           discount_amount: line.discountAmount || 0,
@@ -432,6 +434,7 @@ export default function PaymentScreen({ navigation }: Props) {
           isCustom: i.isCustom === true,
           productName: i.productName,
           productNameMr: i.productNameMr ?? null,
+          uom: i.uom || null,
         })),
         language: useLanguageStore.getState().bill,
         billDiscountAmount,
@@ -750,9 +753,7 @@ export default function PaymentScreen({ navigation }: Props) {
             {preview?.items.map((line, idx) => {
               const cartItem = getCartMeta(line.variantId);
               const lineName = screenProductName(line.productName, cartItem?.productNameMr);
-              const qty = cartItem?.uom
-                ? formatQuantity(line.quantity, cartItem.uom)
-                : String(line.quantity);
+              const qty = formatBillQuantity(line.quantity, cartItem?.uom);
               return (
                 <View key={line.variantId} style={[styles.line, idx > 0 && styles.lineBorder]}>
                   <View style={{ flex: 1 }}>

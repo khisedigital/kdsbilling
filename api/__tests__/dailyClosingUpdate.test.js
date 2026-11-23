@@ -45,10 +45,24 @@ describe('updateDailyClosing', () => {
       },
       DailyClosing: {
         findOne: async ({ where }) => {
-          if (currentRecord && currentRecord.id === where.id && currentRecord.branch_id === where.branch_id) {
+          if (currentRecord && where.id && currentRecord.id === where.id && currentRecord.branch_id === where.branch_id) {
+            return currentRecord;
+          }
+          if (currentRecord && where.closing_date && currentRecord.closing_date === where.closing_date && currentRecord.branch_id === where.branch_id) {
             return currentRecord;
           }
           return null;
+        },
+        create: async (data) => {
+          currentRecord = {
+            id: data.id || 'new-closing-id',
+            ...data,
+            update: async function (updates) {
+              Object.assign(this, updates);
+              return this;
+            },
+          };
+          return currentRecord;
         },
         findByPk: async (id) => {
           if (currentRecord && currentRecord.id === id) {
@@ -206,5 +220,46 @@ describe('updateDailyClosing', () => {
 
     assert.strictEqual(updated.variance, -50);
     assert.strictEqual(updated.details.varianceReason, 'Short change given to customer');
+  });
+
+  it('finds and updates by closingDate when client entityId does not match (offline local ID sync)', async () => {
+    const serverRecord = {
+      id: 'server-closing-uuid',
+      branch_id: branchId,
+      closing_date: today,
+      opening_cash: 500,
+      actual_cash: 1350,
+      expected_cash: 1350,
+      created_by: userId,
+    };
+    const mockDb = createMockDb(serverRecord);
+
+    // Client passes an offline-generated id: 'close-1732238492000'
+    const updated = await expenseService.updateDailyClosing(mockDb, branchId, userId, 'close-1732238492000', {
+      openingCash: 500,
+      cashAdded: 0,
+      actualCash: 1350,
+      closingDate: today,
+    });
+
+    assert.strictEqual(updated.id, 'server-closing-uuid');
+    assert.strictEqual(updated.closing_date, today);
+    assert.strictEqual(updated.actual_cash, 1350);
+  });
+
+  it('upserts/creates closing if record not found but closingDate is provided during sync', async () => {
+    const mockDb = createMockDb(null);
+
+    // Record does not exist yet on server; client syncs an update with closingDate
+    const updated = await expenseService.updateDailyClosing(mockDb, branchId, userId, 'close-temp-id', {
+      openingCash: 500,
+      cashAdded: 0,
+      actualCash: 1350,
+      closingDate: today,
+    });
+
+    assert.ok(updated);
+    assert.strictEqual(updated.closing_date, today);
+    assert.strictEqual(updated.actual_cash, 1350);
   });
 });
