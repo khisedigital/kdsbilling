@@ -35,6 +35,8 @@ type SaleItem = {
   mrp?: number | null;
   discountAmount?: number;
   discountPercent?: number;
+  taxRate?: number;
+  taxName?: string | null;
   isCustom?: boolean;
   productName: string;
   productNameMr?: string | null;
@@ -125,7 +127,13 @@ function buildLocalBill(input: CreateSaleInput, clientBillId: string): BillDetai
         unit_price: line.unitPrice,
         mrp: line.mrp ?? null,
         discount_amount: line.discountAmount || 0,
+        tax_amount: line.taxAmount || 0,
         line_total: line.lineTotal,
+        taxes: (line.taxes || []).map((tax) => ({
+          tax_name: tax.taxName || 'Tax',
+          rate_percent: tax.ratePercent,
+          tax_amount: tax.taxAmount,
+        })),
         variant: cart
           ? {
               product: {

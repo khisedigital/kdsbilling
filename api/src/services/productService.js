@@ -58,6 +58,7 @@ const productListIncludes = (db) => [
     where: { deleted_at: null },
     required: false,
     include: [
+      { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
       { model: db.Barcode, as: 'barcodes', attributes: ['id', 'barcode', 'is_primary', 'quantity'] },
     ],
   },
@@ -70,6 +71,7 @@ const productListIncludes = (db) => [
 const productPosListIncludes = (db) => [
   { model: db.Category, as: 'category', attributes: ['id', 'name', 'name_mr'] },
   { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
+  { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
   {
     model: db.ProductVariant,
     as: 'variants',
@@ -77,7 +79,7 @@ const productPosListIncludes = (db) => [
     // product_id required so Sequelize can nest variants under products.
     attributes: [
       'id', 'product_id', 'sku', 'size', 'color',
-      'cost_price', 'selling_price', 'mrp', 'status',
+      'cost_price', 'selling_price', 'mrp', 'tax_group_id', 'status',
     ],
     where: { deleted_at: null },
     required: false,
@@ -88,12 +90,17 @@ const productPosListIncludes = (db) => [
         as: 'barcodes',
         attributes: ['id', 'variant_id', 'barcode', 'is_primary', 'quantity'],
       },
+      {
+        model: db.TaxGroup,
+        as: 'taxGroup',
+        attributes: ['id', 'name', 'total_rate'],
+      },
     ],
   },
 ];
 
 const PRODUCT_POS_ATTRIBUTES = [
-  'id', 'name', 'name_mr', 'category_id', 'uom_id',
+  'id', 'name', 'name_mr', 'category_id', 'uom_id', 'tax_group_id', 'tax_code',
   'is_weight_based', 'allow_decimal_qty', 'is_favorite', 'status',
 ];
 
@@ -563,7 +570,10 @@ async function createVariantRecords(db, product, variants, transaction, reserved
 
     // Every size/variant needs its own primary barcode (auto-generate if blank).
     let barcodes = v.barcodes?.length
-      ? v.barcodes.map((b) => String(b).trim()).filter(Boolean)
+      ? v.barcodes
+          .filter((b) => typeof b === 'string' || b?.quantity == null)
+          .map((b) => String(typeof b === 'string' ? b : b?.barcode || '').trim())
+          .filter(Boolean)
       : v.barcode
         ? [String(v.barcode).trim()].filter(Boolean)
         : [];
@@ -1308,6 +1318,7 @@ async function searchProducts(db, query, branchId = null) {
             where: productWhere,
             include: [
               { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
+              { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
             ],
           },
           { model: Barcode, as: 'barcodes' },
@@ -1338,6 +1349,9 @@ async function searchProducts(db, query, branchId = null) {
             model: Product,
             as: 'product',
             where: productWhere,
+            include: [
+              { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
+            ],
           },
           { model: Barcode, as: 'barcodes' },
           { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
@@ -1396,6 +1410,9 @@ async function searchProducts(db, query, branchId = null) {
         as: 'product',
         where: productWhere,
         required: true,
+        include: [
+          { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
+        ],
       },
       { model: Barcode, as: 'barcodes' },
       { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
@@ -1419,6 +1436,7 @@ async function formatSearchResult(db, variant, productOverride = null) {
       include: [
         { model: db.UnitOfMeasure, as: 'uom', attributes: ['id', 'code', 'name', 'type'] },
         { model: db.Category, as: 'category', attributes: ['id', 'name', 'name_mr'] },
+        { model: db.TaxGroup, as: 'taxGroup', attributes: ['id', 'name', 'total_rate'] },
       ],
     });
   } else {
@@ -1436,6 +1454,9 @@ async function formatSearchResult(db, variant, productOverride = null) {
 
   const uom = variant.uom || product?.uom || null;
   const category = product.category || null;
+  const taxGroup = product?.tax_group_id
+    ? (product.taxGroup || variant.taxGroup || null)
+    : (variant.taxGroup || product?.taxGroup || null);
 
   return {
     variantId: variant.id,
@@ -1456,7 +1477,9 @@ async function formatSearchResult(db, variant, productOverride = null) {
       .filter((b) => b.quantity != null)
       .map((b) => ({ barcode: b.barcode, quantity: toDecimal(b.quantity) }))
       .sort((a, b) => a.quantity - b.quantity),
-    taxGroup: variant.taxGroup || null,
+    taxGroup,
+    taxRate: Number(taxGroup?.total_rate) || 0,
+    taxName: taxGroup?.name || null,
     uom,
     isWeightBased: product.is_weight_based,
     allowDecimalQty: product.allow_decimal_qty,

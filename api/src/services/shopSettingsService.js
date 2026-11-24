@@ -22,6 +22,17 @@ async function resolveDefaultBranch(db, preferredBranchId) {
 }
 
 function serializeSettings(tenant, branch) {
+  let extra = {};
+  if (branch?.extra_settings) {
+    try {
+      extra = typeof branch.extra_settings === 'string'
+        ? JSON.parse(branch.extra_settings)
+        : branch.extra_settings;
+    } catch (_) {
+      extra = {};
+    }
+  }
+
   return {
     shopName: tenant.name,
     shopNameMr: branch?.name_mr || '',
@@ -35,6 +46,35 @@ function serializeSettings(tenant, branch) {
     logoUrl: branch?.logo_url || null,
     branchId: branch?.id || null,
     branchName: branch?.name || null,
+    // Multi-business type & registration fields
+    businessType: extra.businessType || '',
+    businessTypeCustom: extra.businessTypeCustom || '',
+    fssai: extra.fssai || '',
+    drugLicense: extra.drugLicense || '',
+    tradeLicense: extra.tradeLicense || '',
+    pan: extra.pan || '',
+    tagline: extra.tagline || '',
+    taglineMr: extra.taglineMr || '',
+    invoiceTitle: extra.invoiceTitle || '',
+    invoiceTitleMr: extra.invoiceTitleMr || '',
+    terms: extra.terms || '',
+    termsMr: extra.termsMr || '',
+    state: extra.state || '',
+    stateCode: extra.stateCode || '',
+    pincode: extra.pincode || '',
+    secondaryPhone: extra.secondaryPhone || '',
+    email: extra.email || '',
+    website: extra.website || '',
+    upiId: extra.upiId || '',
+    showGstin: extra.showGstin !== false,
+    showFssai: extra.showFssai !== false,
+    showDrugLicense: extra.showDrugLicense !== false,
+    showTradeLicense: extra.showTradeLicense !== false,
+    showPan: extra.showPan !== false,
+    showUpi: extra.showUpi !== false,
+    showTerms: extra.showTerms !== false,
+    showTagline: extra.showTagline !== false,
+    extraSettings: extra,
   };
 }
 
@@ -97,8 +137,57 @@ async function updateShopSettings(db, tenant, branchId, data = {}) {
     branchUpdates.bill_footer = footer || null;
   }
 
+  // Handle multi-business fields stored in extra_settings
+  const extraKeys = [
+    'businessType', 'businessTypeCustom', 'fssai', 'drugLicense', 'tradeLicense',
+    'pan', 'tagline', 'taglineMr', 'invoiceTitle', 'invoiceTitleMr',
+    'terms', 'termsMr', 'state', 'stateCode', 'pincode', 'secondaryPhone',
+    'email', 'website', 'upiId', 'showGstin', 'showFssai', 'showDrugLicense',
+    'showTradeLicense', 'showPan', 'showUpi', 'showTerms', 'showTagline'
+  ];
+
+  let currentExtra = {};
+  if (branch.extra_settings) {
+    try {
+      currentExtra = typeof branch.extra_settings === 'string'
+        ? JSON.parse(branch.extra_settings)
+        : { ...branch.extra_settings };
+    } catch (_) {
+      currentExtra = {};
+    }
+  }
+
+  let extraChanged = false;
+  for (const k of extraKeys) {
+    if (data[k] !== undefined) {
+      if (typeof data[k] === 'boolean') {
+        currentExtra[k] = data[k];
+      } else if (data[k] === null || data[k] === '') {
+        currentExtra[k] = '';
+      } else {
+        currentExtra[k] = String(data[k]).trim();
+      }
+      extraChanged = true;
+    }
+  }
+
+  if (extraChanged) {
+    branchUpdates.extra_settings = currentExtra;
+  }
+
   if (Object.keys(branchUpdates).length) {
-    await branch.update(branchUpdates);
+    try {
+      await branch.update(branchUpdates);
+    } catch (err) {
+      if (branchUpdates.extra_settings && /extra_settings/i.test(err.message)) {
+        delete branchUpdates.extra_settings;
+        if (Object.keys(branchUpdates).length) {
+          await branch.update(branchUpdates);
+        }
+      } else {
+        throw err;
+      }
+    }
   }
 
   await branch.reload();

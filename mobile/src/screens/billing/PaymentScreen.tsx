@@ -29,6 +29,7 @@ import { useCartStore } from '../../store/cartStore';
 import { colors } from '../../theme/colors';
 import { common, radius, spacing } from '../../theme/layout';
 import { totalSaving } from '../../utils/billSaving';
+import { toBillDetailTaxes, type BillLineTax } from '../../utils/billTax';
 import { printedCartLineName, screenProductName } from '../../utils/productName';
 import { formatBillQuantity } from '../../utils/quantity';
 
@@ -39,8 +40,6 @@ const PAYMENT_MODES = [
   { id: 'cash', label: 'Cash', icon: 'cash' },
   { id: 'upi', label: 'UPI', icon: 'qrcode-scan' },
   { id: 'card', label: 'Card', icon: 'credit-card-outline' },
-  { id: 'credit', label: 'Credit', icon: 'account-clock-outline' },
-  { id: 'store_credit', label: 'Wallet', icon: 'wallet-outline' },
 ] as const;
 
 type BillPreview = {
@@ -51,6 +50,7 @@ type BillPreview = {
     unitPrice: number;
     lineTotal: number;
     discountAmount?: number;
+    taxes?: BillLineTax[];
   }>;
   subtotal: number;
   taxAmount: number;
@@ -184,6 +184,8 @@ export default function PaymentScreen({ navigation }: Props) {
           mrp: i.mrp ?? null,
           discountAmount: i.discountAmount,
           discountPercent: i.discountPercent,
+          taxRate: i.taxRate,
+          taxName: i.taxName,
           isCustom: i.isCustom === true,
           productName: i.productName,
           productNameMr: i.productNameMr ?? null,
@@ -364,6 +366,7 @@ export default function PaymentScreen({ navigation }: Props) {
           : null,
       items: preview.items.map((line, idx) => {
         const cart = items.find((i) => i.variantId === line.variantId);
+        const taxes = toBillDetailTaxes(line.taxes);
         return {
           id: `item-${idx}`,
           product_name: printedCartLineName(cart, line.productName),
@@ -375,7 +378,9 @@ export default function PaymentScreen({ navigation }: Props) {
           unit_price: line.unitPrice,
           mrp: cart?.mrp ?? null,
           discount_amount: line.discountAmount || 0,
+          tax_amount: taxes.reduce((sum, tax) => sum + tax.tax_amount, 0),
           line_total: line.lineTotal,
+          taxes,
           variant: cart
             ? {
               size: cart.size,
@@ -431,6 +436,8 @@ export default function PaymentScreen({ navigation }: Props) {
           mrp: i.mrp ?? null,
           discountAmount: i.discountAmount,
           discountPercent: i.discountPercent,
+          taxRate: i.taxRate,
+          taxName: i.taxName,
           isCustom: i.isCustom === true,
           productName: i.productName,
           productNameMr: i.productNameMr ?? null,
@@ -566,12 +573,9 @@ export default function PaymentScreen({ navigation }: Props) {
         <View style={styles.modeRow}>
           {PAYMENT_MODES.map((m) => {
             const on = payMode === m.id;
-            const needsNet = m.id === 'credit' || m.id === 'store_credit';
-            const disabled = needsNet && !online;
             return (
               <Pressable
                 key={m.id}
-                disabled={disabled}
                 onPress={() => {
                   setPayMode(m.id);
                   setSplitExtra((prev) =>
@@ -580,7 +584,7 @@ export default function PaymentScreen({ navigation }: Props) {
                     ),
                   );
                 }}
-                style={[styles.modeBtn, on && styles.modeBtnOn, disabled && { opacity: 0.4 }]}>
+                style={[styles.modeBtn, on && styles.modeBtnOn]}>
                 <Icon name={m.icon} size={22} color={on ? colors.primary : colors.textMuted} />
                 <Text style={[styles.modeLbl, on && styles.modeLblOn]}>{t(m.label)}</Text>
               </Pressable>

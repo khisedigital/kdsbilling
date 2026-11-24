@@ -1,5 +1,11 @@
 import api from './api';
 import { useLanguageStore } from '../i18n/languageStore';
+import {
+  isFullyLocalMode as isBillLocalMode,
+  localGetSale as getLocalBill,
+} from '../offline/localApi';
+import { isOfflineNow as isBillOfflineNow } from '../offline/connectivityStore';
+import { sqliteSaveSale as cacheBillLocally } from '../offline/sqliteApi';
 
 export interface BillDetail {
   id: string;
@@ -142,14 +148,39 @@ export async function fetchBills(page = 1, params?: {
 }
 
 export async function fetchBill(id: string): Promise<BillDetail> {
-  try {
-    const { isFullyLocalMode, localGetSale } = await import('../offline/localApi');
-    if (isFullyLocalMode()) {
-      const bill = await localGetSale(id);
-      if (bill) return bill as BillDetail;
+  if (isBillLocalMode()) {
+    const localBill = await getLocalBill(id) as (BillDetail & {
+      client_bill_id?: string;
+      sync_status?: string;
+    }) | null;
+    if (localBill) {
+      if (localBill.sync_status !== 'synced') return localBill;
+
+      let serverBill: BillDetail;
+      try {
+        const { data } = await api.get(`/bills/${localBill.id}`);
+        serverBill = data.data as BillDetail;
+      } catch (err) {
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (isBillOfflineNow() || status === 404) return localBill;
+        throw err;
+      }
+
+      if (!Array.isArray(serverBill?.items)) {
+        throw new Error('Bill items are missing from the server response');
+      }
+      await cacheBillLocally({
+        clientBillId: localBill.client_bill_id || localBill.id,
+        serverBillId: serverBill.id,
+        createdAt: serverBill.created_at || serverBill.createdAt || localBill.created_at,
+        payload: {},
+        bill: serverBill,
+        syncStatus: 'synced',
+        skipStock: true,
+        syncedAt: new Date().toISOString(),
+      });
+      return serverBill;
     }
-  } catch {
-    /* fall through */
   }
   const { data } = await api.get(`/bills/${id}`);
   return data.data;
@@ -165,6 +196,23 @@ export async function printBill(id: string, format: '58' | '80' | 'a4' = '80') {
 export async function voidBill(id: string, reason: string) {
   const { data } = await api.post(`/bills/${id}/void`, { reason });
   return data.data;
+}
+
+export async function deletePendingSale(clientBillId: string) {
+  const { isFullyLocalMode, localDeletePendingSale } = await import('../offline/localApi');
+  if (!isFullyLocalMode()) throw new Error('Only unsynced local sales can be deleted');
+  const { useConnectivityStore } = await import('../offline/connectivityStore');
+  const connectivity = useConnectivityStore.getState();
+  if (connectivity.syncing) throw new Error('Wait for sync to finish before deleting a sale');
+  connectivity.setSyncing(true);
+  try {
+    const result = await localDeletePendingSale(clientBillId);
+    const { refreshPendingCount } = await import('../offline/outbox');
+    await refreshPendingCount();
+    return result;
+  } finally {
+    connectivity.setSyncing(false);
+  }
 }
 
 export async function holdBill(name: string, cartData: unknown, customerId?: string) {

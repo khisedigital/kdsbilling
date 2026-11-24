@@ -1,5 +1,6 @@
 import api from '../services/api';
 import { createBill } from '../services/businessService';
+import type { BillDetail } from '../services/businessService';
 import { fetchAllProducts, fetchBrands, fetchCategories } from '../services/catalogService';
 import { getShopSettings } from '../services/shopSettingsService';
 import { apiError } from '../utils/apiError';
@@ -250,6 +251,9 @@ async function pushSyncQueueItem(row: {
               nameMr: localProd.nameMr ?? localProd.name_mr ?? p.nameMr,
               categoryId: localProd.categoryId ?? localProd.category_id ?? p.categoryId,
               brandId: localProd.brandId ?? localProd.brand_id ?? p.brandId,
+              uomId: localProd.uomId ?? localProd.uom_id ?? p.uomId,
+              taxGroupId: localProd.taxGroupId ?? localProd.tax_group_id ?? p.taxGroupId,
+              taxCode: localProd.taxCode ?? localProd.tax_code ?? p.taxCode,
               variants: Array.isArray(localProd.variants) && localProd.variants.length
                 ? localProd.variants.map((lv: any) => ({
                     sku: lv.sku || '',
@@ -518,8 +522,8 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number }>
     const sales = await listOutboxSales();
     for (const row of sales) {
       try {
-        const created = (await createBill(row.payload)) as { id?: string };
-        await removeOutboxSale(row.clientBillId, created?.id || null);
+        const created = (await createBill(row.payload)) as BillDetail;
+        await removeOutboxSale(row.clientBillId, created?.id || null, created, row.payload);
         synced += 1;
       } catch (err) {
         const message = apiError(err, err instanceof Error ? err.message : String(err));
@@ -843,6 +847,7 @@ export type SyncResult = {
  */
 export async function syncNow(): Promise<SyncResult> {
   if (!isDesktopOfflineCapable()) return { synced: 0, failed: 0 };
+  if (useConnectivityStore.getState().syncing) return { synced: 0, failed: 0 };
   if (!navigator.onLine) {
     useConnectivityStore.getState().setOnline(false);
     useConnectivityStore.getState().setLastSyncError('No internet connection');

@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, FlatList, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import { Chip, Text } from 'react-native-paper';
+import { Chip, IconButton, Text } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
@@ -15,10 +15,11 @@ import {
   shiftAnchor,
   type PeriodMode,
 } from '../../reports/reportDates';
-import { fetchBills } from '../../services/businessService';
+import { deletePendingSale, fetchBills } from '../../services/businessService';
 import { apiError } from '../../utils/apiError';
 import { getBillStatus, canProcessReturn } from '../../utils/billStatus';
 import { formatBillListDate, getCreatedAt } from '../../utils/formatDate';
+import { useConnectivityStore } from '../../offline/connectivityStore';
 import { colors } from '../../theme/colors';
 import { common, spacing, typography } from '../../theme/layout';
 
@@ -32,6 +33,8 @@ type Bill = {
   is_returnable?: boolean;
   created_at?: string;
   createdAt?: string;
+  client_bill_id?: string;
+  sync_status?: string;
   items?: Array<{
     quantity?: string | number;
     returned_quantity?: string | number;
@@ -50,6 +53,8 @@ export default function SalesListScreen({ navigation }: Props) {
   const [anchor, setAnchor] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [deletingSaleId, setDeletingSaleId] = useState<string | null>(null);
+  const syncing = useConnectivityStore((state) => state.syncing);
   const skipNextFocus = useRef(true);
 
   const range = useMemo(() => rangeForPeriod(periodMode, anchor), [periodMode, anchor]);
@@ -100,6 +105,32 @@ export default function SalesListScreen({ navigation }: Props) {
     setRefreshing(true);
     await load(search);
     setRefreshing(false);
+  };
+
+  const confirmDelete = (bill: Bill) => {
+    if (bill.sync_status !== 'pending') return;
+    Alert.alert(
+      t('Delete local sale?'),
+      t('This unsynced sale will be removed and its local stock restored. This cannot be undone.'),
+      [
+        { text: t('Cancel'), style: 'cancel' },
+        {
+          text: t('Delete'),
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingSaleId(bill.id);
+            try {
+              await deletePendingSale(bill.client_bill_id || bill.id);
+              await load(search);
+            } catch (err) {
+              Alert.alert(t('Delete failed'), apiError(err, t('Could not delete sale')));
+            } finally {
+              setDeletingSaleId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const emptyTitle = search || statusFilter !== 'all'
@@ -176,6 +207,15 @@ export default function SalesListScreen({ navigation }: Props) {
                 if (!canProcessReturn(item)) return;
                 navigation.navigate('Return', { billId: item.id });
               }}
+              trailing={item.sync_status === 'pending' ? (
+                <IconButton
+                  icon="delete-outline"
+                  accessibilityLabel={t('Delete local sale')}
+                  iconColor={colors.error}
+                  disabled={syncing || deletingSaleId === item.id}
+                  onPress={() => confirmDelete(item)}
+                />
+              ) : null}
             />
           );
         }}

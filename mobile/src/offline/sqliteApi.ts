@@ -86,6 +86,15 @@ export function slimProductForSqlite(product: any): any {
           size: v.size,
           color: v.color,
           status: v.status,
+          tax_group_id: v.tax_group_id ?? v.taxGroupId ?? v.taxGroup?.id ?? null,
+          taxGroupId: v.taxGroupId ?? v.tax_group_id ?? v.taxGroup?.id ?? null,
+          taxGroup: v.taxGroup
+            ? {
+                id: v.taxGroup.id,
+                name: v.taxGroup.name,
+                total_rate: v.taxGroup.total_rate,
+              }
+            : undefined,
           barcode: v.barcode || plain?.barcode || null,
           barcodes,
           selling_price: v.selling_price ?? v.sellingPrice,
@@ -114,6 +123,14 @@ export function slimProductForSqlite(product: any): any {
     uom_id: product.uom_id ?? product.uomId,
     uomId: product.uomId ?? product.uom_id,
     tax_group_id: product.tax_group_id ?? product.taxGroupId ?? null,
+    taxGroupId: product.taxGroupId ?? product.tax_group_id ?? null,
+    taxGroup: product.taxGroup
+      ? {
+          id: product.taxGroup.id,
+          name: product.taxGroup.name,
+          total_rate: product.taxGroup.total_rate,
+        }
+      : undefined,
     tax_code: product.tax_code ?? product.taxCode ?? null,
     is_weight_based: product.is_weight_based ?? product.isWeightBased,
     allow_decimal_qty: product.allow_decimal_qty ?? product.allowDecimalQty,

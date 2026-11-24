@@ -47,6 +47,7 @@ import { colors } from '../../theme/colors';
 import { common, radius, shadow, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
 import { totalSaving } from '../../utils/billSaving';
+import { getBillLineTaxDetails, type BillLineTax } from '../../utils/billTax';
 import { formatBillQuantity } from '../../utils/quantity';
 import { screenProductName } from '../../utils/productName';
 import { variantLabel } from '../../utils/variantLabel';
@@ -143,6 +144,7 @@ export default function BillingScreen({ navigation, route }: Props) {
     taxAmount: number;
     subtotal: number;
     discountAmount: number;
+    items: Array<{ variantId: string; taxes?: BillLineTax[] }>;
   } | null>(null);
   const [discountOpen, setDiscountOpen] = useState(false);
   const [discountMode, setDiscountMode] = useState<DiscountMode>('amount');
@@ -613,6 +615,8 @@ export default function BillingScreen({ navigation, route }: Props) {
         mrp: i.mrp ?? null,
         discountAmount: i.discountAmount,
         discountPercent: i.discountPercent,
+        taxRate: i.taxRate,
+        taxName: i.taxName,
         isCustom: i.isCustom === true,
         productName: i.productName,
         productNameMr: i.productNameMr ?? null,
@@ -631,6 +635,10 @@ export default function BillingScreen({ navigation, route }: Props) {
           taxAmount: Number(result.taxAmount) || 0,
           subtotal: Number(result.subtotal) || 0,
           discountAmount: Number(result.discountAmount) || 0,
+          items: result.items.map((line) => ({
+            variantId: line.variantId,
+            taxes: line.taxes,
+          })),
         });
       } catch {
         // Keep last good preview; local billTotals still applies cart discount.
@@ -1105,6 +1113,8 @@ export default function BillingScreen({ navigation, route }: Props) {
     const size = variantLabel(item.size, item.color);
     const lineName = screenProductName(item.productName, item.productNameMr);
     const editingPrice = priceEditId === item.variantId;
+    const previewTaxes = preview?.items.find((line) => line.variantId === item.variantId)?.taxes;
+    const taxDetails = getBillLineTaxDetails(item, previewTaxes);
     return (
       <View style={styles.line}>
         <View style={styles.lineTop}>
@@ -1113,6 +1123,15 @@ export default function BillingScreen({ navigation, route }: Props) {
               {lineName}
               {item.isCustom ? t(' · Custom') : size ? ` · ${size}` : ''}
             </Text>
+            {taxDetails.map((tax, index) => (
+              <Text key={`${tax.name}:${tax.rate}:${index}`} style={styles.lineMeta}>
+                {t('{{name}} {{rate}}%: {{amount}}', {
+                  name: tax.name,
+                  rate: tax.rate,
+                  amount: `₹${tax.amount.toFixed(2)}`,
+                })}
+              </Text>
+            ))}
             {editingPrice ? (
               <View style={styles.priceEditRow}>
                 <Text style={styles.pricePrefix}>₹</Text>
@@ -1143,7 +1162,7 @@ export default function BillingScreen({ navigation, route }: Props) {
             )}
           </View>
           <Pressable onPress={() => removeItem(item.variantId)} hitSlop={10} style={styles.removeBtn}>
-            <Icon name="close" size={16} color={colors.textMuted} />
+            <Icon name="trash-can-outline" size={16} color={colors.error} />
           </Pressable>
         </View>
         <View style={styles.lineBottom}>
@@ -1983,7 +2002,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: colors.surfaceVariant,
+    backgroundColor: colors.errorLight,
     alignItems: 'center',
     justifyContent: 'center',
   },

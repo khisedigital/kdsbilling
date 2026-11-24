@@ -15,30 +15,57 @@ export interface ShopSettings {
   logoUrl: string | null;
   branchId: string | null;
   branchName: string | null;
+  // Multi-business & registration fields
+  businessType?: string;
+  businessTypeCustom?: string;
+  fssai?: string;
+  drugLicense?: string;
+  tradeLicense?: string;
+  pan?: string;
+  tagline?: string;
+  taglineMr?: string;
+  invoiceTitle?: string;
+  invoiceTitleMr?: string;
+  terms?: string;
+  termsMr?: string;
+  state?: string;
+  stateCode?: string;
+  pincode?: string;
+  secondaryPhone?: string;
+  email?: string;
+  website?: string;
+  upiId?: string;
+  showGstin?: boolean;
+  showFssai?: boolean;
+  showDrugLicense?: boolean;
+  showTradeLicense?: boolean;
+  showPan?: boolean;
+  showUpi?: boolean;
+  showTerms?: boolean;
+  showTagline?: boolean;
+  extraSettings?: Record<string, any>;
 }
 
-export type ShopSettingsUpdate = Partial<{
-  shopName: string;
-  shopNameMr: string;
-  address: string;
-  addressMr: string;
-  city: string;
-  gstin: string;
-  phone: string;
-  billFooter: string;
-}>;
+export type ShopSettingsUpdate = Partial<ShopSettings>;
 
 /** Marathi bills and labels use the Marathi name and address when those are filled. */
 export function shopTextForBill(
   shop: Partial<ShopSettings> | null | undefined,
   language: 'en' | 'mr',
-): { shopName: string; address: string } {
+): { shopName: string; address: string; tagline?: string; invoiceTitle?: string; terms?: string } {
   const shopName = (shop?.shopName || '').trim();
   const address = (shop?.address || '').trim();
-  if (language !== 'mr') return { shopName, address };
+  const tagline = (shop?.tagline || '').trim();
+  const invoiceTitle = (shop?.invoiceTitle || '').trim();
+  const terms = (shop?.terms || '').trim();
+
+  if (language !== 'mr') return { shopName, address, tagline, invoiceTitle, terms };
   return {
     shopName: (shop?.shopNameMr || '').trim() || shopName,
     address: (shop?.addressMr || '').trim() || address,
+    tagline: (shop?.taglineMr || '').trim() || tagline,
+    invoiceTitle: (shop?.invoiceTitleMr || '').trim() || invoiceTitle,
+    terms: (shop?.termsMr || '').trim() || terms,
   };
 }
 

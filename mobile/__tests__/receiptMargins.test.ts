@@ -24,6 +24,8 @@ describe('receipt paper width balance', () => {
     expect(html).toContain('Receipt 80mm');
     expect(html).not.toContain('100vw');
     expect(html).toContain('font-weight: 500');
+    expect(html).toContain('line-height: 1.45');
+    expect(html).toContain('<div class="gap"></div>');
     expect(html).toContain('='.repeat(48));
   });
 
@@ -69,6 +71,9 @@ describe('receipt paper width balance', () => {
     const bytes = buildEscPosBytes('TOTAL 10.00', 32, '58');
     expect(bytes[0]).toBe(0x1b);
     expect(bytes[1]).toBe(0x40);
+    expect(bytes[2]).toBe(0x1b);
+    expect(bytes[3]).toBe(0x33);
+    expect(bytes[4]).toBe(0x24);
     expect(bytes.findIndex((b, i) => b === 0x1d && bytes[i + 1] === 0x4c)).toBe(-1);
     expect(bytes.findIndex((b, i) => b === 0x1d && bytes[i + 1] === 0x57)).toBe(-1);
     expect(bytes.findIndex((b, i) => b === 0x1b && bytes[i + 1] === 0x4d)).toBe(-1);

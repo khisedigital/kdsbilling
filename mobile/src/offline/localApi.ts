@@ -76,6 +76,12 @@ export async function localDeleteHeldBill(id: string) {
   await b.sqliteDeleteHeldBill({ shopCode: shopCode(), id });
 }
 
+export async function localDeletePendingSale(clientBillId: string) {
+  const b = bridge();
+  if (!b?.sqliteDeletePendingSale) throw new Error('Local sale deletion unavailable');
+  return b.sqliteDeletePendingSale({ shopCode: shopCode(), clientBillId });
+}
+
 export async function localSaveExpense(expense: Record<string, unknown>) {
   const b = bridge();
   if (!b?.sqliteSaveExpense) throw new Error('Local expenses unavailable');

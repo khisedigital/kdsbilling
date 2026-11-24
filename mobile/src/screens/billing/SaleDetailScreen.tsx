@@ -310,13 +310,27 @@ export default function SaleDetailScreen({ route, navigation }: Props) {
             const sold = parseFloat(String(item.quantity)) || 0;
             const left = itemRemainingQty(item);
             const returned = sold - left;
+              const itemName = item.product_name || item.variant?.product?.name || t('Item');
+              const variantDetails = [item.variant?.size, item.variant?.color].filter(Boolean).join(' · ');
+              const itemDiscount = parseFloat(String(item.discount_amount || 0)) || 0;
+              const itemTax = parseFloat(String(item.tax_amount || 0)) || 0;
             return (
               <View key={item.id} style={[styles.itemRow, idx > 0 && styles.rowBorder]}>
                 <View style={{ flex: 1, paddingRight: spacing.md }}>
-                  <Text style={styles.itemName} numberOfLines={2}>{item.product_name}</Text>
+                    <Text style={styles.itemName} numberOfLines={2}>{itemName}</Text>
+                    {item.sku ? (
+                      <Text style={styles.itemMeta}>{t('SKU: {{sku}}', { sku: item.sku })}</Text>
+                    ) : null}
+                    {variantDetails ? <Text style={styles.itemMeta}>{variantDetails}</Text> : null}
                   <Text style={styles.itemMeta}>
                     {formatBillQuantity(sold, billItemUom(item))} × {money(item.unit_price)}
                   </Text>
+                    {itemDiscount > 0 ? (
+                      <Text style={styles.itemMeta}>{t('Discount')}: −{money(itemDiscount)}</Text>
+                    ) : null}
+                    {itemTax > 0 ? (
+                      <Text style={styles.itemMeta}>{t('Tax')}: {money(itemTax)}</Text>
+                    ) : null}
                   {returned > 0.0005 ? (
                     <Text style={styles.itemNote}>
                       {t('Returned {{returned}} · Left {{left}}', {

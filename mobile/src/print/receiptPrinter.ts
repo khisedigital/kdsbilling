@@ -250,10 +250,10 @@ function buildTestA4Html(opts: {
   h1,th,strong,b{font-weight:700}
   .head{text-align:center;border:1px solid #000;padding:8px 12px;margin-bottom:8px;width:100%}
   .shop{font-size:26px;margin:0;letter-spacing:.02em;text-transform:uppercase;text-align:center;line-height:1.25}
-  .meta{font-size:12px;color:#000;margin:2px 0;line-height:1.4}
+  .meta{font-size:12px;color:#000;margin:2px 0;line-height:1.55}
   table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
-  th{color:#000;padding:6px;text-align:left;border-top:1px solid #000;border-bottom:1px solid #000}
-  td{padding:6px;border-bottom:0.5px solid #000}
+  th{color:#000;padding:9px 6px;text-align:left;line-height:1.55;border-top:1px solid #000;border-bottom:1px solid #000}
+  td{padding:9px 6px;border-bottom:0.5px solid #000;line-height:1.55}
   th.r,td.r{text-align:right}
   .cut-space{height:16mm;width:100%}
   @media print {

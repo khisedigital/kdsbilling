@@ -106,7 +106,7 @@ export function buildThermalHtml(
   const source = String(text || '').replace(/\r/g, '');
   const shopTitles = [...source.matchAll(/<CB>(.*?)<\/CB>/g)].map((m) => m[1].trim()).filter(Boolean);
   // Drop CB lines from body — they render as a large heading above the monospace strip.
-  const withoutShop = source.replace(/^.*<CB>.*?<\/CB>.*$/gm, '');
+  const withoutShop = source.split('\n').filter((line) => !/<CB>.*?<\/CB>/.test(line)).join('\n');
   const paperMm = paper === '58' ? 58 : 80;
   // Equal sides — converter-style left inset left a blank strip on native 58 mm.
   const sideLeftMm = paper === '58' ? 2 : 2.5;
@@ -116,9 +116,9 @@ export function buildThermalHtml(
   const glyphEm = paper === '58' ? 0.62 : 0.60;
   const fontMm = Number((Math.max(8, printableMm) / cols / glyphEm).toFixed(4));
   const shopFontMm = fontMm;
-  const lineMm = fontMm * 1.55;
+  const lineMm = fontMm * 1.4;
   const bodyLines = withoutShop.split('\n');
-  const lineCount = Math.max(1, bodyLines.filter((line) => line.trim()).length + shopTitles.length * 2);
+  const lineCount = Math.max(1, bodyLines.length + shopTitles.length * 2);
   const heightMm = Math.max(90, Math.ceil(lineCount * lineMm + 35));
   const shopHtml = shopTitles
     .map((title) => `<div class="shop">${escapeHtml(title)}</div>`)
@@ -131,7 +131,7 @@ export function buildThermalHtml(
         return body ? `<div class="center">${escapeHtml(body)}</div>` : '';
       }
       const plainLine = toPlainReceipt(line, cols);
-      if (!plainLine) return '';
+      if (!plainLine) return line.trim() ? '' : '<div class="gap"></div>';
       return `<div class="line">${escapeHtml(plainLine)}</div>`;
     })
     .join('');
@@ -178,8 +178,8 @@ html, body {
   margin: 0;
   font-weight: 500;
   font-size: ${fontMm}mm;
-  line-height: 1.55;
-  padding-top: 0.4mm;
+  line-height: 1.45;
+  padding-top: 0.3mm;
   color: #000;
   -webkit-font-smoothing: none;
   font-smooth: never;
@@ -196,6 +196,9 @@ html, body {
   font-variant-ligatures: none;
   white-space: pre;
   overflow: hidden;
+}
+.gap {
+  height: ${lineMm}mm;
 }
 .cut-space {
   height: 16mm;
@@ -225,7 +228,7 @@ html, body {
     width: 100% !important;
     font-size: ${fontMm}mm !important;
     font-weight: 500 !important;
-    line-height: 1.55 !important;
+    line-height: 1.45 !important;
     -webkit-font-smoothing: none !important;
     font-smooth: never !important;
   }
@@ -266,6 +269,8 @@ export function bytesToBase64(bytes: number[]): string {
  */
 const ESC = {
   INIT: [0x1b, 0x40],
+  /** Extra text-line spacing for less compressed thermal bills (ESC 3 n). */
+  LINE_SPACING: [0x1b, 0x33, 0x24],
   /** Advance past the print head so the cutter or tear-bar can clear the gap safely. */
   FEED_TAIL: [0x0a, 0x0a, 0x0a, 0x0a],
   /** Partial cut — ignored by heads without a cutter. */
@@ -852,8 +857,8 @@ export function buildEscPosBytes(
   const cols = receiptCharsForPaper(roll);
   const { leftDots, widthDots } = receiptPrintArea(cols);
   const useIndic = hasDevanagari(source) && canDrawCanvas();
-  // ESC @ only — no GS a / ESC a.
-  const out: number[] = [...ESC.INIT];
+  // ESC @ initializes, then ESC 3 adds text-line spacing. No GS a / ESC a.
+  const out: number[] = [...ESC.INIT, ...ESC.LINE_SPACING];
 
   if (roll === '80') {
     // 80mm ESC/POS fills the head (GS L=0, GS W=576)

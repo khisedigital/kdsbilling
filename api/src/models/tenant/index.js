@@ -1,4 +1,5 @@
 const { DataTypes } = require('sequelize');
+const { jsonColumn } = require('../../utils/jsonColumn');
 const { initCatalogModels } = require('./catalog');
 const { initInventoryModels } = require('./inventory');
 const { initBillingModels } = require('./billing');
@@ -46,6 +47,7 @@ function defineBranch(sequelize) {
         type: DataTypes.ENUM('active', 'inactive'),
         defaultValue: 'active',
       },
+      extra_settings: jsonColumn('extra_settings'),
     },
     { tableName: 'branches' }
   );

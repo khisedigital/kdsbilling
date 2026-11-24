@@ -78,6 +78,16 @@ async function resolveUnitById(uomId: string): Promise<UnitOfMeasure | null> {
   }
 }
 
+async function resolveTaxGroupById(taxGroupId: string | null | undefined): Promise<TaxGroup | null> {
+  if (!taxGroupId) return null;
+  try {
+    const groups = await fetchTaxGroups();
+    return groups.find((group) => group.id === taxGroupId) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Persist healed uom onto local SQLite + AsyncStorage when embedded unit was wrong. */
 async function healCachedProductUnits(products: Product[], units: UnitOfMeasure[]): Promise<Product[]> {
   const healed = attachUnitsToProducts(products, units);
@@ -1312,6 +1322,9 @@ export async function createProduct(
   }
   const totalStock = variants.reduce((s, v) => s + (v.stockQty || 0), 0);
   const createdUnit = payload.uomId ? await resolveUnitById(payload.uomId) : null;
+  const createdTaxGroup = payload.taxGroupId
+    ? await resolveTaxGroupById(payload.taxGroupId)
+    : null;
   const product = {
     id,
     name: payload.name,
@@ -1327,6 +1340,16 @@ export async function createProduct(
           name: createdUnit.name,
           type: createdUnit.type,
         }
+      : undefined,
+    tax_group_id: payload.taxGroupId || null,
+    taxGroupId: payload.taxGroupId || null,
+    tax_code: payload.taxCode || null,
+    taxGroup: createdTaxGroup
+      ? {
+        id: createdTaxGroup.id,
+        name: createdTaxGroup.name,
+        total_rate: createdTaxGroup.total_rate,
+      }
       : undefined,
     status: 'active',
     is_favorite: false,
@@ -1428,6 +1451,15 @@ export async function updateProduct(
         nextUom = existing?.uom ? { ...existing.uom, id: payload.uomId } : undefined;
       }
     }
+    const nextTaxGroupId = payload.taxGroupId !== undefined
+      ? payload.taxGroupId
+      : existing?.tax_group_id;
+    let nextTaxGroup = existing?.taxGroup;
+    if (payload.taxGroupId !== undefined) {
+      nextTaxGroup = payload.taxGroupId
+        ? await resolveTaxGroupById(payload.taxGroupId) || undefined
+        : undefined;
+    }
     const merged = {
       ...(existing || { id, status: 'active' }),
       ...payload,
@@ -1439,8 +1471,10 @@ export async function updateProduct(
       brand_id: payload.brandId !== undefined ? payload.brandId : existing?.brand_id,
       uom_id: nextUomId,
       uom: nextUom,
-      tax_group_id: payload.taxGroupId !== undefined ? payload.taxGroupId : existing?.tax_group_id,
+      tax_group_id: nextTaxGroupId,
+      taxGroupId: nextTaxGroupId,
       tax_code: payload.taxCode !== undefined ? payload.taxCode : existing?.tax_code,
+      taxGroup: nextTaxGroup,
       is_weight_based: payload.isWeightBased !== undefined ? payload.isWeightBased : (existing?.is_weight_based || false),
       allow_decimal_qty: payload.allowDecimalQty !== undefined ? payload.allowDecimalQty : (existing?.allow_decimal_qty || false),
       has_variants: nextVariants.length > 1,
@@ -1766,6 +1800,8 @@ export interface SearchProductResult {
   isWeightBased?: boolean;
   allowDecimalQty?: boolean;
   stockQty?: number;
+  taxRate?: number;
+  taxName?: string | null;
   categoryId?: string | null;
   categoryName?: string | null;
 }
@@ -1894,6 +1930,10 @@ export function productVariantToSearchResult(
   const selling = readVariantMoney(variant, 'selling');
   const cost = readVariantMoney(variant, 'cost');
   const mrp = readVariantMoney(variant, 'mrp');
+  const taxGroup =
+    product.tax_group_id && product.taxGroup
+      ? product.taxGroup
+      : variant.taxGroup || product.taxGroup;
   return {
     variantId: variant.id,
     productId: product.id,
@@ -1909,6 +1949,8 @@ export function productVariantToSearchResult(
     mrp,
     barcodes: plainBarcodesOf(variant),
     quantityBarcodes: quantityBarcodesOf(variant),
+    taxRate: Number(taxGroup?.total_rate) || 0,
+    taxName: taxGroup?.name || null,
     uom: product.uom
       ? { code: product.uom.code, name: product.uom.name, type: product.uom.type }
       : null,

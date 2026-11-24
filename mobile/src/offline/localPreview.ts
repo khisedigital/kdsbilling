@@ -11,6 +11,13 @@ export type LocalPreviewItem = {
   unitPrice: number;
   lineTotal: number;
   discountAmount?: number;
+  taxAmount?: number;
+  taxable?: number;
+  taxes?: Array<{
+    taxName?: string;
+    ratePercent: number;
+    taxAmount: number;
+  }>;
   mrp?: number | null;
   isCustom?: boolean;
   productNameMr?: string | null;
@@ -34,12 +41,17 @@ type CartLike = {
   discountAmount?: number;
   discountPercent?: number;
   mrp?: number | null;
+  taxRate?: number;
+  taxName?: string | null;
   isCustom?: boolean;
 };
 
+function round4(n: number) {
+  return Math.round(Number(n) * 10000) / 10000;
+}
+
 /**
- * Simple offline totals: line = qty × price − line discount, then bill discount.
- * Tax stays 0 offline (prices are treated as the amount charged at the counter).
+ * Offline totals use the cached tax rate so the amount collected matches server billing.
  */
 export function buildLocalPreview(
   items: CartLike[],
@@ -48,11 +60,16 @@ export function buildLocalPreview(
   const lines: LocalPreviewItem[] = items.map((item) => {
     const qty = Number(item.quantity) || 0;
     const price = Number(item.unitPrice) || 0;
+    const lineSubtotal = round4(qty * price);
     let discount = Number(item.discountAmount) || 0;
     if (!discount && item.discountPercent) {
-      discount = round2((qty * price * Number(item.discountPercent)) / 100);
+      discount = round4((lineSubtotal * Number(item.discountPercent)) / 100);
     }
-    const lineTotal = round2(Math.max(0, qty * price - discount));
+    discount = round4(discount);
+    const taxable = round4(Math.max(0, lineSubtotal - discount));
+    const taxRate = item.isCustom ? 0 : Math.max(0, Number(item.taxRate) || 0);
+    const taxAmount = round4(taxable * taxRate / 100);
+    const lineTotal = round2(taxable + taxAmount);
     return {
       variantId: item.variantId,
       productName: item.productName,
@@ -60,20 +77,25 @@ export function buildLocalPreview(
       quantity: qty,
       unitPrice: price,
       discountAmount: discount,
+      taxAmount,
+      taxable,
+      taxes: taxRate > 0
+        ? [{ taxName: item.taxName || 'Tax', ratePercent: taxRate, taxAmount }]
+        : [],
       mrp: item.mrp ?? null,
       isCustom: item.isCustom === true,
       lineTotal,
     };
   });
 
-  const subtotal = round2(lines.reduce((sum, line) => sum + line.lineTotal, 0));
+  const subtotal = round4(lines.reduce((sum, line) => sum + (line.taxable ?? line.lineTotal), 0));
+  const taxAmount = round4(lines.reduce((sum, line) => sum + (line.taxAmount || 0), 0));
   let billDiscount = Number(opts?.billDiscountAmount) || 0;
   if (!billDiscount && opts?.billDiscountPercent) {
-    billDiscount = round2((subtotal * Number(opts.billDiscountPercent)) / 100);
+    billDiscount = round4(((subtotal + taxAmount) * Number(opts.billDiscountPercent)) / 100);
   }
-  billDiscount = Math.min(billDiscount, subtotal);
-  const taxAmount = 0;
-  const exact = round2(subtotal - billDiscount + taxAmount);
+  billDiscount = Math.min(round4(billDiscount), subtotal + taxAmount);
+  const exact = round2(Math.max(0, subtotal + taxAmount - billDiscount));
   const roundOff = round2(Number(opts?.roundOffAmount) || 0);
   const totalAmount = round2(exact + roundOff);
 

@@ -24,6 +24,8 @@ export interface CartItem {
   discountPercent?: number;
   uom?: UomInfo;
   allowDecimalQty?: boolean;
+  taxRate?: number;
+  taxName?: string | null;
   /** Available warehouse stock when item was added */
   stockQty?: number;
   /** True for ad-hoc lines entered without a catalog product */
@@ -90,6 +92,8 @@ export const useCartStore = create<CartState>((set, get) => ({
                 mrp: item.mrp !== undefined ? item.mrp : i.mrp,
                 productName: item.productName || i.productName,
                 productNameMr: item.productNameMr ?? i.productNameMr,
+                taxRate: item.taxRate ?? i.taxRate,
+                taxName: item.taxName ?? i.taxName,
                 productId: item.productId || i.productId,
                 // Keep catalog list price unless cashier already overrode this line.
                 ...(!i.priceEdited && item.unitPrice !== undefined
@@ -156,6 +160,8 @@ export const useCartStore = create<CartState>((set, get) => ({
       );
       const nextMrp = product.mrp != null ? Number(product.mrp) || null : null;
       const nextAllow = !!(product.allowDecimalQty || product.isWeightBased);
+      const nextTaxRate = Number(product.taxRate) || 0;
+      const nextTaxName = product.taxName || null;
       const nextStock = product.stockQty ?? item.stockQty;
       const mrName = product.productNameMr?.trim() || null;
       // Always keep English in productName; bill print resolves Marathi separately.
@@ -169,6 +175,8 @@ export const useCartStore = create<CartState>((set, get) => ({
         currentPrice === nextPrice &&
         item.mrp === nextMrp &&
         item.allowDecimalQty === nextAllow &&
+        (item.taxRate || 0) === nextTaxRate &&
+        (item.taxName || null) === nextTaxName &&
         item.stockQty === nextStock &&
         (item.uom?.code || '') === (product.uom?.code || '')
         && item.variantId === product.variantId
@@ -191,6 +199,8 @@ export const useCartStore = create<CartState>((set, get) => ({
         mrp: nextMrp,
         uom: product.uom || item.uom,
         allowDecimalQty: nextAllow,
+        taxRate: nextTaxRate,
+        taxName: nextTaxName,
         stockQty: nextStock,
         // Catalog price win after Price Management / product edit.
         ...(forcePrices ? { priceEdited: false } : {}),

@@ -396,10 +396,9 @@ async function checkUnixPrinterStatus(printerName) {
 }
 
 /**
- * Verify that the CUPS job was accepted by the physical printer hardware.
- * If the cover is open, paper is out, or the printer is stalled, CUPS blocks.
- * We detect this, clean up the stuck job so the queue doesn't stay blocked,
- * and throw an error so the UI can show the retry prompt.
+ * Check for explicit printer faults while CUPS processes the accepted job.
+ * Queue presence alone is not a failure: some printers take longer than a few
+ * seconds to finish a receipt, and cancelling an active job can truncate it.
  */
 async function verifyCupsJobNotStuck(printerName, jobId, byteLength) {
   const name = String(printerName || '').trim();
@@ -457,21 +456,11 @@ async function verifyCupsJobNotStuck(printerName, jobId, byteLength) {
     await sleep(250);
   }
 
-  // If still stuck in queue after 3 seconds:
-  try {
-    const { stdout: oFinal } = await execFileAsync('lpstat', ['-o', name], { timeout: 2500 }).catch(() => ({ stdout: '' }));
-    if (String(oFinal || '').includes(jobId)) {
-      await execFileAsync('cancel', [jobId], { timeout: 3000 }).catch(() => null);
-      throw new Error('Printer offline / Door open or out of paper — printer is not accepting data.');
-    }
-  } catch (err) {
-    if (err.message && /cover|door|paper|offline/i.test(err.message)) {
-      throw err;
-    }
-  }
+  // `lp` already accepted the job. Do not infer a hardware failure from a
+  // job that is still listed: valid receipts may take longer than this window.
 }
 
-/** Wait until this CUPS job id is gone (data handed off), then a short settle. */
+/** Check an accepted CUPS job for explicit printer faults. */
 async function waitCupsJobGone(printerName, jobId, byteLength) {
   return verifyCupsJobNotStuck(printerName, jobId, byteLength);
 }

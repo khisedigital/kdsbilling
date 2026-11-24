@@ -139,6 +139,10 @@ export type DesktopBridge = {
     message: string;
     attempts: number;
   }) => Promise<{ ok: boolean; pending?: number }>;
+  sqliteDeletePendingSale?: (options: {
+    shopCode: string;
+    clientBillId: string;
+  }) => Promise<{ ok: boolean; deleted?: boolean; pending?: number }>;
   sqlitePendingCount?: (options: { shopCode: string }) => Promise<{ ok: boolean; pending: number }>;
   sqliteSaveAuthSession?: (options: { shopCode: string; session: unknown }) => Promise<{ ok: boolean }>;
   sqliteReadAuthSession?: (options: { shopCode: string }) => Promise<{ ok: boolean; session: any }>;

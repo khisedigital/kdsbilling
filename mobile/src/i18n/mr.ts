@@ -361,8 +361,91 @@ export const mr: Record<string, string> = {
 
   // Shop settings
   'These details appear on printed bills': 'ही माहिती प्रिंट केलेल्या बिलावर दिसेल',
+  'Customize your business profile, tax registrations, invoice headers, and bill footer for all printed bills.':
+    'तुमच्या व्यवसायाची माहिती, कर नोंदणी (GST, FSSAI, ड्रग्ज लायसन्स), बिलाचे शीर्षक आणि अटी-शर्ती सेट करा.',
+  'Business Type & Profile': 'व्यवसायाचा प्रकार आणि माहिती',
+  'Select your business category for tailored fields, bill titles, and preset policies':
+    'तुमच्या व्यवसायाचा प्रकार निवडा, त्यानुसार बिलावर योग्य नोंदी आणि अटी-शर्ती उपलब्ध होतील.',
+  'Select Business Type': 'व्यवसायाचा प्रकार निवडा',
+  'Retail / General': 'किरकोळ / जनरल',
+  'Clothing & Apparel': 'कपडे आणि गारमेंट्स',
+  'Kirana & Grocery': 'किराणा आणि सुपरमार्केट',
+  'Restaurant & Cafe': 'हॉटेल आणि कॅफे',
+  'Pharmacy & Medical': 'फार्मसी आणि मेडिकल',
+  'Electronics & Mobile': 'इलेक्ट्रॉनिक्स आणि मोबाईल',
+  'Hardware & Tools': 'हार्डवेअर आणि टूल्स',
+  'Salon & Services': 'सलून आणि सर्व्हिसेस',
+  'Wholesale & Trade': 'होलसेल आणि ट्रेडिंग',
+  'Other Business': 'इतर व्यवसाय',
+  'Specify Business Type': 'व्यवसायाचे नाव लिहा',
+  'Business Tagline / Subtitle (English)': 'व्यवसायाची टॅगलाइन / ब्रीदवाक्य (इंग्रजी)',
+  'Business Tagline (Marathi)': 'व्यवसायाची टॅगलाइन / ब्रीदवाक्य (मराठी)',
+  'The tagline prints right beneath your shop name on both thermal and A4 bills.':
+    'ही टॅगलाइन बिलावर दुकानाच्या नावाखाली दिसेल.',
+  'Tax & Business Registrations': 'कर आणि व्यवसाय नोंदणी क्रमांक',
+  'Add your business registration numbers. Only filled numbers appear on customer bills.':
+    'तुमचे नोंदणी क्रमांक टाका. भरलेले क्रमांकच ग्राहकांच्या बिलावर दिसतील.',
+  '15-digit Goods & Services Tax Identification Number (for GST-registered businesses)':
+    '१५ अंकी वस्तू आणि सेवा कर नोंदणी क्रमांक (GSTIN)',
+  'FSSAI Number': 'FSSAI नंबर',
+  'Food & Grocery': 'अन्न आणि किराणा',
+  '14-digit FSSAI license for food items, restaurants, grocery & bakeries':
+    'अन्नपदार्थ, हॉटेल, किराणा आणि बेकरी व्यवसायांसाठी १४ अंकी FSSAI परवाना',
+  'Drug License Number': 'ड्रग्ज लायसन्स नंबर (DL No.)',
+  'Medical / Pharmacy': 'मेडिकल / फार्मसी',
+  'Required for pharmacies, chemists, and medical supply stores':
+    'मेडिकल, केमिस्ट आणि फार्मसी दुकानांसाठी आवश्यक परवाना',
+  'Trade License / Shop Act Number': 'शॉप ॲक्ट / गुमास्ता / ट्रेड लायसन्स',
+  'Municipal Shop & Establishment registration, Gumasta, or MSME / Udyam number':
+    'महानगरपालिका शॉप ॲक्ट, गुमास्ता परवाना किंवा MSME / उद्यम नोंदणी क्रमांक',
+  '10-character Permanent Account Number': '१० अक्षरी पॅन (PAN) क्रमांक',
+  'Invoice Header Title & Language': 'बिलाचे शीर्षक आणि भाषा',
+  'Select standard bill header title suited to your tax scheme or business type':
+    'तुमच्या कर प्रणालीनुसार किंवा व्यवसायानुसार बिलाचे शीर्षक निवडा',
+  'Bill Document Title': 'बिलाचे शीर्षक',
+  'Custom Title': 'इतर शीर्षक',
+  'Custom Title (English)': 'इतर शीर्षक (इंग्रजी)',
+  'Custom Title (Marathi)': 'इतर शीर्षक (मराठी)',
+  'Printed Bill Language': 'प्रिंट होणाऱ्या बिलाची भाषा',
+  'Thermal and A4 bills print in this language. The switch at the top changes only screen language.':
+    'थर्मल आणि A4 बिले या भाषेत प्रिंट होतील. वरील बटण फक्त स्क्रीनची भाषा बदलते.',
+  'Shop Name & Address': 'दुकानाचे नाव आणि पत्ता',
+  'Shop name (English)': 'दुकानाचे नाव (इंग्रजी)',
+  'Address (English)': 'पत्ता (इंग्रजी)',
+  City: 'शहर',
+  Pincode: 'पिनकोड',
+  State: 'राज्य',
+  'State Code (GST)': 'राज्य कोड (GST)',
+  'Contact & Support': 'संपर्क माहिती',
+  'Primary Shop Phone': 'मुख्य फोन नंबर',
+  'Secondary / WhatsApp Phone': 'दुसरा फोन / व्हॉट्सॲप नंबर',
+  'Shop Email': 'दुकानाचा ईमेल',
+  'Website / Social Link': 'वेबसाइट / सोशल लिंक',
+  'UPI Payment on Bills': 'बिलावर UPI पेमेंट',
+  'Print your UPI ID on bills so customers can easily scan & pay digitally':
+    'बिलावर UPI आयडी प्रिंट करा जेणेकरून ग्राहक सहज पैसे भरू शकतील',
+  'When entered, "UPI: yourshop@upi" appears before the footer on printed receipts.':
+    'हा आयडी टाकल्यास बिलावर "UPI: ..." दिसेल.',
+  'Bill Footer & Terms and Conditions': 'बिलाचा तळटीप मजकूर आणि अटी-शर्ती',
+  'Custom greeting and policy terms printed at the bottom of bills':
+    'बिलाच्या शेवटी दिसणारा मजकूर आणि परतावा / बदलून देण्याच्या अटी',
+  'Bill footer message': 'बिलावरील संदेश',
+  'Terms & Conditions / Return Policy': 'अटी व शर्ती / परतावा नियम',
+  'Quick presets: tap a business category below to auto-fill common policy terms:':
+    'खालील प्रकारावर टॅप करून तयार अटी व शर्ती भरा:',
+  'Terms & Conditions (English)': 'अटी व शर्ती (इंग्रजी)',
+  'Terms & Conditions (Marathi)': 'अटी व शर्ती (मराठी)',
+  'Terms & Conditions': 'अटी व शर्ती',
+  Clear: 'काढून टाका',
+  'Save all settings': 'सर्व सेटिंग्ज सेव्ह करा',
+  'Shop and bill settings updated successfully.': 'दुकानाच्या आणि बिलाच्या सेटिंग्ज यशस्वीरित्या अपडेट झाल्या.',
+  Notice: 'सूचना',
+  'Enter a valid 10-digit secondary / WhatsApp phone.': 'योग्य १० अंकी दुसरा किंवा व्हॉट्सॲप नंबर टाका.',
+  'GSTIN is typically 15 alphanumeric characters (e.g. 27ABCDE1234F1Z5). Please double check if intentional.':
+    'GSTIN साधारणपणे १५ अंकी असतो (उदा. 27ABCDE1234F1Z5). कृपया खात्री करा.',
+  'PAN is typically 10 characters (e.g. ABCDE1234F).': 'पॅन नंबर १० अक्षरी असतो (उदा. ABCDE1234F).',
   'Shop logo': 'दुकानाचा लोगो',
-  'Shown on A4 bills': 'A4 बिलावर दिसेल',
+  'Shown on A4 bills and thermal headers': 'A4 बिलांवर आणि थर्मल बिलांवर दिसेल',
   'No logo uploaded yet': 'अजून लोगो अपलोड केलेला नाही',
   'Change logo': 'लोगो बदला',
   'Upload logo': 'लोगो अपलोड करा',

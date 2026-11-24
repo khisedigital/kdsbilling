@@ -41,6 +41,8 @@ export interface ProductVariant {
   mrp?: string | number | null;
   wholesale_price?: string | number;
   status?: string;
+  tax_group_id?: string | null;
+  taxGroup?: TaxGroup;
   barcode?: string;
   barcodes?: { barcode: string; is_primary: boolean; quantity?: string | number | null }[];
   stockQty?: number;
@@ -60,7 +62,7 @@ export interface Product {
   category_id?: string;
   brand_id?: string;
   uom_id: string;
-  tax_group_id?: string;
+  tax_group_id?: string | null;
   tax_code?: string;
   is_weight_based: boolean;
   allow_decimal_qty: boolean;

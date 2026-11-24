@@ -37,6 +37,16 @@ describe('Marathi Translation & Transliteration Engine', () => {
       expect(res).toContain('साखर');
       expect(res).toContain('1 किलो');
     });
+
+    it('translates Test Product and retail terms correctly to Marathi (not phonetic te-sta)', () => {
+      expect(glossaryTranslate('Test Product')).toBe('नमुना उत्पादन');
+      expect(glossaryTranslate('test product')).toBe('नमुना उत्पादन');
+      expect(glossaryTranslate('Product')).toBe('उत्पादन');
+      expect(glossaryTranslate('Products')).toBe('उत्पादने');
+      expect(glossaryTranslate('Test')).toBe('नमुना');
+      expect(glossaryTranslate('Sample Product')).toBe('नमुना उत्पादन');
+      expect(glossaryTranslate('Test Product 500g')).toBe('नमुना उत्पादन 500 ग्रॅम');
+    });
   });
 
   describe('Phonetic Transliteration Engine (Offline Mode)', () => {
@@ -87,6 +97,12 @@ describe('Marathi Translation & Transliteration Engine', () => {
       expect(res.text).toBe('कांदा बटाटा ');
     });
 
+    it('converts test product when typed in Marathi field', () => {
+      const res = transliterateWhileTyping('test product ');
+      expect(res.changed).toBe(true);
+      expect(res.text).toBe('नमुना उत्पादन ');
+    });
+
     it('does not prematurely convert incomplete word while typing without space', () => {
       const res = transliterateWhileTyping('kand');
       expect(res.changed).toBe(false);
@@ -116,6 +132,15 @@ describe('Marathi Translation & Transliteration Engine', () => {
       const res = await fillMarathiFromEnglish('Tata Tea 250g');
       expect(res).toBeTruthy();
       expect(hasDevanagari(res)).toBe(true);
+    });
+
+    it('translates Test Product to नमुना उत्पादन via translateToMarathi and fillMarathiFromEnglish', async () => {
+      const res = await translateToMarathi('Test Product');
+      expect(res.text).toBe('नमुना उत्पादन');
+      expect(res.source).toBe('glossary');
+
+      const filled = await fillMarathiFromEnglish('Test Product');
+      expect(filled).toBe('नमुना उत्पादन');
     });
   });
 });

@@ -12,6 +12,8 @@ type PreviewPayload = {
     unitPrice: number;
     discountAmount?: number;
     discountPercent?: number;
+    taxRate?: number;
+    taxName?: string | null;
     mrp?: number | null;
     isCustom?: boolean;
   }>;
@@ -24,11 +26,11 @@ type PreviewPayload = {
 
 /**
  * Online → server preview (tax, offers).
- * Offline / network fail on desktop → local totals (tax 0).
+ * Offline / network fail on desktop → local totals using catalog tax rates.
  */
 export async function previewBillSmart(payload: PreviewPayload): Promise<LocalBillPreview> {
   const { hasSqliteBridge } = await import('./sqliteApi');
-  // Local-first desktop: never call server for totals until Sync brings tax rules later.
+  // Local-first desktop: calculate from the tax rates cached with the catalog.
   if (hasSqliteBridge() || (isDesktopOfflineCapable() && isOfflineNow())) {
     return buildLocalPreview(payload.items, {
       billDiscountAmount: payload.billDiscountAmount,
@@ -47,6 +49,11 @@ export async function previewBillSmart(payload: PreviewPayload): Promise<LocalBi
         unitPrice?: number;
         lineTotal?: number;
         discountAmount?: number;
+        taxes?: Array<{
+          taxName?: string;
+          ratePercent?: number;
+          taxAmount?: number;
+        }>;
         mrp?: number | null;
         isCustom?: boolean;
       }) => ({
@@ -56,6 +63,11 @@ export async function previewBillSmart(payload: PreviewPayload): Promise<LocalBi
         unitPrice: Number(line.unitPrice) || 0,
         lineTotal: Number(line.lineTotal) || 0,
         discountAmount: Number(line.discountAmount) || 0,
+        taxes: (line.taxes || []).map((tax) => ({
+          taxName: tax.taxName || '',
+          ratePercent: Number(tax.ratePercent) || 0,
+          taxAmount: Number(tax.taxAmount) || 0,
+        })),
         mrp: line.mrp ?? null,
         isCustom: line.isCustom === true,
       })),

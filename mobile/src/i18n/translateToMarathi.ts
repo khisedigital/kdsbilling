@@ -16,7 +16,7 @@ export {
   transliterateOnline,
 } from './marathiTransliterate';
 
-const CACHE_KEY = 'en_mr_translate_cache_v2';
+const CACHE_KEY = 'en_mr_translate_cache_v3';
 
 let memoryCache: Record<string, string> | null = null;
 let memoryCacheLoaded = false;
@@ -155,25 +155,25 @@ export async function translateToMarathi(english: string): Promise<TranslateResu
     return { text: onlineGoogle, source: 'online' };
   }
 
-  // 4. Online Input Tools transliteration (for brands & proper nouns)
-  const onlineInputTools = await transliterateOnline(input);
-  if (onlineInputTools) {
-    await remember(input, onlineInputTools);
-    return { text: onlineInputTools, source: 'online' };
-  }
-
-  // 5. MyMemory online fallback
+  // 4. MyMemory online fallback translation
   const onlineMyMemory = await translateOnlineMyMemory(input);
   if (onlineMyMemory) {
     await remember(input, onlineMyMemory);
     return { text: onlineMyMemory, source: 'online' };
   }
 
-  // 6. Desktop offline HuggingFace model (if loaded/available)
+  // 5. Desktop offline HuggingFace model (if loaded/available)
   const offlineModel = await translateWithOfflineModel(input);
   if (offlineModel) {
     await remember(input, offlineModel);
     return { text: offlineModel, source: 'offline-model' };
+  }
+
+  // 6. Online Input Tools transliteration (fallback for proper nouns & brand names)
+  const onlineInputTools = await transliterateOnline(input);
+  if (onlineInputTools) {
+    await remember(input, onlineInputTools);
+    return { text: onlineInputTools, source: 'translit' };
   }
 
   // 7. Offline rule-based phonetic transliteration engine (works 100% offline!)

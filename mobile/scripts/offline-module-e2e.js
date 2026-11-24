@@ -493,6 +493,58 @@ try {
     fail('14. Customer ledger', e);
   }
 
+  // ========== 14a. Delete pending local sale ==========
+  try {
+    const deleteId = 'e2e-local-delete-sale';
+    const stockBefore = db.listProducts(conn, { limit: 50 })
+      .find((p) => p.id === 'p1').variants.find((v) => v.id === 'v1').stockQty;
+    const bill = buildUiBill(deleteId, {
+      total: 130,
+      customerName: 'Ramesh Patil',
+      items: [{ name: 'Rice 1kg Premium', variantId: 'v1', qty: 2, price: 65 }],
+    });
+    db.saveSale(conn, {
+      clientBillId: deleteId,
+      syncStatus: 'pending',
+      createdAt: new Date().toISOString(),
+      bill,
+      payload: {},
+    });
+    const balanceBefore = db.listCustomers(conn).find((c) => c.id === 'cu-e2e')
+      .store_credit_balance;
+    db.addCustomerLedger(conn, {
+      id: `${deleteId}-store_credit`,
+      customerId: 'cu-e2e',
+      entryType: 'store_credit_use',
+      amount: 20,
+      referenceType: 'sale',
+      referenceId: deleteId,
+      syncStatus: 'pending',
+    });
+    db.enqueueSync(conn, {
+      entityType: 'customer_ledger',
+      entityId: `${deleteId}-store_credit`,
+      op: 'create',
+      payload: { id: `${deleteId}-store_credit` },
+    });
+
+    const deleted = db.deletePendingSale(conn, deleteId);
+    const stockAfter = db.listProducts(conn, { limit: 50 })
+      .find((p) => p.id === 'p1').variants.find((v) => v.id === 'v1').stockQty;
+    const balanceAfter = db.listCustomers(conn).find((c) => c.id === 'cu-e2e')
+      .store_credit_balance;
+    const queuedLedger = db.listPendingSyncQueue(conn)
+      .some((row) => row.entityId === `${deleteId}-store_credit`);
+    assert(deleted.deleted, 'sale deleted');
+    assert(!db.getSale(conn, deleteId), 'sale removed');
+    assert(stockAfter === stockBefore, `stock restored: ${stockBefore} -> ${stockAfter}`);
+    assert(balanceAfter === balanceBefore, `wallet balance restored: ${balanceBefore} -> ${balanceAfter}`);
+    assert(!queuedLedger, 'pending ledger sync removed');
+    ok('14a. Delete pending local sale', `stock=${stockAfter} wallet=${balanceAfter}`);
+  } catch (e) {
+    fail('14a. Delete pending local sale', e);
+  }
+
   // ========== 15. Daily closing ==========
   try {
     const preview = db.previewDailyClosingLocal(conn, todayYmd());
@@ -565,8 +617,36 @@ try {
     const pendingBefore = db.pendingSaleCount(conn);
     const one = db.listPendingSales(conn)[0];
     assert(one, 'has pending');
-    db.markSaleSynced(conn, one.clientBillId, 'server-e2e-1');
+    const serverBill = {
+      ...one.bill,
+      id: 'server-e2e-1',
+      items: one.bill.items.map((item) => ({
+        ...item,
+        product_name: 'Server product detail',
+        unit_price: 89,
+        line_total: 89,
+      })),
+    };
+    db.saveSale(conn, {
+      clientBillId: one.clientBillId,
+      serverBillId: serverBill.id,
+      syncStatus: 'synced',
+      skipStock: true,
+      createdAt: one.createdAt,
+      payload: one.payload,
+      bill: serverBill,
+    });
+    db.markSaleSynced(conn, one.clientBillId, serverBill.id);
     assert(db.pendingSaleCount(conn) === pendingBefore - 1, 'pending decreased');
+    assert(db.getSale(conn, one.clientBillId).items[0].product_name === 'Server product detail', 'server item details saved');
+    assert(Number(db.getSale(conn, one.clientBillId).items[0].unit_price) === 89, 'server item price saved');
+    let syncedDeleteRejected = false;
+    try {
+      db.deletePendingSale(conn, one.clientBillId);
+    } catch (err) {
+      syncedDeleteRejected = /only unsynced local sales/i.test(err.message);
+    }
+    assert(syncedDeleteRejected, 'synced sale cannot be deleted');
     ok('18. Mark sale synced', `pending ${pendingBefore}→${db.pendingSaleCount(conn)}`);
   } catch (e) {
     fail('18. Mark sale synced', e);

@@ -68,6 +68,7 @@ function billCopy(language) {
   return {
     taxInvoice: mr ? 'टॅक्स इनव्हॉइस' : 'TAX INVOICE',
     bill: mr ? 'बिल' : 'Bill',
+    billNo: mr ? 'बिल क्र.' : 'Bill No',
     date: mr ? 'तारीख' : 'Date',
     customer: mr ? 'ग्राहक' : 'Customer',
     walkIn: mr ? 'काउंटर' : 'Walk-in',
@@ -179,24 +180,49 @@ function buildReceiptPayload(
   const footer = (shopSettings.billFooter || 'Thank you!').trim() || 'Thank you!';
   const phone = String(shopSettings.phone || tenant.owner_mobile || '').trim();
   const lang = mr ? 'mr' : 'en';
+
+  const tagline = (mr && String(shopSettings.taglineMr || '').trim()) || shopSettings.tagline || '';
+  const invoiceTitle = (mr && String(shopSettings.invoiceTitleMr || '').trim()) || shopSettings.invoiceTitle || '';
+  const terms = (mr && String(shopSettings.termsMr || '').trim()) || shopSettings.terms || '';
+
   return {
     shopName,
+    tagline: shopSettings.showTagline !== false ? tagline : '',
     address: addressMr || shopSettings.address || '',
     city: addressMr ? '' : shopSettings.city || '',
-    gstin: shopSettings.gstin || '',
+    state: shopSettings.state || '',
+    stateCode: shopSettings.stateCode || '',
+    pincode: shopSettings.pincode || '',
+    gstin: (shopSettings.showGstin !== false && shopSettings.gstin) ? shopSettings.gstin : '',
+    fssai: (shopSettings.showFssai !== false && shopSettings.fssai) ? shopSettings.fssai : '',
+    drugLicense: (shopSettings.showDrugLicense !== false && shopSettings.drugLicense) ? shopSettings.drugLicense : '',
+    tradeLicense: (shopSettings.showTradeLicense !== false && shopSettings.tradeLicense) ? shopSettings.tradeLicense : '',
+    pan: (shopSettings.showPan !== false && shopSettings.pan) ? shopSettings.pan : '',
+    invoiceTitle,
     phone,
+    secondaryPhone: shopSettings.secondaryPhone || '',
+    email: shopSettings.email || '',
+    website: shopSettings.website || '',
+    upiId: (shopSettings.showUpi !== false && shopSettings.upiId) ? shopSettings.upiId : '',
+    terms: shopSettings.showTerms !== false ? terms : '',
     billFooter: footer,
     logoUrl: resolveAbsoluteUrl(shopSettings.logoUrl, publicBaseUrl),
     billNumber: bill.bill_number,
     date: resolveBillDate(bill),
     customer: bill.customer?.name || (language === 'mr' ? 'काउंटर' : 'Walk-in'),
+    customerPhone: bill.customer?.phone || '',
     items: (bill.items || []).map((i) => ({
       name: itemPrintName(i, lang, masterNameMrByEnglish),
       sku: i.sku,
       qty: formatBillQty(i.quantity, itemUom(i)),
       price: parseFloat(i.unit_price),
       total: parseFloat(i.line_total),
-      taxes: i.taxes?.map((t) => ({ name: t.tax_name, amount: parseFloat(t.tax_amount) })),
+      taxAmount: parseFloat(i.tax_amount),
+      taxes: (i.taxes || []).map((t) => ({
+        name: t.tax_name,
+        rate: parseFloat(t.rate_percent),
+        amount: parseFloat(t.tax_amount),
+      })),
     })),
     subtotal: parseFloat(bill.subtotal),
     discount: parseFloat(bill.discount_amount),
@@ -281,15 +307,25 @@ function pushTaggedWrapped(lines, text, width, openTag, closeTag) {
   }
 }
 
-/** Single address block — avoid repeating city when already present. */
-function formatAddressBlock(address, city) {
+/** Single address block — avoid repeating city / state when already present. */
+function formatAddressBlock(address, city, state, pincode) {
+  const parts = [];
   const addr = sanitizeThermalText(address || '').replace(/\s+/g, ' ').trim();
   const cityVal = sanitizeThermalText(city || '').replace(/\s+/g, ' ').trim();
-  if (!addr && !cityVal) return '';
-  if (!addr) return cityVal;
-  if (!cityVal) return addr;
-  if (addr.toLowerCase().includes(cityVal.toLowerCase())) return addr;
-  return `${addr}, ${cityVal}`;
+  const stateVal = sanitizeThermalText(state || '').replace(/\s+/g, ' ').trim();
+  const pin = sanitizeThermalText(pincode || '').replace(/\s+/g, ' ').trim();
+
+  if (addr) parts.push(addr);
+  if (cityVal && !addr.toLowerCase().includes(cityVal.toLowerCase())) {
+    parts.push(cityVal);
+  }
+  if (stateVal && !addr.toLowerCase().includes(stateVal.toLowerCase())) {
+    parts.push(stateVal);
+  }
+  if (pin && !addr.includes(pin)) {
+    parts.push(pin);
+  }
+  return parts.join(', ');
 }
 
 function ruleLine(charsPerLine, char = '-') {
@@ -299,10 +335,9 @@ function ruleLine(charsPerLine, char = '-') {
 /**
  * Shop header for 58mm / 80mm:
  * - banner + large centered shop name
- * - address / phone / GSTIN under it
- * - TAX INVOICE label
- *
- * Tags (<CB>, <C>, <B>) are converted to ESC/POS on the mobile / network printer path.
+ * - optional tagline
+ * - address / phone / GSTIN / FSSAI / Drug License / PAN under it
+ * - Invoice title label
  */
 function pushShopHeader(lines, payload, charsPerLine, copy) {
   const star = ruleLine(charsPerLine, '=');
@@ -314,21 +349,42 @@ function pushShopHeader(lines, payload, charsPerLine, copy) {
   const shopTitle = /[\u0900-\u097F]/.test(shopName) ? shopName : shopName.toUpperCase();
   pushTaggedWrapped(lines, shopTitle, nameWidth, '<CB>', '</CB>');
 
+  if (payload.tagline) {
+    pushTaggedWrapped(lines, sanitizeThermalText(payload.tagline), charsPerLine, '<C>', '</C>');
+  }
+
   lines.push(star);
 
-  const addressBlock = formatAddressBlock(payload.address, payload.city);
+  const addressBlock = formatAddressBlock(payload.address, payload.city, payload.state, payload.pincode);
   if (addressBlock) {
     pushTaggedWrapped(lines, addressBlock, charsPerLine, '<C>', '</C>');
   }
   if (payload.phone) {
-    pushTaggedWrapped(lines, `${copy.phone}: ${payload.phone}`, charsPerLine, '<C>', '</C>');
+    const phText = payload.secondaryPhone
+      ? `${copy.phone}: ${payload.phone} / ${payload.secondaryPhone}`
+      : `${copy.phone}: ${payload.phone}`;
+    pushTaggedWrapped(lines, phText, charsPerLine, '<C>', '</C>');
+    if (charsPerLine >= 42 && payload.gstin) lines.push('');
   }
   if (payload.gstin) {
     pushTaggedWrapped(lines, `GSTIN: ${payload.gstin}`, charsPerLine, '<C>', '</C>');
   }
+  if (payload.fssai) {
+    pushTaggedWrapped(lines, `FSSAI: ${payload.fssai}`, charsPerLine, '<C>', '</C>');
+  }
+  if (payload.drugLicense) {
+    pushTaggedWrapped(lines, `D.L. No: ${payload.drugLicense}`, charsPerLine, '<C>', '</C>');
+  }
+  if (payload.tradeLicense) {
+    pushTaggedWrapped(lines, `Trade Lic: ${payload.tradeLicense}`, charsPerLine, '<C>', '</C>');
+  }
+  if (payload.pan) {
+    pushTaggedWrapped(lines, `PAN: ${payload.pan}`, charsPerLine, '<C>', '</C>');
+  }
 
   lines.push(ruleLine(charsPerLine, '-'));
-  lines.push(`<C>${copy.taxInvoice}</C>`);
+  const docTitle = payload.invoiceTitle || copy.taxInvoice;
+  pushTaggedWrapped(lines, docTitle, charsPerLine, '<C>', '</C>');
   lines.push(ruleLine(charsPerLine, '-'));
 }
 
@@ -363,6 +419,25 @@ function padCell(text, width, align = 'left') {
 function moneyCell(amount) {
   const n = parseFloat(amount);
   return (Number.isFinite(n) ? n : 0).toFixed(2);
+}
+
+function itemTaxDetails(item) {
+  const taxes = Array.isArray(item.taxes) ? item.taxes : [];
+  if (taxes.length) {
+    return taxes.map((tax) => {
+      const rate = parseFloat(tax.rate);
+      const rateLabel = Number.isFinite(rate) ? ` (${parseFloat(rate.toFixed(4))}%)` : '';
+      return {
+        label: `${sanitizeThermalText(tax.name || 'Tax')}${rateLabel}`,
+        amount: tax.amount,
+      };
+    });
+  }
+
+  const taxAmount = parseFloat(item.taxAmount);
+  return Number.isFinite(taxAmount) && taxAmount > 0
+    ? [{ label: '', amount: taxAmount }]
+    : [];
 }
 
 function tableCols(charsPerLine) {
@@ -455,15 +530,30 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
 
   const copy = billCopy(language);
   const lines = [];
+  const add80mmGap = () => {
+    if (charsPerLine >= 42) lines.push('');
+  };
   pushShopHeader(lines, payload, charsPerLine, copy);
   lines.push(row(copy.date, formatReceiptDate(payload.date)));
+  if (payload.billNumber != null && String(payload.billNumber).trim()) {
+    lines.push(row(copy.billNo, payload.billNumber));
+  }
+  add80mmGap();
   lines.push(row(copy.customer, sanitizeThermalText(payload.customer).slice(0, Math.max(8, charsPerLine - 10))));
   lines.push(divider('='));
   lines.push(`<B>${tableHeaderLine(charsPerLine, copy)}</B>`);
   lines.push(divider('-'));
 
-  for (const item of payload.items) {
+  for (const [index, item] of payload.items.entries()) {
     lines.push(...tableItemLines(charsPerLine, item.name, item.qty, item.price, item.total));
+    for (const tax of itemTaxDetails(item)) {
+      pushWrappedLeft(
+        lines,
+        `Tax: ${tax.label ? `${tax.label} ` : ''}${formatMoneyThermal(tax.amount)}`,
+        charsPerLine,
+      );
+    }
+    if (index < payload.items.length - 1) add80mmGap();
   }
 
   lines.push(divider('='));
@@ -471,11 +561,13 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
   if (payload.discount > 0) {
     lines.push(row(copy.discount, `-${formatMoneyThermal(payload.discount)}`));
   }
+  add80mmGap();
   lines.push(row(copy.tax, formatMoneyThermal(payload.tax)));
   if (Math.abs(payload.roundOff || 0) >= 0.005) {
     const ro = payload.roundOff;
     lines.push(row(copy.round, `${ro > 0 ? '+' : '-'}${formatMoneyThermal(Math.abs(ro))}`));
   }
+  add80mmGap();
   lines.push(`<B>${row(copy.total, formatMoneyThermal(payload.total))}</B>`);
   lines.push(divider('-'));
   for (const p of payload.payments) {
@@ -485,6 +577,16 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
     lines.push(row(copy.change, formatMoneyThermal(payload.change)));
   }
   lines.push(divider('='));
+
+  if (payload.upiId) {
+    lines.push(`<C>UPI: ${payload.upiId}</C>`);
+    lines.push(divider('-'));
+  }
+
+  if (payload.terms) {
+    pushTaggedWrapped(lines, payload.terms, charsPerLine, '<C>', '</C>');
+    lines.push(divider('-'));
+  }
 
   const customFooter = sanitizeThermalText(payload.billFooter || '').trim();
   const isThankYouFooter = /thank\s*you/i.test(customFooter);
@@ -504,28 +606,43 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
 
 function renderA4(payload, language = 'en') {
   const copy = billCopy(language);
-  const itemsHtml = payload.items.map((i) => `
+  const itemsHtml = payload.items.map((i) => {
+    const taxHtml = itemTaxDetails(i).map((tax) =>
+      `<div class="item-tax">${tax.label ? `${escapeHtml(tax.label)}: ` : 'Tax: '}${formatMoneyHtml(tax.amount, payload.currency)}</div>`
+    ).join('');
+    return `
     <tr>
-      <td>${escapeHtml(i.name)}${i.sku ? `<br><small style="color:#6b7280">${escapeHtml(i.sku)}</small>` : ''}</td>
+      <td>${escapeHtml(i.name)}${i.sku ? `<br><small style="color:#6b7280">${escapeHtml(i.sku)}</small>` : ''}${taxHtml}</td>
       <td style="text-align:center">${i.qty}</td>
       <td style="text-align:right">${formatMoneyHtml(i.price, payload.currency)}</td>
       <td style="text-align:right">${formatMoneyHtml(i.total, payload.currency)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const logoHtml = payload.logoUrl
     ? `<img src="${escapeHtml(payload.logoUrl)}" alt="Logo" class="logo" />`
     : '';
 
-  const addressBlock = formatAddressBlock(payload.address, payload.city);
+  const addressBlock = formatAddressBlock(payload.address, payload.city, payload.state, payload.pincode);
   const metaBits = [
-    addressBlock,
-    payload.phone ? `${copy.phone}: ${payload.phone}` : '',
-    payload.gstin ? `GSTIN: ${payload.gstin}` : '',
-  ].filter(Boolean).map(escapeHtml);
+    payload.tagline ? `<div style="font-style:italic;margin-bottom:2px">${escapeHtml(payload.tagline)}</div>` : '',
+    addressBlock ? escapeHtml(addressBlock) : '',
+    payload.phone
+      ? escapeHtml(payload.secondaryPhone ? `${copy.phone}: ${payload.phone} / ${payload.secondaryPhone}` : `${copy.phone}: ${payload.phone}`)
+      : '',
+    payload.gstin ? `GSTIN: ${escapeHtml(payload.gstin)}` : '',
+    payload.fssai ? `FSSAI Lic No: ${escapeHtml(payload.fssai)}` : '',
+    payload.drugLicense ? `D.L. No: ${escapeHtml(payload.drugLicense)}` : '',
+    payload.tradeLicense ? `Trade Lic: ${escapeHtml(payload.tradeLicense)}` : '',
+    payload.pan ? `PAN: ${escapeHtml(payload.pan)}` : '',
+  ].filter(Boolean);
 
   const paymentsHtml = (payload.payments || []).map((p) =>
     `<div class="pay-row"><span>${escapeHtml(payLabel(p.mode, language))}</span><span>${formatMoneyHtml(p.amount, payload.currency)}</span></div>`
   ).join('');
+  const upiHtml = payload.upiId
+    ? `<div class="pay-row"><span>UPI</span><span><strong>${escapeHtml(payload.upiId)}</strong></span></div>`
+    : '';
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
@@ -546,11 +663,14 @@ function renderA4(payload, language = 'en') {
       .shop{font-size:24px;font-weight:700;letter-spacing:0.04em;margin:0 0 4px;text-transform:uppercase;line-height:1.3}
       .meta{color:#374151;font-size:12px;margin:2px 0;line-height:1.4;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
       .doc-title{margin-top:6px;font-size:12px;letter-spacing:0.18em;font-weight:700;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif}
-      .bill-meta{text-align:center;margin:0 0 10px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:12px;color:#374151;line-height:1.4;width:100%}
+      .bill-meta{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;text-align:left;margin:0 0 10px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:12px;color:#374151;line-height:1.4;width:100%}
+      .customer-details{flex:1;min-width:0}
+      .bill-identifiers{text-align:right;min-width:190px}
       .bill-meta strong{color:#111}
       table{width:100%;border-collapse:collapse;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
-      th,td{border-bottom:1px solid #e5e7eb;padding:8px 6px;text-align:left}
+      th,td{border-bottom:1px solid #e5e7eb;padding:7px 6px;text-align:left;line-height:1.35}
       th{background:#f3f4f6;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#4b5563}
+      .item-tax{font-size:10px;line-height:1.35;margin-top:2px}
       .totals{margin-top:12px;margin-left:auto;width:280px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       .totals .row{display:flex;justify-content:space-between;padding:3px 0}
       .totals .grand{border-top:2px solid #111;margin-top:6px;padding-top:8px;font-size:16px;font-weight:700}
@@ -582,11 +702,20 @@ function renderA4(payload, language = 'en') {
       ${logoHtml}
       <h1 class="shop">${escapeHtml(payload.shopName || 'Shop')}</h1>
       ${metaBits.map((m) => `<p class="meta">${m}</p>`).join('')}
-      <p class="doc-title">${escapeHtml(copy.taxInvoice)}</p>
+      <p class="doc-title">${escapeHtml(payload.invoiceTitle || copy.taxInvoice)}</p>
     </div>
     <div class="bill-meta">
-      <div><strong>${escapeHtml(copy.date)}</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
-      <div><strong>${escapeHtml(copy.customer)}</strong> ${escapeHtml(payload.customer)}</div>
+      <div class="customer-details">
+        <div><strong>${escapeHtml(copy.customer)}</strong></div>
+        <div>${escapeHtml(payload.customer)}</div>
+        ${payload.customerPhone ? `<div><strong>${escapeHtml(copy.phone)}</strong> ${escapeHtml(payload.customerPhone)}</div>` : ''}
+      </div>
+      <div class="bill-identifiers">
+        <div><strong>${escapeHtml(copy.date)}</strong> ${escapeHtml(formatReceiptDate(payload.date))}</div>
+        ${payload.billNumber != null && String(payload.billNumber).trim()
+          ? `<div><strong>${escapeHtml(copy.billNo)}</strong> ${escapeHtml(payload.billNumber)}</div>`
+          : ''}
+      </div>
     </div>
     <table><thead><tr><th>${escapeHtml(copy.itemWord)}</th><th style="text-align:center">${escapeHtml(copy.qtyWord)}</th><th style="text-align:right">${escapeHtml(copy.rateWord)}</th><th style="text-align:right">${escapeHtml(copy.amount)}</th></tr></thead>
     <tbody>${itemsHtml}</tbody></table>
@@ -599,8 +728,9 @@ function renderA4(payload, language = 'en') {
         : ''}
       <div class="row grand"><span>${escapeHtml(copy.total)}</span><span>${formatMoneyHtml(payload.total, payload.currency)}</span></div>
     </div>
-    ${paymentsHtml ? `<div class="pay">${paymentsHtml}</div>` : ''}
+    ${paymentsHtml ? `<div class="pay">${paymentsHtml}${upiHtml}</div>` : (upiHtml ? `<div class="pay">${upiHtml}</div>` : '')}
     <div class="footer">
+      ${payload.terms ? `<p style="font-size:11px;color:#4b5563;margin-bottom:6px"><strong>Terms & Conditions:</strong> ${escapeHtml(payload.terms)}</p>` : ''}
       ${payload.billFooter && !/^thank you!?$/i.test(String(payload.billFooter).trim())
         ? `<p>${escapeHtml(payload.billFooter)}</p>`
         : ''}

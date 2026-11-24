@@ -154,6 +154,10 @@ function variantSearchRows(product: Product, categoryId?: string | null): Search
           type: product.uom.type,
         }
       : null;
+    const variantTaxGroup = v.taxGroup;
+    const productTaxGroup = product.tax_group_id && product.taxGroup
+      ? product.taxGroup
+      : variantTaxGroup || product.taxGroup;
     rows.push({
       variantId: vv.id,
       productId: product.id,
@@ -168,6 +172,8 @@ function variantSearchRows(product: Product, categoryId?: string | null): Search
       mrp: vv.mrp ?? null,
       barcodes: plain,
       quantityBarcodes,
+      taxRate: Number(productTaxGroup?.total_rate) || 0,
+      taxName: productTaxGroup?.name || null,
       stockQty: Number(vv.stockQty ?? vv.stock_qty) || 0,
       categoryId: productCategoryId,
       categoryName: product.category?.name ?? null,

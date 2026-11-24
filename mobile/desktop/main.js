@@ -745,6 +745,12 @@ function registerIpc() {
     return { ok: true, pending: offlineDb.pendingSaleCount(db) };
   });
 
+  ipcMain.handle('sqlite:delete-pending-sale', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    const result = offlineDb.deletePendingSale(db, options?.clientBillId);
+    return { ok: true, ...result, pending: offlineDb.pendingSaleCount(db) };
+  });
+
   ipcMain.handle('sqlite:pending-count', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, pending: offlineDb.pendingSaleCount(db) };

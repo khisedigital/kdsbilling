@@ -34,6 +34,7 @@ import { colors } from '../../theme/colors';
 import { radius, shadow, spacing } from '../../theme/layout';
 import { apiError } from '../../utils/apiError';
 import { totalSaving } from '../../utils/billSaving';
+import { getBillLineTaxDetails, toBillDetailTaxes, type BillLineTax } from '../../utils/billTax';
 import { printedCartLineName, screenProductName } from '../../utils/productName';
 import { formatBillQuantity, isMeasureUom, parseQuantityForUom } from '../../utils/quantity';
 import { variantLabel } from '../../utils/variantLabel';
@@ -55,6 +56,7 @@ type BillPreview = {
     unitPrice: number;
     lineTotal: number;
     discountAmount?: number;
+    taxes?: BillLineTax[];
   }>;
   subtotal: number;
   taxAmount: number;
@@ -67,8 +69,6 @@ const PAYMENT_MODES = [
   { id: 'cash', label: 'Cash', icon: 'cash' },
   { id: 'upi', label: 'UPI', icon: 'qrcode-scan' },
   { id: 'card', label: 'Card', icon: 'credit-card-outline' },
-  { id: 'credit', label: 'Credit', icon: 'account-clock-outline' },
-  { id: 'store_credit', label: 'Wallet', icon: 'wallet-outline' },
 ] as const;
 
 function round2(n: number) {
@@ -163,7 +163,6 @@ export default function WideBillPanel() {
   const change = Math.max(0, totalPaid - totalDue);
   const discountApplied = round2(preview?.discountAmount ?? 0);
   const youSaved = useMemo(() => totalSaving(items), [items]);
-
   const syncPrimaryAmount = useCallback((due: number, extras = splitExtraRef.current) => {
     const other = extras.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     setPayAmount(round2(Math.max(0, due - other)).toFixed(2));
@@ -216,6 +215,8 @@ export default function WideBillPanel() {
           mrp: item.mrp ?? null,
           discountAmount: item.discountAmount,
           discountPercent: item.discountPercent,
+          taxRate: item.taxRate,
+          taxName: item.taxName,
           isCustom: item.isCustom === true,
           productName: item.productName,
           productNameMr: item.productNameMr ?? null,
@@ -534,6 +535,7 @@ export default function WideBillPanel() {
           : null,
       items: preview.items.map((line, idx) => {
         const cart = items.find((i) => i.variantId === line.variantId);
+        const taxes = toBillDetailTaxes(line.taxes);
         return {
           id: `item-${idx}`,
           product_name: printedCartLineName(cart, line.productName),
@@ -545,7 +547,9 @@ export default function WideBillPanel() {
           unit_price: line.unitPrice,
           mrp: cart?.mrp ?? null,
           discount_amount: line.discountAmount || 0,
+          tax_amount: taxes.reduce((sum, tax) => sum + tax.tax_amount, 0),
           line_total: line.lineTotal,
+          taxes,
           variant: cart
             ? {
               size: cart.size,
@@ -618,6 +622,8 @@ export default function WideBillPanel() {
           mrp: item.mrp ?? null,
           discountAmount: item.discountAmount,
           discountPercent: item.discountPercent,
+          taxRate: item.taxRate,
+          taxName: item.taxName,
           isCustom: item.isCustom === true,
           productName: item.productName,
           productNameMr: item.productNameMr ?? null,
@@ -731,6 +737,8 @@ export default function WideBillPanel() {
   const renderLine = ({ item }: { item: CartItem }) => {
     const size = variantLabel(item.size, item.color);
     const lineName = screenProductName(item.productName, item.productNameMr);
+    const previewTaxes = preview?.items.find((line) => line.variantId === item.variantId)?.taxes;
+    const taxDetails = getBillLineTaxDetails(item, previewTaxes);
     const qtyValue =
       qtyDrafts[item.variantId] !== undefined
         ? qtyDrafts[item.variantId]
@@ -747,6 +755,15 @@ export default function WideBillPanel() {
             {item.isCustom ? t(' · Custom') : size ? ` · ${size}` : ''}
           </Text>
           {item.uom?.code ? <Text style={styles.lineMeta}>{item.uom.code}</Text> : null}
+          {taxDetails.map((tax, index) => (
+            <Text key={`${tax.name}:${tax.rate}:${index}`} style={styles.lineMeta}>
+              {t('{{name}} {{rate}}%: {{amount}}', {
+                name: tax.name,
+                rate: tax.rate,
+                amount: money(tax.amount),
+              })}
+            </Text>
+          ))}
         </View>
         <View style={styles.rateCell}>
           <Text style={styles.ratePrefix}>₹</Text>
@@ -799,7 +816,7 @@ export default function WideBillPanel() {
           hitSlop={8}
           style={styles.removeBtn}
           accessibilityLabel={t('Remove {{name}}', { name: lineName })}>
-          <Icon name="close" size={16} color={colors.textMuted} />
+          <Icon name="trash-can-outline" size={16} color={colors.error} />
         </Pressable>
       </View>
     );
@@ -814,11 +831,14 @@ export default function WideBillPanel() {
   return (
     <View style={styles.pane}>
       <View style={styles.head}>
+        <View style={styles.summaryIcon}>
+          <Icon name="receipt-text-outline" size={20} color={colors.primary} />
+        </View>
         <View style={styles.headText}>
-          <Text style={styles.headTitle} numberOfLines={1}>
+          <Text style={styles.headTitle} numberOfLines={1}>{t('Bill Summary')}</Text>
+          <Text style={styles.headCount} numberOfLines={1}>
             {customerName || t('Walk-in')}
-          </Text>
-          <Text style={styles.headCount}>
+            {' · '}
             {items.length === 1
               ? t('{{count}} item', { count: items.length })
               : t('{{count}} items', { count: items.length })}
@@ -1169,19 +1189,16 @@ export default function WideBillPanel() {
                 <View style={styles.payModes}>
                   {PAYMENT_MODES.map((mode) => {
                     const on = payMode === mode.id;
-                    const needsNet = mode.id === 'credit' || mode.id === 'store_credit';
-                    const disabled = needsNet && !online;
                     return (
                       <Pressable
                         key={mode.id}
-                        disabled={disabled}
                         onPress={() => {
                           setPayMode(mode.id);
                           setSplitExtra((prev) =>
                             prev.map((p) => (p.mode === mode.id ? { ...p, mode: defaultSplitMode(mode.id) } : p)),
                           );
                         }}
-                        style={[styles.payMode, on && styles.payModeOn, disabled && { opacity: 0.4 }]}>
+                        style={[styles.payMode, on && styles.payModeOn]}>
                         <Icon name={mode.icon} size={16} color={on ? colors.primary : colors.textMuted} />
                         <Text style={[styles.payModeText, on && styles.payModeTextOn]}>{t(mode.label)}</Text>
                       </Pressable>
@@ -1299,8 +1316,8 @@ export default function WideBillPanel() {
 
 const styles = StyleSheet.create({
   pane: {
-    flex: 2,
-    minWidth: 320,
+    flex: 2.5,
+    minWidth: 420,
     minHeight: 0,
     backgroundColor: colors.surface,
     borderLeftWidth: 1,
@@ -1314,11 +1331,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.xs,
     paddingHorizontal: spacing.sm,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xs,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+  summaryIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.primaryLight,
   },
   headText: { flex: 1, minWidth: 0 },
-  headTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
+  headTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
   headCount: { fontSize: 11, fontWeight: '600', color: colors.textMuted, marginTop: 1 },
   headIconBtn: {
     width: 32,
@@ -1409,22 +1435,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.xs,
     marginHorizontal: spacing.sm,
-    paddingVertical: 6,
+    paddingVertical: spacing.sm,
     paddingHorizontal: spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    backgroundColor: colors.surfaceVariant,
+    borderBottomColor: colors.primaryDark,
+    backgroundColor: colors.primaryDark,
     borderTopLeftRadius: radius.sm,
     borderTopRightRadius: radius.sm,
   },
   th: {
     fontSize: 11,
     fontWeight: '700',
-    color: colors.textMuted,
+    color: colors.textOnPrimary,
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
-  thRemove: { width: 24 },
+  thRemove: { width: 28 },
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1435,13 +1461,13 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   colProduct: { flex: 1.4, minWidth: 0 },
-  colRateHead: { width: 104, alignItems: 'flex-end', justifyContent: 'center' },
-  colQtyHead: { width: 148, alignItems: 'center', justifyContent: 'center' },
-  colAmountHead: { width: 78, alignItems: 'flex-end', justifyContent: 'center' },
+  colRateHead: { width: 96, alignItems: 'flex-end', justifyContent: 'center' },
+  colQtyHead: { width: 132, alignItems: 'center', justifyContent: 'center' },
+  colAmountHead: { width: 74, alignItems: 'flex-end', justifyContent: 'center' },
   thEnd: { textAlign: 'right', width: '100%' },
   thCenter: { textAlign: 'center', width: '100%' },
   rateCell: {
-    width: 104,
+    width: 96,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
@@ -1449,7 +1475,7 @@ const styles = StyleSheet.create({
   },
   ratePrefix: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
   rateInput: {
-    width: 78,
+    width: 68,
     height: 28.56,
     paddingVertical: 0,
     paddingHorizontal: 6,
@@ -1462,9 +1488,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  colQty: { width: 148, alignItems: 'center' },
+  colQty: { width: 132, alignItems: 'center' },
   colAmount: {
-    width: 78,
+    width: 74,
     fontSize: 13,
     fontWeight: '800',
     color: colors.secondary,
@@ -1489,7 +1515,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qtyInput: {
-    width: 68,
+    width: 64,
     height: 28.56, // +2%
     paddingVertical: 0,
     paddingHorizontal: 4,
@@ -1506,10 +1532,10 @@ const styles = StyleSheet.create({
   lineName: { fontSize: 13, fontWeight: '700', color: colors.text },
   lineMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   removeBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: colors.surfaceVariant,
+    width: 28,
+    height: 28,
+    borderRadius: radius.sm,
+    backgroundColor: colors.errorLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1533,9 +1559,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   totalBlock: {
-    paddingHorizontal: spacing.sm,
-    paddingTop: spacing.xs,
-    gap: 2,
+    margin: spacing.sm,
+    padding: spacing.md,
+    gap: spacing.xs,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    backgroundColor: colors.surface,
   },
   sumRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sumLbl: { flex: 1, fontSize: 11, color: colors.textMuted, paddingRight: spacing.sm },
@@ -1559,10 +1589,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 2,
-    paddingTop: spacing.xs,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
+    marginTop: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primaryLight,
   },
   dueLbl: {
     flex: 1,
@@ -1570,7 +1600,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.3,
     textTransform: 'uppercase',
-    color: colors.textMuted,
+    color: colors.primaryDark,
     paddingRight: spacing.sm,
   },
   dueAmt: {

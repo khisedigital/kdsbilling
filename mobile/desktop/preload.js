@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('kdsDesktop', {
   sqliteListPendingSales: (options) => call('sqlite:list-pending-sales', options),
   sqliteMarkSaleSynced: (options) => call('sqlite:mark-sale-synced', options),
   sqliteMarkSaleError: (options) => call('sqlite:mark-sale-error', options),
+  sqliteDeletePendingSale: (options) => call('sqlite:delete-pending-sale', options),
   sqlitePendingCount: (options) => call('sqlite:pending-count', options),
   sqliteSaveAuthSession: (options) => call('sqlite:save-auth-session', options),
   sqliteReadAuthSession: (options) => call('sqlite:read-auth-session', options),

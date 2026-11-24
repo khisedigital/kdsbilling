@@ -37,4 +37,24 @@ describe('buildLocalPreview (desktop offline totals)', () => {
     expect(preview.items[0].lineTotal).toBe(90);
     expect(preview.subtotal).toBe(90);
   });
+
+  it('includes cached tax in offline payment totals and percent discounts', () => {
+    const preview = buildLocalPreview(
+      [{
+        variantId: 'taxed',
+        productName: 'Taxed item',
+        quantity: 1,
+        unitPrice: 100,
+        taxRate: 18,
+        taxName: 'GST',
+      }],
+      { billDiscountPercent: 10 },
+    );
+
+    expect(preview.subtotal).toBe(100);
+    expect(preview.taxAmount).toBe(18);
+    expect(preview.discountAmount).toBe(11.8);
+    expect(preview.totalAmount).toBe(106.2);
+    expect(preview.items[0].lineTotal).toBe(118);
+  });
 });

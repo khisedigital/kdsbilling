@@ -157,6 +157,52 @@ export const PHONETIC_RETAIL_MAP: Record<string, string> = {
   egg: 'अंडे',
   eggs: 'अंडी',
 
+  // Retail, products & billing terms
+  test: 'नमुना',
+  tests: 'नमुने',
+  product: 'उत्पादन',
+  products: 'उत्पादने',
+  'test product': 'नमुना उत्पादन',
+  'test products': 'नमुना उत्पादने',
+  sample: 'नमुना',
+  samples: 'नमुने',
+  'sample product': 'नमुना उत्पादन',
+  'sample products': 'नमुना उत्पादने',
+  trial: 'नमुना',
+  demo: 'डेमो',
+  item: 'वस्तू',
+  items: 'वस्तू',
+  'test item': 'नमुना वस्तू',
+  'test items': 'नमुना वस्तू',
+  namuna: 'नमुना',
+  namune: 'नमुने',
+  utpadan: 'उत्पादन',
+  utpadane: 'उत्पादने',
+  vastu: 'वस्तू',
+  maal: 'माल',
+  mal: 'माल',
+  goods: 'माल',
+  brand: 'ब्रँड',
+  brands: 'ब्रँड',
+  category: 'प्रकार',
+  categories: 'प्रकार',
+  variant: 'प्रकार',
+  variants: 'प्रकार',
+  unit: 'एकक',
+  units: 'एकके',
+  piece: 'नग',
+  pieces: 'नग',
+  cost: 'खरेदी किंमत',
+  price: 'किंमत',
+  rate: 'दर',
+  discount: 'सूट',
+  total: 'एकूण',
+  bill: 'बिल',
+  sale: 'विक्री',
+  sales: 'विक्री',
+  purchase: 'खरेदी',
+  order: 'ऑर्डर',
+
   // Common Brands
   parle: 'पारले',
   'parle g': 'पारले जी',
@@ -418,26 +464,55 @@ export function transliterateText(text: string): string {
 
   // Tokenize into words, numbers with units (e.g. 500g, 1kg), and delimiters
   const tokens = text.split(/([a-zA-Z]+|\d+[a-zA-Z]+|\s+|[^a-zA-Z\d\s]+)/).filter(Boolean);
-  return tokens
-    .map((token) => {
-      if (/^\s+$/.test(token) || /^[^\w\s]+$/.test(token)) return token;
-      if (/^\d+$/.test(token)) return token;
+  const out: string[] = [];
+  let i = 0;
 
-      // Handle numbers with units: e.g. 500g -> 500 ग्रॅम, 1kg -> 1 किलो, 250ml -> 250 मिली
-      const unitMatch = token.match(/^(\d+)([a-zA-Z]+)$/);
-      if (unitMatch) {
-        const [, num, unit] = unitMatch;
-        const u = unit.toLowerCase();
-        const unitMr = PHONETIC_RETAIL_MAP[u] || transliterateWord(u);
-        return `${num} ${unitMr}`;
-      }
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (/^\s+$/.test(token) || /^[^\w\s]+$/.test(token)) {
+      out.push(token);
+      i++;
+      continue;
+    }
+    if (/^\d+$/.test(token)) {
+      out.push(token);
+      i++;
+      continue;
+    }
 
-      if (containsLatin(token)) {
-        return transliterateWord(token);
+    // Check 2-word phrase in PHONETIC_RETAIL_MAP: tokens[i] + ' ' + tokens[i+2]
+    if (i + 2 < tokens.length && /^\s+$/.test(tokens[i + 1])) {
+      const phrase2 = `${tokens[i]} ${tokens[i + 2]}`.toLowerCase();
+      const match2 = PHONETIC_RETAIL_MAP[phrase2];
+      if (match2) {
+        out.push(match2);
+        i += 3;
+        continue;
       }
-      return token;
-    })
-    .join('');
+    }
+
+    // Handle numbers with units: e.g. 500g -> 500 ग्रॅम, 1kg -> 1 किलो, 250ml -> 250 मिली
+    const unitMatch = token.match(/^(\d+)([a-zA-Z]+)$/);
+    if (unitMatch) {
+      const [, num, unit] = unitMatch;
+      const u = unit.toLowerCase();
+      const unitMr = PHONETIC_RETAIL_MAP[u] || transliterateWord(u);
+      out.push(`${num} ${unitMr}`);
+      i++;
+      continue;
+    }
+
+    if (containsLatin(token)) {
+      out.push(transliterateWord(token));
+      i++;
+      continue;
+    }
+
+    out.push(token);
+    i++;
+  }
+
+  return out.join('');
 }
 
 /**

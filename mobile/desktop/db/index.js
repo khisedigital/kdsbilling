@@ -384,6 +384,54 @@ function hydrateProductStock(db, product) {
   return { ...product, variants, stockQty: total, stock_qty: total };
 }
 
+/** Re-link product and variant tax groups from the local tax master table. */
+function hydrateProductTax(db, product) {
+  if (!product?.id) return product;
+  let taxById = new Map();
+  try {
+    const rows = db.prepare(`SELECT id, json FROM tax_groups`).all();
+    taxById = new Map(rows.map((row) => {
+      try {
+        return [String(row.id), JSON.parse(row.json)];
+      } catch {
+        return [String(row.id), null];
+      }
+    }));
+  } catch {
+    return product;
+  }
+
+  const taxGroupFor = (taxId, existing) => {
+    const id = String(taxId || existing?.id || '').trim();
+    if (!id) return existing || undefined;
+    const master = taxById.get(id);
+    return master
+      ? { id: master.id || id, name: master.name || '', total_rate: master.total_rate }
+      : (existing || undefined);
+  };
+
+  const taxId = product.tax_group_id ?? product.taxGroupId ?? product.taxGroup?.id ?? null;
+  const taxGroup = taxGroupFor(taxId, product.taxGroup);
+  const variants = (product.variants || []).map((v) => {
+    const variantTaxId = v.tax_group_id ?? v.taxGroupId ?? v.taxGroup?.id ?? null;
+    const variantTaxGroup = taxGroupFor(variantTaxId, v.taxGroup);
+    return variantTaxId || variantTaxGroup
+      ? { ...v, tax_group_id: variantTaxId || null, taxGroupId: variantTaxId || null, taxGroup: variantTaxGroup }
+      : v;
+  });
+  return {
+    ...product,
+    tax_group_id: taxId || null,
+    taxGroupId: taxId || null,
+    taxGroup,
+    variants,
+  };
+}
+
+function hydrateProduct(db, product) {
+  return hydrateProductTax(db, hydrateProductStock(db, product));
+}
+
 /** Keep products.json variants[].stockQty aligned after column updates. */
 function syncVariantStockIntoProductJson(db, variantId, stockQty) {
   const id = String(variantId || '').trim();
@@ -530,7 +578,7 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
       }
     })
     .filter(Boolean)
-    .map((p) => hydrateProductStock(db, p));
+    .map((p) => hydrateProduct(db, p));
 }
 
 function getProduct(db, id) {
@@ -539,7 +587,7 @@ function getProduct(db, id) {
   const row = db.prepare(`SELECT json FROM products WHERE id = ?`).get(pid);
   if (!row?.json) return null;
   try {
-    return hydrateProductStock(db, JSON.parse(row.json));
+    return hydrateProduct(db, JSON.parse(row.json));
   } catch {
     return null;
   }
@@ -829,6 +877,110 @@ function markSaleSyncError(db, clientBillId, message, attempts) {
      SET sync_attempts = ?, last_error = ?
      WHERE client_bill_id = ?`,
   ).run(Number(attempts) || 0, String(message || ''), String(clientBillId));
+}
+
+function deletePendingSale(db, clientBillId) {
+  const id = String(clientBillId || '').trim();
+  if (!id) throw new Error('Sale id required');
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const sale = db
+      .prepare(`SELECT sync_status, server_bill_id FROM sales WHERE client_bill_id = ?`)
+      .get(id);
+    if (!sale || sale.sync_status !== 'pending' || sale.server_bill_id) {
+      throw new Error('Only unsynced local sales can be deleted');
+    }
+
+    const ledgerRows = db
+      .prepare(
+        `SELECT id, customer_id, entry_type, amount, sync_status
+         FROM customer_ledger
+         WHERE reference_type = 'sale' AND reference_id = ?`,
+      )
+      .all(id);
+    const ledgerIds = ledgerRows.map((row) => row.id);
+    if (ledgerRows.some((row) => row.sync_status !== 'pending')) {
+      throw new Error('Cannot delete this sale because its customer ledger has already synced');
+    }
+    if (ledgerIds.length) {
+      const placeholders = ledgerIds.map(() => '?').join(',');
+      const syncedLedgerQueue = db
+        .prepare(
+          `SELECT 1 AS found FROM sync_queue
+           WHERE entity_type = 'customer_ledger'
+             AND entity_id IN (${placeholders})
+             AND sync_status != 'pending'
+           LIMIT 1`,
+        )
+        .get(...ledgerIds);
+      if (syncedLedgerQueue) {
+        throw new Error('Cannot delete this sale because its customer ledger has already synced');
+      }
+
+      const balanceDeltas = new Map();
+      for (const row of ledgerRows) {
+        const type = String(row.entry_type || '');
+        const amount = Math.abs(Number(row.amount) || 0);
+        const delta = type === 'store_credit_add' || type === 'payment' ? amount : -amount;
+        balanceDeltas.set(
+          row.customer_id,
+          (balanceDeltas.get(row.customer_id) || 0) - delta,
+        );
+      }
+      for (const [customerId, delta] of balanceDeltas) {
+        const customerRow = db.prepare(`SELECT json FROM customers WHERE id = ?`).get(customerId);
+        if (!customerRow?.json) continue;
+        let customer;
+        try {
+          customer = JSON.parse(customerRow.json);
+        } catch {
+          throw new Error('Cannot safely restore the customer balance for this sale');
+        }
+        const balance = Math.round(
+          ((Number(customer.store_credit_balance ?? customer.storeCreditBalance) || 0) + delta) * 100,
+        ) / 100;
+        customer.store_credit_balance = balance;
+        customer.storeCreditBalance = balance;
+        db.prepare(
+          `UPDATE customers SET json = ?, updated_at = ?, sync_status = 'pending' WHERE id = ?`,
+        ).run(JSON.stringify(customer), nowIso(), customerId);
+      }
+
+      db.prepare(
+        `DELETE FROM sync_queue
+         WHERE entity_type = 'customer_ledger'
+           AND entity_id IN (${placeholders})
+           AND sync_status = 'pending'`,
+      ).run(...ledgerIds);
+      db.prepare(
+        `DELETE FROM customer_ledger
+         WHERE reference_type = 'sale' AND reference_id = ?`,
+      ).run(id);
+    }
+
+    const saleItems = db
+      .prepare(`SELECT variant_id, quantity FROM sale_items WHERE client_bill_id = ?`)
+      .all(id);
+    for (const item of saleItems) {
+      if (item.variant_id) {
+        adjustVariantStock(db, item.variant_id, Number(item.quantity) || 0);
+      }
+    }
+
+    db.prepare(`DELETE FROM sale_items WHERE client_bill_id = ?`).run(id);
+    db.prepare(`DELETE FROM sale_payments WHERE client_bill_id = ?`).run(id);
+    db.prepare(`DELETE FROM sales WHERE client_bill_id = ?`).run(id);
+    db.exec('COMMIT');
+    return { deleted: true };
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // The transaction may already have rolled back.
+    }
+    throw err;
+  }
 }
 
 function pendingSaleCount(db) {
@@ -1539,6 +1691,7 @@ module.exports = {
   listPendingSales,
   markSaleSynced,
   markSaleSyncError,
+  deletePendingSale,
   pendingSaleCount,
   importLegacyOutbox,
   setMeta,

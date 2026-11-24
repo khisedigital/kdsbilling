@@ -68,9 +68,28 @@ export async function saveOutboxSale(sale: OutboxSale): Promise<void> {
   await listOutboxSales();
 }
 
-export async function removeOutboxSale(clientBillId: string, serverBillId?: string | null): Promise<void> {
+export async function removeOutboxSale(
+  clientBillId: string,
+  serverBillId?: string | null,
+  syncedBill?: BillDetail,
+  originalPayload?: Record<string, unknown>,
+): Promise<void> {
   if (hasSqliteBridge()) {
-    await sqliteMarkSaleSynced(clientBillId, serverBillId);
+    if (syncedBill && Array.isArray(syncedBill.items)) {
+      await sqliteSaveSale({
+        clientBillId,
+        serverBillId,
+        createdAt: syncedBill.created_at || syncedBill.createdAt || new Date().toISOString(),
+        payload: originalPayload || {},
+        bill: syncedBill,
+        syncStatus: 'synced',
+        syncAttempts: 0,
+        skipStock: true,
+        syncedAt: new Date().toISOString(),
+      });
+    } else {
+      await sqliteMarkSaleSynced(clientBillId, serverBillId);
+    }
     await refreshPendingCount();
     return;
   }

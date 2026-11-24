@@ -181,6 +181,22 @@ function tableRows(
   });
 }
 
+function itemTaxDetails(item: NonNullable<BillDetail['items']>[number]): { label: string; amount: number }[] {
+  if (item.taxes?.length) {
+    return item.taxes.map((tax) => {
+      const rate = Number.parseFloat(String(tax.rate_percent));
+      const rateLabel = Number.isFinite(rate) ? ` (${Number.parseFloat(rate.toFixed(4))}%)` : '';
+      return {
+        label: `${ascii(tax.tax_name || L('Tax'))}${rateLabel}`,
+        amount: n(tax.tax_amount),
+      };
+    });
+  }
+
+  const taxAmount = n(item.tax_amount);
+  return taxAmount > 0 ? [{ label: '', amount: taxAmount }] : [];
+}
+
 function pickShopName(shop: ShopSettings | null | undefined): string {
   const s = shop as (ShopSettings & {
     shop_name?: string;
@@ -204,15 +220,68 @@ function pickAddress(shop: ShopSettings | null | undefined): string {
   if (mr && addressMr) return addressMr;
   const address = ascii(shop?.address || '');
   const city = ascii(shop?.city || '');
-  if (address && city && !address.toLowerCase().includes(city.toLowerCase())) {
-    return `${address}, ${city}`;
-  }
-  return address || city;
+  const state = ascii(shop?.state || '');
+  const pincode = ascii(shop?.pincode || '');
+
+  const parts: string[] = [];
+  if (address) parts.push(address);
+  if (city && !address.toLowerCase().includes(city.toLowerCase())) parts.push(city);
+  if (state && !address.toLowerCase().includes(state.toLowerCase())) parts.push(state);
+  if (pincode && !address.includes(pincode)) parts.push(pincode);
+
+  return parts.join(', ') || address || city;
+}
+
+function pickTagline(shop: ShopSettings | null | undefined): string {
+  if (shop?.showTagline === false) return '';
+  const mr = useLanguageStore.getState().bill === 'mr';
+  if (mr && shop?.taglineMr?.trim()) return ascii(shop.taglineMr);
+  return ascii(shop?.tagline || '');
+}
+
+function pickInvoiceTitle(shop: ShopSettings | null | undefined): string {
+  const mr = useLanguageStore.getState().bill === 'mr';
+  if (mr && shop?.invoiceTitleMr?.trim()) return ascii(shop.invoiceTitleMr);
+  if (shop?.invoiceTitle?.trim()) return ascii(shop.invoiceTitle);
+  return L('TAX INVOICE');
 }
 
 function pickGstin(shop: ShopSettings | null | undefined): string {
   const s = shop as (ShopSettings & { gst_in?: string }) | null | undefined;
   return ascii(s?.gstin || s?.gst_in || '');
+}
+
+function pickRegistrations(shop: ShopSettings | null | undefined): { label: string; value: string }[] {
+  const list: { label: string; value: string }[] = [];
+  if (shop?.showGstin !== false) {
+    const gstin = pickGstin(shop);
+    if (gstin) list.push({ label: 'GSTIN', value: gstin });
+  }
+  if (shop?.showFssai !== false && shop?.fssai?.trim()) {
+    list.push({ label: 'FSSAI', value: ascii(shop.fssai.trim()) });
+  }
+  if (shop?.showDrugLicense !== false && shop?.drugLicense?.trim()) {
+    list.push({ label: 'D.L. No', value: ascii(shop.drugLicense.trim()) });
+  }
+  if (shop?.showTradeLicense !== false && shop?.tradeLicense?.trim()) {
+    list.push({ label: 'Lic / Reg No', value: ascii(shop.tradeLicense.trim()) });
+  }
+  if (shop?.showPan !== false && shop?.pan?.trim()) {
+    list.push({ label: 'PAN', value: ascii(shop.pan.trim().toUpperCase()) });
+  }
+  return list;
+}
+
+function pickTerms(shop: ShopSettings | null | undefined): string {
+  if (shop?.showTerms === false) return '';
+  const mr = useLanguageStore.getState().bill === 'mr';
+  if (mr && shop?.termsMr?.trim()) return ascii(shop.termsMr);
+  return ascii(shop?.terms || '');
+}
+
+function pickUpi(shop: ShopSettings | null | undefined): string {
+  if (shop?.showUpi === false) return '';
+  return ascii(shop?.upiId || '');
 }
 
 function pickFooter(shop: ShopSettings | null | undefined): string {
@@ -282,32 +351,48 @@ export function buildThermalReceipt(
   const cols = colsFor(w);
   const lines: string[] = [];
   const shopName = pickShopName(shop);
+  const tagline = pickTagline(shop);
   const address = pickAddress(shop);
   const phone = ascii(shop?.phone || '');
-  const gstin = pickGstin(shop);
+  const secPhone = ascii(shop?.secondaryPhone || '');
+  const regs = pickRegistrations(shop);
+  const invoiceTitle = pickInvoiceTitle(shop);
+  const upi = pickUpi(shop);
+  const terms = pickTerms(shop);
 
   lines.push(rule(w, '='));
   // One CB block — ESC/POS raster wraps by pixels (clearer than several half titles).
   lines.push(`<CB>${shopTitleDisplay(shopName)}</CB>`);
+  if (tagline) {
+    for (const part of wrapWords(tagline, w)) lines.push(`<C>${part}</C>`);
+  }
   lines.push(rule(w, '='));
 
   if (address) {
     for (const part of wrapWords(address, w)) lines.push(`<C>${part}</C>`);
   }
-  if (phone) lines.push(`<C>${L('Ph')}: ${phone}</C>`);
-  if (gstin) lines.push(`<C>GSTIN: ${gstin}</C>`);
+  if (phone) {
+    const phoneLine = secPhone ? `${L('Ph')}: ${phone} / ${secPhone}` : `${L('Ph')}: ${phone}`;
+    lines.push(`<C>${phoneLine}</C>`);
+    if (w >= 48 && regs[0]?.label === 'GSTIN') lines.push('');
+  }
+  for (const reg of regs) {
+    lines.push(`<C>${reg.label}: ${reg.value}</C>`);
+  }
 
   lines.push(rule(w, '-'));
-  lines.push(`<C>${L('TAX INVOICE')}</C>`);
+  lines.push(`<C>${invoiceTitle}</C>`);
   lines.push(rule(w, '-'));
 
   lines.push(kv(w, L('Date'), pickBillDate(bill)));
+  if (w >= 48) lines.push('');
   lines.push(kv(w, L('Customer'), ascii(bill.customer?.name || L('Walk-in'))));
   lines.push(rule(w, '='));
   lines.push(tableHeader(w, cols));
   lines.push(rule(w, '-'));
 
-  for (const item of bill.items || []) {
+  const items = bill.items || [];
+  for (const [index, item] of items.entries()) {
     lines.push(
       ...tableRows(
         w,
@@ -318,6 +403,10 @@ export function buildThermalReceipt(
         n(item.line_total),
       ),
     );
+    for (const tax of itemTaxDetails(item)) {
+      lines.push(...wrapWords(`Tax: ${tax.label ? `${tax.label} ` : ''}${money(tax.amount)}`, w));
+    }
+    if (w >= 48 && index < items.length - 1) lines.push('');
   }
 
   lines.push(rule(w, '='));
@@ -325,11 +414,13 @@ export function buildThermalReceipt(
   if (n(bill.discount_amount) > 0) {
     lines.push(kv(w, L('Discount'), `-${money(bill.discount_amount)}`));
   }
+  if (w >= 48) lines.push('');
   lines.push(kv(w, L('Tax'), money(bill.tax_amount)));
   if (Math.abs(n(bill.round_off_amount)) >= 0.005) {
     const ro = n(bill.round_off_amount);
     lines.push(kv(w, L('Round off'), `${ro > 0 ? '+' : '-'}${money(Math.abs(ro))}`));
   }
+  if (w >= 48) lines.push('');
   lines.push(kv(w, L('TOTAL'), money(bill.total_amount)));
   lines.push(rule(w, '-'));
 
@@ -346,6 +437,15 @@ export function buildThermalReceipt(
     lines.push(kv(w, L('Total saving'), money(saved)));
   }
 
+  if (upi) {
+    lines.push(rule(w, '-'));
+    lines.push(`<C>UPI: ${upi}</C>`);
+  }
+  if (terms) {
+    lines.push(rule(w, '-'));
+    for (const part of wrapWords(terms, w)) lines.push(`<C>${part}</C>`);
+  }
+
   lines.push(rule(w, '='));
   const footer = pickFooter(shop);
   if (footer && !/thank\s*you/i.test(footer)) {
@@ -360,17 +460,25 @@ export function buildThermalReceipt(
 /** Attractive A4 / share HTML with a real item table */
 export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): string {
   const shopName = pickShopName(shop);
+  const tagline = pickTagline(shop);
   const address = pickAddress(shop);
   const phone = ascii(shop?.phone || '');
-  const gstin = pickGstin(shop);
+  const secPhone = ascii(shop?.secondaryPhone || '');
+  const regs = pickRegistrations(shop);
+  const invoiceTitle = pickInvoiceTitle(shop);
+  const upi = pickUpi(shop);
+  const terms = pickTerms(shop);
   const footer = pickFooter(shop);
 
   const rows = (bill.items || [])
     .map((item, idx) => {
       const name = itemPrintName(item);
+      const taxRows = itemTaxDetails(item)
+        .map((tax) => `<div class="itemTax">${tax.label ? `${escapeHtml(tax.label)}: ` : 'Tax: '}Rs.${escapeHtml(money(tax.amount))}</div>`)
+        .join('');
       return `<tr>
         <td class="c">${idx + 1}</td>
-        <td>${escapeHtml(name)}${item.sku ? `<div class="sku">${escapeHtml(item.sku)}</div>` : ''}</td>
+        <td>${escapeHtml(name)}${item.sku ? `<div class="sku">${escapeHtml(item.sku)}</div>` : ''}${taxRows}</td>
         <td class="r">${escapeHtml(formatBillQuantity(n(item.quantity), billItemUom(item)))}</td>
         <td class="r">${escapeHtml(money(item.unit_price))}</td>
         <td class="r">${escapeHtml(money(item.line_total))}</td>
@@ -384,6 +492,9 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
         `<div class="pay"><span>${escapeHtml(payName(p.payment_mode))}</span><span>Rs.${escapeHtml(money(p.amount))}</span></div>`,
     )
     .join('');
+  const upiRow = upi
+    ? `<div class="pay"><span>UPI ID</span><span><strong>${escapeHtml(upi)}</strong></span></div>`
+    : '';
   const saved = totalSaving(bill.items || []);
 
   const logoUrl = (shop?.logoUrl || '').trim();
@@ -412,14 +523,17 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   .logo{display:block;max-height:56px;max-width:200px;margin:0 auto 4px;object-fit:contain}
   .shop{margin:0;font-size:26px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;text-align:center;line-height:1.25}
   .meta{margin:2px 0 0;color:#000;font-size:12px;line-height:1.4}
-  .title{margin:6px 0 0;font-size:12px;letter-spacing:.2em}
-  .info{text-align:center;margin-bottom:8px;font-size:13px;line-height:1.4;width:100%}
+  .title{margin:6px 0 0;font-size:12px;letter-spacing:.2em;line-height:1.4}
+  .info{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;text-align:left;margin-bottom:8px;font-size:13px;line-height:1.4;width:100%}
+  .customerInfo{flex:1;min-width:0}
+  .billMeta{text-align:right;min-width:190px}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{color:#000;padding:8px 6px;text-align:left;letter-spacing:.04em;font-size:11px;border-top:1px solid #000;border-bottom:1px solid #000}
-  td{padding:7px 6px;border-bottom:0.5px solid #000}
+  th{color:#000;padding:7px 6px;text-align:left;letter-spacing:.04em;font-size:11px;line-height:1.35;border-top:1px solid #000;border-bottom:1px solid #000}
+  td{padding:7px 6px;border-bottom:0.5px solid #000;line-height:1.35}
   th.r,td.r{text-align:right}
   th.c,td.c{text-align:center;width:36px}
   .sku{color:#000;font-size:11px;margin-top:2px}
+  .itemTax{font-size:10px;line-height:1.35;margin-top:2px}
   .totals{width:300px;margin:12px 0 0 auto;font-size:13px}
   .totals .row{display:flex;justify-content:space-between;padding:3px 0}
   .totals .grand{border-top:1px solid #000;margin-top:6px;padding-top:6px;font-size:16px}
@@ -441,14 +555,22 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   <div class="head">
     ${logoBlock}
     <h1 class="shop">${escapeHtml(shopName)}</h1>
+    ${tagline ? `<p class="meta" style="font-style:italic;font-size:13px">${escapeHtml(tagline)}</p>` : ''}
     ${address ? `<p class="meta">${escapeHtml(address)}</p>` : ''}
-    ${phone ? `<p class="meta">${escapeHtml(L('Ph'))}: ${escapeHtml(phone)}</p>` : ''}
-    ${gstin ? `<p class="meta">GSTIN: ${escapeHtml(gstin)}</p>` : ''}
-    <p class="title">${escapeHtml(L('TAX INVOICE'))}</p>
+    ${phone ? `<p class="meta">${escapeHtml(L('Ph'))}: ${escapeHtml(phone)}${secPhone ? ` / ${escapeHtml(secPhone)}` : ''}</p>` : ''}
+    ${regs.map((r) => `<p class="meta">${escapeHtml(r.label)}: ${escapeHtml(r.value)}</p>`).join('')}
+    <p class="title">${escapeHtml(invoiceTitle)}</p>
   </div>
   <div class="info">
-    <div><strong>${escapeHtml(L('Date'))}</strong> ${escapeHtml(pickBillDate(bill))}</div>
-    <div><strong>${escapeHtml(L('Customer'))}</strong> ${escapeHtml(bill.customer?.name || L('Walk-in'))}</div>
+    <div class="customerInfo">
+      <div><strong>${escapeHtml(L('Customer'))}</strong></div>
+      <div>${escapeHtml(bill.customer?.name || L('Walk-in'))}</div>
+      ${bill.customer?.phone ? `<div><strong>${escapeHtml(L('Ph'))}</strong> ${escapeHtml(bill.customer.phone)}</div>` : ''}
+    </div>
+    <div class="billMeta">
+      <div><strong>${escapeHtml(L('Date'))}</strong> ${escapeHtml(pickBillDate(bill))}</div>
+      ${bill.bill_number ? `<div><strong>${escapeHtml(L('Bill number', 'Bill No'))}</strong> ${escapeHtml(bill.bill_number)}</div>` : ''}
+    </div>
   </div>
   <table>
     <thead>
@@ -465,7 +587,9 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     ${saved > 0 ? `<div class="row save"><span>${escapeHtml(L('Total saving'))}</span><span>Rs.${escapeHtml(money(saved))}</span></div>` : ''}
   </div>
   ${payRows}
+  ${upiRow}
   <div class="foot">
+    ${terms ? `<p style="font-size:11px;margin-bottom:8px"><strong>${escapeHtml(L('Terms & Conditions'))}:</strong> ${escapeHtml(terms)}</p>` : ''}
     ${footer && !/^thank you!?$/i.test(footer) ? `<p>${escapeHtml(footer)}</p>` : ''}
     <p><strong>${escapeHtml(L('Thank you! Visit Again'))}</strong></p>
   </div>

@@ -49,34 +49,32 @@ async function nextBillNumber(db, branchId, transaction) {
   return `${branch.code}-${datePrefix}-${num}`;
 }
 
+const billItemIncludes = (db) => [
+  { model: db.SalesOrderItemTax, as: 'taxes' },
+  {
+    model: db.ProductVariant,
+    as: 'variant',
+    attributes: ['id', 'sku', 'size', 'color'],
+    include: [{
+      model: db.Product,
+      as: 'product',
+      attributes: ['id', 'name', 'name_mr'],
+      required: false,
+      include: [{
+        model: db.UnitOfMeasure,
+        as: 'uom',
+        attributes: ['id', 'code', 'name', 'type'],
+        required: false,
+      }],
+    }],
+  },
+];
+
 const billIncludes = (db) => [
   { model: db.Customer, as: 'customer', attributes: ['id', 'name', 'phone'] },
   { model: db.Branch, as: 'branch', attributes: ['id', 'name', 'code'] },
   { model: db.User, as: 'creator', attributes: ['id', 'name'] },
-  {
-    model: db.SalesOrderItem,
-    as: 'items',
-    include: [
-      { model: db.SalesOrderItemTax, as: 'taxes' },
-      {
-        model: db.ProductVariant,
-        as: 'variant',
-        attributes: ['id', 'sku', 'size', 'color'],
-        include: [{
-          model: db.Product,
-          as: 'product',
-          attributes: ['id', 'name', 'name_mr'],
-          required: false,
-          include: [{
-            model: db.UnitOfMeasure,
-            as: 'uom',
-            attributes: ['id', 'code', 'name', 'type'],
-            required: false,
-          }],
-        }],
-      },
-    ],
-  },
+  { model: db.SalesOrderItem, as: 'items', include: billItemIncludes(db) },
   { model: db.SalesPayment, as: 'payments' },
   {
     model: db.Return,
@@ -364,7 +362,21 @@ async function listBills(db, branchId, query) {
       {
         model: db.SalesOrderItem,
         as: 'items',
-        attributes: ['id', 'quantity', 'returned_quantity'],
+        attributes: [
+          'id',
+          'product_name',
+          'product_name_mr',
+          'sku',
+          'variant_id',
+          'quantity',
+          'returned_quantity',
+          'unit_price',
+          'mrp',
+          'discount_amount',
+          'tax_amount',
+          'line_total',
+        ],
+        include: billItemIncludes(db),
       },
     ],
     order: [['created_at', 'DESC']],
