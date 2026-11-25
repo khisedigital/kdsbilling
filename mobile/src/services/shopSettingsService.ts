@@ -43,6 +43,10 @@ export interface ShopSettings {
   showUpi?: boolean;
   showTerms?: boolean;
   showTagline?: boolean;
+  showLogo?: boolean;
+  billQrCodeType?: 'none' | 'upi' | 'bill' | 'both';
+  enablePaymentQr?: boolean;
+  paymentQrUpiId?: string;
   extraSettings?: Record<string, any>;
 }
 

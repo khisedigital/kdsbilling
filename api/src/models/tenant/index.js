@@ -37,8 +37,22 @@ function defineBranch(sequelize) {
       },
       tax_registration_number: DataTypes.STRING(50),
       phone: DataTypes.STRING(20),
+      secondary_phone: DataTypes.STRING(20),
       bill_footer: DataTypes.STRING(255),
       logo_url: DataTypes.STRING(500),
+      show_logo: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true,
+      },
+      bill_qr_code_type: {
+        type: DataTypes.ENUM('none', 'upi', 'bill', 'both'),
+        defaultValue: 'none',
+      },
+      enable_payment_qr: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      payment_qr_upi_id: DataTypes.STRING(255),
       is_default: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,

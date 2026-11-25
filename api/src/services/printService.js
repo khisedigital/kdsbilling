@@ -185,6 +185,15 @@ function buildReceiptPayload(
   const invoiceTitle = (mr && String(shopSettings.invoiceTitleMr || '').trim()) || shopSettings.invoiceTitle || '';
   const terms = (mr && String(shopSettings.termsMr || '').trim()) || shopSettings.terms || '';
 
+  // Generate UPI payment string if enabled
+  let paymentQrData = '';
+  if (shopSettings.enablePaymentQr === true && shopSettings.paymentQrUpiId) {
+    const upiId = encodeURIComponent(shopSettings.paymentQrUpiId.trim());
+    const amount = Math.round(parseFloat(bill.total_amount) * 100) / 100;
+    const billNo = encodeURIComponent(String(bill.bill_number || 'Bill').substring(0, 80));
+    paymentQrData = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(shopName)}&am=${amount}&tn=${billNo}`;
+  }
+
   return {
     shopName,
     tagline: shopSettings.showTagline !== false ? tagline : '',
@@ -206,7 +215,12 @@ function buildReceiptPayload(
     upiId: (shopSettings.showUpi !== false && shopSettings.upiId) ? shopSettings.upiId : '',
     terms: shopSettings.showTerms !== false ? terms : '',
     billFooter: footer,
-    logoUrl: resolveAbsoluteUrl(shopSettings.logoUrl, publicBaseUrl),
+    showLogo: shopSettings.showLogo !== false,
+    logoUrl: (shopSettings.showLogo !== false && shopSettings.logoUrl) ? resolveAbsoluteUrl(shopSettings.logoUrl, publicBaseUrl) : null,
+    billQrCodeType: shopSettings.billQrCodeType || 'none',
+    enablePaymentQr: shopSettings.enablePaymentQr === true,
+    paymentQrUpiId: (shopSettings.enablePaymentQr === true && shopSettings.paymentQrUpiId) ? shopSettings.paymentQrUpiId : '',
+    paymentQrData,
     billNumber: bill.bill_number,
     date: resolveBillDate(bill),
     customer: bill.customer?.name || (language === 'mr' ? 'काउंटर' : 'Walk-in'),
@@ -619,7 +633,7 @@ function renderA4(payload, language = 'en') {
     </tr>`;
   }).join('');
 
-  const logoHtml = payload.logoUrl
+  const logoHtml = payload.showLogo && payload.logoUrl
     ? `<img src="${escapeHtml(payload.logoUrl)}" alt="Logo" class="logo" />`
     : '';
 

@@ -147,6 +147,7 @@ function tableRows(
   qty: string,
   rate: number,
   amt: number,
+  taxLines: string[] = [],
 ): string[] {
   const qtyStr = qty || '0';
   const rateStr = money(rate);
@@ -165,7 +166,7 @@ function tableRows(
       ),
     ];
   }
-  return nameLines.map((line, idx) => {
+  const result = nameLines.map((line, idx) => {
     if (idx === 0) {
       return (
         pad(line, cols.item) +
@@ -179,6 +180,23 @@ function tableRows(
     }
     return pad(line, cols.item);
   });
+  
+  // Add tax lines indented below product name
+  if (taxLines.length > 0) {
+    result.push(...taxLines);
+  }
+  
+  return result;
+}
+
+function formatItemTaxLines(width: number, taxDetails: { label: string; amount: number }[]): string[] {
+  const lines: string[] = [];
+  for (const tax of taxDetails) {
+    const taxLabel = tax.label ? `${tax.label} ` : '';
+    const taxLine = `  Tax: ${taxLabel}${money(tax.amount)}`;
+    lines.push(...wrapWords(taxLine, width));
+  }
+  return lines;
 }
 
 function itemTaxDetails(item: NonNullable<BillDetail['items']>[number]): { label: string; amount: number }[] {
@@ -393,6 +411,9 @@ export function buildThermalReceipt(
 
   const items = bill.items || [];
   for (const [index, item] of items.entries()) {
+    const taxDetails = itemTaxDetails(item);
+    const taxLines = formatItemTaxLines(w, taxDetails);
+    
     lines.push(
       ...tableRows(
         w,
@@ -401,11 +422,9 @@ export function buildThermalReceipt(
         formatReceiptQuantity(n(item.quantity), billItemUom(item)),
         n(item.unit_price),
         n(item.line_total),
+        taxLines,
       ),
     );
-    for (const tax of itemTaxDetails(item)) {
-      lines.push(...wrapWords(`Tax: ${tax.label ? `${tax.label} ` : ''}${money(tax.amount)}`, w));
-    }
     if (w >= 48 && index < items.length - 1) lines.push('');
   }
 
@@ -414,13 +433,11 @@ export function buildThermalReceipt(
   if (n(bill.discount_amount) > 0) {
     lines.push(kv(w, L('Discount'), `-${money(bill.discount_amount)}`));
   }
-  if (w >= 48) lines.push('');
   lines.push(kv(w, L('Tax'), money(bill.tax_amount)));
   if (Math.abs(n(bill.round_off_amount)) >= 0.005) {
     const ro = n(bill.round_off_amount);
     lines.push(kv(w, L('Round off'), `${ro > 0 ? '+' : '-'}${money(Math.abs(ro))}`));
   }
-  if (w >= 48) lines.push('');
   lines.push(kv(w, L('TOTAL'), money(bill.total_amount)));
   lines.push(rule(w, '-'));
 
@@ -498,9 +515,19 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   const saved = totalSaving(bill.items || []);
 
   const logoUrl = (shop?.logoUrl || '').trim();
-  const logoBlock = logoUrl
+  const showLogo = shop?.showLogo !== false;
+  const logoBlock = logoUrl && showLogo
     ? `<img class="logo" src="${escapeHtml(logoUrl)}" alt="" />`
     : '';
+
+  // Prepare payment QR code if enabled (actual rendering happens client-side)
+  let paymentQrBlock = '';
+  if (shop?.enablePaymentQr && shop?.paymentQrUpiId) {
+    const shopName = shopTextForBill(shop, useLanguageStore.getState().bill).shopName;
+    const qrData = `upi://pay?pa=${encodeURIComponent(shop.paymentQrUpiId)}&pn=${encodeURIComponent(shopName)}&am=${n(bill.total_amount)}&tn=${encodeURIComponent(bill.bill_number || 'Bill')}`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qrData)}`;
+    paymentQrBlock = `<div style="text-align:center;margin:12px 0"><img src="${escapeHtml(qrUrl)}" alt="Payment QR" style="max-width:150px;border:1px solid #000;padding:4px"/><p style="font-size:11px;margin:4px 0">Pay Now</p></div>`;
+  }
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>${escapeHtml(pickBillNo(bill))}</title>
@@ -588,6 +615,7 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   </div>
   ${payRows}
   ${upiRow}
+  ${paymentQrBlock}
   <div class="foot">
     ${terms ? `<p style="font-size:11px;margin-bottom:8px"><strong>${escapeHtml(L('Terms & Conditions'))}:</strong> ${escapeHtml(terms)}</p>` : ''}
     ${footer && !/^thank you!?$/i.test(footer) ? `<p>${escapeHtml(footer)}</p>` : ''}
