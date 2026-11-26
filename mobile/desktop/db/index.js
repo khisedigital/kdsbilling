@@ -1452,8 +1452,63 @@ function upsertProductsAndQueue(db, products, entry) {
   if (!entry?.entityType || !entry?.entityId || !entry?.op) throw new Error('Sync entry is required');
   db.exec('BEGIN');
   try {
+    const movements = [];
+    if (entry.entityType === 'product' && entry.op === 'update' && entry.payload?.syncEditProtocol === 2) {
+      const previous = entry.payload.syncPreviousProduct;
+      const product = products[0];
+      if (products.length !== 1 || previous?.id !== entry.entityId || product?.id !== entry.entityId) {
+        throw new Error('Invalid product edit snapshot');
+      }
+      const current = new Map(
+        db.prepare('SELECT id, stock_qty FROM product_variants WHERE product_id = ?')
+          .all(entry.entityId).map((row) => [String(row.id), Number(row.stock_qty)]),
+      );
+      const prior = new Map((previous.variants || []).map((variant) => [
+        String(variant.id), Number(variant.stockQty ?? variant.stock_qty ?? 0),
+      ]));
+      if (current.size !== prior.size || [...current].some(([id, stock]) => prior.get(id) !== stock)) {
+        throw new Error('Product stock changed while editing; reload the product and try again');
+      }
+      const seenBarcodes = new Set();
+      const owner = db.prepare('SELECT product_id FROM variant_barcodes WHERE barcode = ?');
+      for (const variant of product.variants || []) {
+        const codes = [
+          ...(variant.barcodes || []).map((row) => typeof row === 'string' ? row : row?.barcode || row?.code),
+          ...(variant.quantityBarcodes || []).map((row) => row?.barcode || row?.code),
+          variant.barcode,
+        ].filter(Boolean).map((code) => String(code).trim());
+        for (const code of new Set(codes)) {
+          if (seenBarcodes.has(code)) throw new Error(`Barcode ${code} is used by multiple variants`);
+          seenBarcodes.add(code);
+          const existingOwner = owner.get(code);
+          if (existingOwner && String(existingOwner.product_id) !== String(product.id)) {
+            throw new Error(`Barcode ${code} is already used by another product`);
+          }
+        }
+        const stock = Number(variant.stockQty ?? variant.stock_qty ?? 0);
+        const delta = Number((stock - (current.get(String(variant.id)) ?? 0)).toFixed(3));
+        if (!Number.isFinite(stock) || Number(stock.toFixed(3)) !== stock) {
+          throw new Error(`Invalid stock quantity for variant ${variant.id}`);
+        }
+        if (delta) movements.push({ variantId: String(variant.id), delta });
+      }
+    }
     for (const product of products) extra.upsertProductLocal(db, product);
     const queued = enqueueSync(db, entry);
+    for (const movement of movements) {
+      const id = randomUUID();
+      extra.saveStockMovement(db, {
+        id, variantId: movement.variantId, qtyDelta: movement.delta,
+        reason: 'adjust', syncStatus: 'pending',
+      }, { applyStock: false });
+      enqueueSync(db, {
+        entityType: 'stock_movement', entityId: id, op: 'adjust',
+        payload: {
+          syncProtocol: 2, productEditMovement: true, endpoint: 'adjust',
+          item: { variantId: movement.variantId, quantity: movement.delta },
+        },
+      });
+    }
     db.exec('COMMIT');
     return queued;
   } catch (err) {
@@ -1579,7 +1634,7 @@ function generateBarcodesAndQueue(db, items, quantityMode = false) {
 
 function listPendingSyncQueue(db) {
   return db
-    .prepare(`SELECT * FROM sync_queue WHERE sync_status = 'pending' ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM sync_queue WHERE sync_status = 'pending' ORDER BY created_at ASC, rowid ASC`)
     .all()
     .map((r) => ({
       id: r.id,

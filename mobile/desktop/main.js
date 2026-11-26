@@ -635,7 +635,7 @@ function registerIpc() {
 
   ipcMain.handle('sqlite:status', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    return { ok: true, syncGuardVersion: 1, ...offlineDb.getStatus(db) };
+    return { ok: true, syncGuardVersion: 2, ...offlineDb.getStatus(db) };
   });
 
   ipcMain.handle('sqlite:save-shop-settings', async (_event, options) => {

@@ -463,12 +463,33 @@ async function pushSyncQueueItem(row: {
     return;
   }
   if (type === 'product' && op === 'create') {
-      const localProduct = await sqliteGetProduct(originalEntityId) as Product | null;
+      const localProduct = row.payload?.localInitialProduct as Product | undefined
+        || await sqliteGetProduct(originalEntityId) as Product | null;
       if (!localProduct) throw new LocalOnlySyncError('Pending product not found in local database');
       await syncLocalProduct(localProduct, ids, initialProductStock(row, localProduct));
       return;
   }
   if (type === 'product' && op === 'update') {
+    if (row.payload?.syncEditProtocol === 2) {
+      const previous = row.payload.syncPreviousProduct as Product;
+      const updated = row.payload.syncUpdatedProduct as Product;
+      if (!previous || !updated || previous.id !== originalEntityId || updated.id !== originalEntityId) {
+        throw new LocalOnlySyncError(`Product ${originalEntityId} has an invalid edit snapshot`);
+      }
+      if (!ids[previous.id] || (previous.variants || []).some((variant) => !ids[variant.id])) {
+        await syncLocalProduct(previous, ids);
+      }
+      const newVariants = (updated.variants || []).filter((variant) => !ids[variant.id]);
+      if (newVariants.length) {
+        await syncLocalProduct({ ...previous, variants: newVariants }, ids);
+      }
+      const { id, syncEditProtocol, syncPreviousProduct, syncUpdatedProduct, ...fields } = row.payload;
+      if (containsAbsoluteStock(fields)) {
+        throw new LocalOnlySyncError(`Product ${originalEntityId} has an unsafe absolute stock edit`);
+      }
+      await api.put(`/products/${ids[originalEntityId]}`, remapProductIds(fields, ids));
+      return;
+    }
     if (containsAbsoluteStock(p)) {
       throw new LocalOnlySyncError(
         `Product ${originalEntityId} has an absolute stock edit; verify live stock and reconcile the change before syncing`,
@@ -666,7 +687,7 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number; s
   try {
     if (hasSqliteBridge()) {
       const status = await sqliteStatus();
-      if (typeof status?.localOnlyCount !== 'number' || status.syncGuardVersion !== 1) {
+      if (typeof status?.localOnlyCount !== 'number' || (status.syncGuardVersion || 0) < 1) {
         throw new Error('Restart the desktop app to enable safe sync');
       }
     }
@@ -689,7 +710,11 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number; s
             if (typeof variantId !== 'string' || !variantId) {
               throw new LocalOnlySyncError(`Stock movement ${row.entityId} has no variant ID`);
             }
-            await preflightVariant(variantId, ids, queue, verifiedVariants);
+            if (row.payload?.productEditMovement) {
+              if (!ids[variantId]) throw new LocalOnlySyncError(`Stock movement ${row.entityId} requires a mapped variant`);
+            } else {
+              await preflightVariant(variantId, ids, queue, verifiedVariants);
+            }
           }
           await pushSyncQueueItem(row, ids);
         } catch (err) {
@@ -838,7 +863,7 @@ export async function pullEverythingToSqlite(): Promise<{
 
   const pullErrors: string[] = [];
   const status = await sqliteStatus();
-  if (typeof status?.localOnlyCount !== 'number' || status.syncGuardVersion !== 1) {
+  if (typeof status?.localOnlyCount !== 'number' || (status.syncGuardVersion || 0) < 1) {
     throw new Error('Restart the desktop app to enable safe sync');
   }
   const insertOnly = status.localOnlyCount > 0;

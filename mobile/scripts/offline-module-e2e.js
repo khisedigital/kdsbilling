@@ -785,6 +785,53 @@ try {
     assert(!db.getProduct(conn, 'atomic-product'), 'failed batch rolls back product writes');
     assert(!db.listPendingSyncQueue(conn).some((row) => row.entityId === 'atomic-product'),
       'failed batch does not queue sync');
+    db.upsertProductLocal(conn, {
+      id: 'edit-product', name: 'Edit product',
+      variants: [{ id: 'edit-variant', sku: 'EDIT', stockQty: 3, barcodes: ['888001'] }],
+    });
+    const previous = db.getProduct(conn, 'edit-product');
+    db.upsertProductsAndQueue(conn, [{ ...previous, name: 'Details only' }], {
+      entityType: 'product', entityId: 'edit-product', op: 'update',
+      payload: { syncEditProtocol: 2, syncPreviousProduct: previous },
+    });
+    assert(!db.listPendingSyncQueue(conn).some((row) => row.payload.productEditMovement),
+      'unchanged stock creates no movement');
+    const edited = {
+      ...previous,
+      variants: [
+        { ...previous.variants[0], stockQty: 5, stock_qty: 5 },
+        { id: 'edit-new-variant', sku: 'EDIT-NEW', stockQty: 4, barcodes: ['888002'] },
+      ],
+    };
+    const edit = { entityType: 'product', entityId: 'edit-product', op: 'update',
+      payload: { syncEditProtocol: 2, syncPreviousProduct: previous, syncUpdatedProduct: edited } };
+    db.upsertProductsAndQueue(conn, [edited], edit);
+    assert(db.getProduct(conn, 'edit-product').variants[0].stockQty === 5, 'stock edit applied exactly once');
+    const movements = db.listPendingSyncQueue(conn).filter((row) =>
+      row.entityType === 'stock_movement' && row.payload.productEditMovement);
+    assert(movements.length === 2, 'stock adjustments queued for changed and new variants');
+    assert(movements.some((row) => row.payload.item.variantId === 'edit-variant' && row.payload.item.quantity === 2),
+      'existing variant adjustment uses the stock difference');
+    assert(movements.some((row) => row.payload.item.variantId === 'edit-new-variant' && row.payload.item.quantity === 4),
+      'new variant adjustment preserves opening stock');
+    try {
+      db.upsertProductsAndQueue(conn, [edited], edit);
+      throw new Error('stale product edit was accepted');
+    } catch (err) {
+      assert(/stock changed while editing/.test(err.message), 'stale stock snapshot is rejected');
+    }
+    assert(db.listPendingSyncQueue(conn).filter((row) => row.payload.productEditMovement).length === 2,
+      'stale edit does not queue duplicate movements');
+    const conflict = db.getProduct(conn, 'edit-product');
+    conflict.variants[0].barcodes = ['888002'];
+    try {
+      db.upsertProductsAndQueue(conn, [conflict], { ...edit, payload: { ...edit.payload, syncPreviousProduct: db.getProduct(conn, 'edit-product') } });
+      throw new Error('duplicate barcode was accepted');
+    } catch (err) {
+      assert(/multiple variants/.test(err.message), 'duplicate barcode is rejected');
+    }
+    assert(db.getProduct(conn, 'edit-product').variants[0].barcodes.some((row) => row.barcode === '888001'),
+      'barcode conflict leaves product intact');
     ok('22. Local barcode and delete queue');
   } catch (e) {
     fail('22. Local barcode and delete queue', e);

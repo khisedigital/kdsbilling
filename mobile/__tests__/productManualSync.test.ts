@@ -62,6 +62,123 @@ const acceptOfflineBill = async (payload: Record<string, unknown>) => ({
 });
 const deviceMeta = async (key: string) => key === 'sync_device_id' ? 'device-1' : null;
 
+describe('syncing desktop product edits', () => {
+  const previous = {
+    id: 'local-p', name: 'Tea', uom_id: 'unit',
+    variants: [{ id: 'local-v', sku: 'TEA', selling_price: 10, stockQty: 3,
+      barcodes: [{ barcode: '12345', quantity: null }, { barcode: '99999', quantity: 2 }] }],
+  };
+  const updated = {
+    ...previous, name: 'Updated tea',
+    variants: [
+      { ...previous.variants[0], sku: 'NEW-TEA', stockQty: 5 },
+      { id: 'new-v', sku: 'TEA-L', selling_price: 20, stockQty: 4, barcodes: [{ barcode: '45678' }] },
+    ],
+  };
+  const update = {
+    id: 'edit', entityType: 'product', entityId: 'local-p', op: 'update',
+    createdAt: '2026-01-01T00:00:00Z',
+    payload: {
+      id: 'local-p', name: 'Updated tea', syncEditProtocol: 2,
+      syncPreviousProduct: previous, syncUpdatedProduct: updated,
+      variants: [
+        { id: 'local-v', sku: 'NEW-TEA', sellingPrice: 10,
+          barcodes: ['12345'], quantityBarcodes: [{ barcode: '99999', quantity: 3 }] },
+        { id: 'new-v', sku: 'TEA-L', sellingPrice: 20, barcodes: ['45678'] },
+      ],
+    },
+  };
+  beforeEach(() => {
+    jest.resetAllMocks();
+    Object.defineProperty(global, 'navigator', { value: { onLine: true }, configurable: true });
+    jest.mocked(sqliteStatus).mockResolvedValue({ ok: true, localOnlyCount: 0, syncGuardVersion: 2 });
+    jest.mocked(sqliteRetryMissingVariantSales).mockResolvedValue(0);
+    jest.mocked(sqliteGetMeta).mockImplementation(deviceMeta);
+    jest.mocked(listOutboxSales).mockResolvedValue([]);
+    jest.mocked(localListSyncQueue).mockResolvedValue([update]);
+    jest.mocked(api.post).mockImplementation(async (_url, data) => {
+      if (!data || typeof data !== 'object' || !('variants' in data) || !Array.isArray(data.variants)) {
+        throw new Error('Invalid test request');
+      }
+      return { data: { data: {
+        identityProtocol: 1, productId: 'server-p',
+        variants: data.variants.map((v: { id: string }) => ({
+          localId: v.id, variantId: v.id === 'local-v' ? 'server-v' : 'server-new-v',
+        })),
+      } } };
+    });
+  });
+  afterEach(() => {
+    jest.resetAllMocks();
+    jest.mocked(sqliteStatus).mockResolvedValue({ ok: true, localOnlyCount: 0, syncGuardVersion: 1 });
+    jest.mocked(sqliteRetryMissingVariantSales).mockResolvedValue(0);
+  });
+
+  it('maps the original mobile product and new variant before uploading edits and packs', async () => {
+    await expect(flushOutbox()).resolves.toEqual({ synced: 1, failed: 0 });
+    expect(api.post).toHaveBeenNthCalledWith(1, '/products/sync-catalog', expect.objectContaining({
+      product: expect.objectContaining({ name: 'Tea' }),
+      variants: [expect.objectContaining({ id: 'local-v', sku: 'TEA', barcodes: [
+        { barcode: '12345', quantity: null }, { barcode: '99999', quantity: 2 },
+      ] })],
+    }));
+    expect(api.post).toHaveBeenNthCalledWith(2, '/products/sync-catalog', expect.objectContaining({
+      remoteProductId: 'server-p',
+      variants: [expect.objectContaining({ id: 'new-v' })],
+    }));
+    expect(api.put).toHaveBeenCalledWith('/products/server-p', {
+      name: 'Updated tea',
+      variants: [
+        { id: 'server-v', sku: 'NEW-TEA', sellingPrice: 10,
+          barcodes: ['12345'], quantityBarcodes: [{ barcode: '99999', quantity: 3 }] },
+        { id: 'server-new-v', sku: 'TEA-L', sellingPrice: 20, barcodes: ['45678'] },
+      ],
+    });
+  });
+
+  it('keeps verified mappings across an interrupted upload and does not recreate variants', async () => {
+    let map: string | null = null;
+    jest.mocked(sqliteGetMeta).mockImplementation(async (key) => key === 'sync_device_id' ? 'device-1' : map);
+    jest.mocked(sqliteSetMeta).mockImplementation(async (_key, value) => { map = value; });
+    jest.mocked(api.put).mockRejectedValueOnce(new Error('Connection interrupted')).mockResolvedValue({});
+    await expect(flushOutbox()).resolves.toEqual({ synced: 0, failed: 1 });
+    await expect(flushOutbox()).resolves.toEqual({ synced: 1, failed: 0 });
+    expect(api.post).toHaveBeenCalledTimes(2);
+    expect(api.put).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a conflicting edit without sending a product update', async () => {
+    jest.mocked(api.post).mockRejectedValue({ response: { status: 409, data: { error: { message: 'Duplicate barcode' } } } });
+    await expect(flushOutbox()).resolves.toEqual({ synced: 0, failed: 0, skipped: 1 });
+    expect(api.put).not.toHaveBeenCalled();
+    expect(localMarkSyncQueueError).toHaveBeenCalledWith('edit', expect.any(String), 1, true);
+  });
+
+  it('uploads stock differences separately using the mapped variant and checks the acknowledgment', async () => {
+    jest.mocked(localListSyncQueue).mockResolvedValue([
+      update,
+      { id: 'move', entityType: 'stock_movement', entityId: 'movement-uuid', op: 'adjust',
+        createdAt: '2026-01-01T00:00:01Z',
+        payload: { syncProtocol: 2, productEditMovement: true, endpoint: 'adjust',
+          item: { variantId: 'new-v', quantity: 4 } } },
+    ]);
+    const catalogPost = jest.mocked(api.post).getMockImplementation();
+    jest.mocked(api.post).mockImplementation(async (url, data, config) => {
+      if (url === '/stock/sync-movement') return { data: { data: {
+        clientMovementId: 'movement-uuid', movementId: 'server-movement',
+        variantId: 'server-new-v', quantityChange: 4,
+      } } };
+      if (!catalogPost) throw new Error('Missing catalog mock');
+      return catalogPost(url, data, config);
+    });
+    await expect(flushOutbox()).resolves.toEqual({ synced: 2, failed: 0 });
+    expect(api.post).toHaveBeenCalledWith('/stock/sync-movement', expect.objectContaining({
+      clientMovementId: 'movement-uuid', variantId: 'server-new-v', quantity: 4, operation: 'adjust',
+    }));
+    expect(localMarkSyncQueueDone).toHaveBeenCalledWith('move');
+  });
+});
+
 it('maps locally created product and variant ids before uploading later edits and bills', async () => {
   Object.defineProperty(global, 'navigator', { value: { onLine: true }, configurable: true });
   jest.mocked(sqliteGetMeta).mockImplementation(deviceMeta);

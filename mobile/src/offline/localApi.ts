@@ -160,6 +160,13 @@ export async function localUpsertProductsAndQueue(
 ) {
   const b = bridge();
   if (!b?.sqliteUpsertProductsAndQueue) throw new Error('Local product sync queue is unavailable');
+  if (entry.op === 'update' && entry.entityType === 'product'
+    && (entry.payload as { syncEditProtocol?: number })?.syncEditProtocol === 2) {
+    const status = await b.sqliteStatus?.({ shopCode: shopCode() });
+    if (!status || (status.syncGuardVersion || 0) < 2) {
+      throw new Error('Restart the desktop app to enable safe product edits');
+    }
+  }
   return b.sqliteUpsertProductsAndQueue({ shopCode: shopCode(), products, entry });
 }
 export async function localDeleteProduct(id: string) {

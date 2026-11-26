@@ -114,6 +114,29 @@ it('preserves other variants when a local append edit updates one variant', asyn
   expect(api.put).not.toHaveBeenCalled();
 });
 
+it('assigns a new local variant identity and queues the same identity without absolute stock', async () => {
+  const previous = {
+    id: 'p', name: 'Tea', uom_id: 'u',
+    variants: [{ id: 'v1', sku: 'SMALL', selling_price: 10, stockQty: 3 }],
+  };
+  jest.mocked(sqliteGetProduct).mockResolvedValue(previous);
+  const updated = await updateProduct('p', {
+    variantSyncMode: 'append', variants: [{ sku: 'LARGE', sellingPrice: 20, stockQty: 4 }],
+  });
+  expect(updated.variants).toHaveLength(2);
+  expect(updated.variants?.[0].id).toBe('v1');
+  const newId = updated.variants?.[1].id;
+  expect(newId).toBeTruthy();
+  expect(newId).not.toBe('v1');
+  expect(localUpsertProductsAndQueue).toHaveBeenCalledWith(
+    [expect.objectContaining({ variants: expect.arrayContaining([expect.objectContaining({ id: newId, stockQty: 4 })]) })],
+    expect.objectContaining({ payload: expect.objectContaining({
+      syncEditProtocol: 2, syncPreviousProduct: previous,
+      variants: [{ id: newId, sku: 'LARGE', sellingPrice: 20 }],
+    }) }),
+  );
+});
+
 it('notifies open screens after newly generated unit and pack barcodes are committed', async () => {
   jest.mocked(sqliteGenerateBarcodes).mockResolvedValue([{ variantId: 'v', barcode: '123', generated: true }]);
   jest.mocked(sqliteEnsureQuantityBarcodes).mockResolvedValue([

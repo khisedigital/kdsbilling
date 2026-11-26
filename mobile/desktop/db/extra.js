@@ -696,7 +696,7 @@ function listCustomerLedger(db, customerId) {
     }));
 }
 
-function saveStockMovement(db, row) {
+function saveStockMovement(db, row, { applyStock = true } = {}) {
   const id = String(row.id || `stk-${Date.now()}`);
   const vid = String(row.variantId || row.variant_id || '');
   const delta = Number(row.qtyDelta ?? row.quantity_change ?? row.quantity) || 0;
@@ -713,7 +713,7 @@ function saveStockMovement(db, row) {
     nowIso(),
   );
   let stockQty = null;
-  if (vid && delta !== 0) {
+  if (vid && delta !== 0 && applyStock) {
     db.prepare(
       `UPDATE product_variants SET stock_qty = stock_qty + ?, updated_at = ? WHERE id = ?`,
     ).run(delta, nowIso(), vid);

@@ -1283,6 +1283,7 @@ export async function createProduct(
     payload: {
       ...payload,
       localInitialVariantStock: Object.fromEntries(variants.map((v) => [v.id, v.stockQty])),
+      localInitialProduct: product,
     },
   });
   void upsertCachedProduct(product);
@@ -1311,29 +1312,36 @@ export async function updateProduct(
 
     const existing = (await sqliteGetProduct(id)) as Product | null;
     if (!existing) throw new Error('Product not found in local database');
-    const variantsPayload = (payload as any).variants as any[] | undefined;
+    const variantsPayload = payload.variants;
+    let queuedVariants: UpdateProductPayload['variants'];
     let nextVariants = existing?.variants || [];
     if (variantsPayload?.length) {
-      const patchedVariants = variantsPayload.map((vp: any, idx: number) => {
+      const patchedVariants = variantsPayload.map((vp) => {
         const existingV = vp.id
           ? (existing.variants || []).find((v) => v.id === vp.id)
-          : existing.variants?.[idx];
-        const selling = Number(vp.sellingPrice ?? vp.selling_price ?? existingV?.selling_price ?? (existingV as any)?.sellingPrice) || 0;
-        const cost = Number(vp.costPrice ?? vp.cost_price ?? existingV?.cost_price ?? (existingV as any)?.costPrice) || 0;
+          : undefined;
+        if (vp.id && !existingV) throw new Error(`Local variant not found: ${vp.id}`);
+        if (!vp.id && (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function')) {
+          throw new Error('Secure variant IDs are unavailable');
+        }
+        const selling = Number(vp.sellingPrice ?? existingV?.selling_price) || 0;
+        const cost = Number(vp.costPrice ?? existingV?.cost_price) || 0;
         const mrp = vp.mrp !== undefined ? vp.mrp : existingV?.mrp;
-        const stockIn = vp.stockQty ?? vp.stock_qty;
-        const stock = (stockIn !== undefined && stockIn !== null && stockIn !== '')
+        const stockIn = vp.stockQty;
+        const stock = (stockIn !== undefined && stockIn !== null)
           ? Number(stockIn)
-          : Number((existingV as any)?.stockQty ?? existingV?.stock_qty) || 0;
+          : Number(existingV?.stockQty) || 0;
         const barcode = vp.barcode !== undefined ? vp.barcode : existingV?.barcode;
-        const barcodes = vp.barcodes !== undefined ? vp.barcodes : existingV?.barcodes;
+        const barcodes = vp.barcodes !== undefined
+          ? vp.barcodes.map((code, index) => ({ barcode: code, is_primary: index === 0 }))
+          : existingV?.barcodes;
         return {
           ...(existingV || {}),
           ...vp,
-          id: vp.id || existingV?.id || `var-${Date.now()}-${idx}`,
+          id: vp.id || crypto.randomUUID(),
           sku: vp.sku || existingV?.sku || '',
-          barcode: barcode || null,
-          barcodes: barcodes || (barcode ? [barcode] : []),
+          barcode: barcode || undefined,
+          barcodes: barcodes || (barcode ? [{ barcode, is_primary: true }] : []),
           sellingPrice: selling,
           selling_price: selling,
           costPrice: cost,
@@ -1342,6 +1350,10 @@ export async function updateProduct(
           stockQty: stock,
           stock_qty: stock,
         };
+      });
+      queuedVariants = variantsPayload.map((variant, idx) => {
+        const { stockQty, ...fields } = variant;
+        return { ...fields, id: patchedVariants[idx].id };
       });
       if (payload.variantSyncMode === 'append') {
         const patchedById = new Map(patchedVariants.map((variant) => [variant.id, variant]));
@@ -1353,7 +1365,8 @@ export async function updateProduct(
       }
     }
 
-    const totalStock = nextVariants.reduce((s, v) => s + (Number((v as any).stockQty ?? v.stock_qty) || 0), 0);
+    const totalStock = nextVariants.reduce((s, v) =>
+      s + (Number(v.stockQty ?? (v as ProductVariant & { stock_qty?: number }).stock_qty) || 0), 0);
     const nextUomId = payload.uomId !== undefined ? payload.uomId : (existing?.uom_id || '');
     let nextUom = existing?.uom;
     if (payload.uomId !== undefined && payload.uomId) {
@@ -1409,7 +1422,14 @@ export async function updateProduct(
       entityType: 'product',
       entityId: id,
       op: 'update',
-      payload: { id, ...payload },
+      payload: {
+        id,
+        ...payload,
+        ...(queuedVariants ? { variants: queuedVariants } : {}),
+        syncEditProtocol: 2,
+        syncPreviousProduct: existing,
+        syncUpdatedProduct: merged,
+      },
     });
     void upsertCachedProduct(merged);
     return merged;
