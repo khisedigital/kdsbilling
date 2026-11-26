@@ -119,6 +119,7 @@ function backfillVariantBarcodes(db) {
 
 function migrate(db) {
   db.exec(SCHEMA_SQL);
+  db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run('sync_device_id', randomUUID());
   // Ensure newer columns exist on DBs created before schema v2.
   try {
     db.exec(`ALTER TABLE customers ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'`);
@@ -196,7 +197,7 @@ function readShopSettings(db) {
 }
 
 /** Upsert catalog snapshot. Pass clearProducts:true on a full replace sync. */
-function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false, syncStock = true, insertOnly = false } = {}) {
+function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false, syncStock = true, insertOnly = false, protectPending = false } = {}) {
   if (insertOnly && clearProducts) throw new Error('Cannot clear the catalog during an add-only pull');
   const ts = nowIso();
   let writtenProducts = 0;
@@ -238,7 +239,6 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
        mrp = excluded.mrp,
        stock_qty = CASE
          WHEN ? = 1 THEN excluded.stock_qty
-         WHEN product_variants.stock_qty = 0 AND excluded.stock_qty > 0 THEN excluded.stock_qty
          ELSE product_variants.stock_qty
        END,
        unit = excluded.unit,
@@ -250,6 +250,15 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
   try {
     // Default: upsert only (update existing + insert new). Never wipe the whole catalog
     // unless an explicit clearProducts flag is passed.
+    if (protectPending && !insertOnly && !clearProducts) {
+      const pendingSales = db.prepare(
+        `SELECT 1 FROM sales WHERE sync_status IN ('pending', 'local_only') LIMIT 1`,
+      ).get();
+      const pendingQueue = db.prepare(
+        `SELECT 1 FROM sync_queue WHERE sync_status IN ('pending', 'local_only') LIMIT 1`,
+      ).get();
+      if (pendingSales || pendingQueue) insertOnly = true;
+    }
     if (clearProducts === true && Array.isArray(products)) {
       db.exec('DELETE FROM variant_barcodes;');
       db.exec('DELETE FROM product_variants;');
@@ -306,7 +315,7 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
         if (!additions.length && !addedBarcodes) continue;
         p = { ...current, variants: [...existingVariants, ...additions] };
       }
-      if (insertOnly) {
+      {
         const incomingCodes = new Map();
         for (const v of p.variants || []) {
           const existingVariant = v?.id && db.prepare('SELECT product_id FROM product_variants WHERE id = ?').get(String(v.id));
@@ -350,8 +359,7 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
           .get(String(v.id));
         if (!local) return { ...withCodes, stockQty: incomingStock, stock_qty: incomingStock };
         const localQty = Number(local.stock_qty) || 0;
-        const qty = localQty === 0 && incomingStock > 0 ? incomingStock : localQty;
-        return { ...withCodes, stockQty: qty, stock_qty: qty };
+        return { ...withCodes, stockQty: localQty, stock_qty: localQty };
       });
       const productStock = variantsOut.reduce(
         (s, v) => s + (Number(v?.stockQty ?? v?.stock_qty) || 0),
@@ -823,7 +831,7 @@ function adjustVariantStock(db, variantId, deltaQty) {
   if (!id) return;
   db.prepare(
     `UPDATE product_variants
-     SET stock_qty = MAX(0, stock_qty + ?), updated_at = ?
+     SET stock_qty = stock_qty + ?, updated_at = ?
      WHERE id = ?`,
   ).run(Number(deltaQty) || 0, nowIso(), id);
   const row = db.prepare(`SELECT stock_qty FROM product_variants WHERE id = ?`).get(id);
@@ -1413,17 +1421,23 @@ function saveStockMovementsAndQueue(db, entries) {
         || !['opening', 'in', 'out', 'adjust', 'damage'].includes(endpoint)) {
         throw new Error('Invalid local stock movement');
       }
+      const quantity = Number(item.quantity);
+      const expectedDelta = endpoint === 'out' || endpoint === 'damage' ? -Math.abs(quantity) : quantity;
+      if (!Number.isFinite(quantity) || expectedDelta !== Number(row.qtyDelta)) {
+        throw new Error('Stock movement quantity does not match its queued operation');
+      }
       if (!db.prepare('SELECT 1 FROM product_variants WHERE id = ?').get(row.variantId)) {
         throw new Error(`Local variant not found: ${row.variantId}`);
       }
       const saved = extra.saveStockMovement(db, row);
+      if (saved.stockQty == null) throw new Error(`Local stock unavailable for variant: ${row.variantId}`);
       enqueueSync(db, {
         entityType: 'stock_movement',
         entityId: row.id,
         op: endpoint,
         payload: { syncProtocol: 2, endpoint, item, notes },
       });
-      return saved;
+      return { id: saved.id, variantId: row.variantId, stockQty: saved.stockQty };
     });
     db.exec('COMMIT');
     return { movements };

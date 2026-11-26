@@ -28,6 +28,7 @@ router.get('/reports/cash-flow', requirePermission(PERMISSIONS.REPORT_VIEW), asy
 // Billing
 router.post('/bills/preview', requirePermission(PERMISSIONS.BILL_CREATE), asyncHandler(biz.previewBill));
 router.post('/bills', requirePermission(PERMISSIONS.BILL_CREATE), asyncHandler(biz.createBill));
+router.post('/bills/sync', requirePermission(PERMISSIONS.BILL_CREATE), asyncHandler(biz.syncOfflineBill));
 router.get('/bills', requirePermission(PERMISSIONS.BILL_CREATE), asyncHandler(biz.listBills));
 router.get('/bills/held/list', requirePermission(PERMISSIONS.BILL_HOLD), asyncHandler(biz.listHeld));
 router.post('/bills/hold', requirePermission(PERMISSIONS.BILL_HOLD), asyncHandler(biz.holdBill));

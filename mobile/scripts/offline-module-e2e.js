@@ -887,6 +887,61 @@ try {
   } catch (e) {
     fail('24. Add-only pull preserves local data', e);
   }
+
+  try {
+    const before = conn.prepare('SELECT stock_qty FROM product_variants WHERE id = ?').get('v1').stock_qty;
+    const entry = {
+      row: { id: 'safe-movement', variantId: 'v1', qtyDelta: -1000, reason: 'adjust', syncStatus: 'pending' },
+      endpoint: 'adjust',
+      item: { variantId: 'v1', quantity: -1000 },
+    };
+    const saved = db.saveStockMovementsAndQueue(conn, [entry]);
+    assert(saved.movements[0].stockQty === before - 1000, 'negative movement is not clamped');
+    const queued = db.listPendingSyncQueue(conn).find((row) => row.entityId === 'safe-movement');
+    assert(queued?.payload.syncProtocol === 2, 'movement and retry-safe queue entry saved together');
+    db.markSyncQueueDone(conn, queued.id);
+    assert(conn.prepare('SELECT sync_status FROM stock_movements WHERE id = ?').get('safe-movement').sync_status === 'synced',
+      'acknowledgment updates movement status');
+    try {
+      db.saveStockMovementsAndQueue(conn, [
+        { ...entry, row: { ...entry.row, id: 'rolled-back-movement' } },
+        { ...entry, row: { ...entry.row, id: 'invalid-movement', variantId: 'missing' } },
+      ]);
+      throw new Error('invalid batch accepted');
+    } catch (err) {
+      assert(/Invalid local stock movement/.test(err.message), 'invalid batch rejected');
+    }
+    assert(!conn.prepare('SELECT 1 FROM stock_movements WHERE id = ?').get('rolled-back-movement'),
+      'failed batch rolls back movement');
+    assert(!db.listPendingSyncQueue(conn).some((row) => row.entityId === 'rolled-back-movement'),
+      'failed batch rolls back queue');
+    assert(conn.prepare('SELECT stock_qty FROM product_variants WHERE id = ?').get('v1').stock_qty === before - 1000,
+      'failed batch rolls back stock');
+    ok('25. Retry-safe stock movements');
+  } catch (e) {
+    fail('25. Retry-safe stock movements', e);
+  }
+
+  try {
+    const device = db.getMeta(conn, 'sync_device_id');
+    assert(device && device === db.getMeta(db.openShopDb(root, shop), 'sync_device_id'), 'device identity is stable');
+    const localName = db.getProduct(conn, 'p1').name;
+    db.replaceCatalog(conn, {
+      protectPending: true,
+      syncStock: false,
+      products: [{ id: 'p1', name: 'Remote overwrite', variants: [{ id: 'v1', stockQty: 999 }] }],
+    });
+    assert(db.getProduct(conn, 'p1').name === localName, 'pending changes protect the local product');
+    conn.prepare('UPDATE product_variants SET stock_qty = 0 WHERE id = ?').run('v2');
+    db.replaceCatalog(conn, {
+      syncStock: false,
+      products: [{ id: 'p2', name: 'Remote tea', variants: [{ id: 'v2', sku: 'TEA250', barcode: '890002', stockQty: 50 }] }],
+    });
+    assert(db.getProduct(conn, 'p2').variants[0].stockQty === 0, 'zero local stock is not replaced by a remote balance');
+    ok('26. Pending catalog and stock protection');
+  } catch (e) {
+    fail('26. Pending catalog and stock protection', e);
+  }
 } finally {
   try {
     db.closeAll();

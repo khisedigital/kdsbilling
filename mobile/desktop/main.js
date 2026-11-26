@@ -635,7 +635,7 @@ function registerIpc() {
 
   ipcMain.handle('sqlite:status', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    return { ok: true, ...offlineDb.getStatus(db) };
+    return { ok: true, syncGuardVersion: 1, ...offlineDb.getStatus(db) };
   });
 
   ipcMain.handle('sqlite:save-shop-settings', async (_event, options) => {
@@ -658,6 +658,7 @@ function registerIpc() {
       clearProducts: options?.clearProducts === true,
       syncStock: options?.syncStock !== false,
       insertOnly: options?.insertOnly === true,
+      protectPending: options?.protectPending === true,
     });
     return { ok: true, ...result };
   });

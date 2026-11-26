@@ -40,9 +40,11 @@ function initBillingModels(sequelize, refs) {
 
   const SalesOrder = sequelize.define('SalesOrder', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    bill_number: { type: DataTypes.STRING(30), allowNull: false, unique: true },
+    bill_number: { type: DataTypes.STRING(30), allowNull: false },
     /** Set by desktop offline app so sync retries do not create duplicate bills. */
     client_bill_id: { type: DataTypes.UUID, allowNull: true, unique: true },
+    device_id: { type: DataTypes.STRING(128), allowNull: true },
+    sync_payload_hash: { type: DataTypes.STRING(64), allowNull: true },
     branch_id: { type: DataTypes.UUID, allowNull: false },
     customer_id: DataTypes.UUID,
     status: {

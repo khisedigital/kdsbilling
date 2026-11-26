@@ -206,91 +206,39 @@ export async function postStockMovement(
   if (!opts?.forceNetwork) {
     const { isFullyLocalMode, localSaveStockMovementsAndQueue } = await import('../offline/localApi');
     if (isFullyLocalMode()) {
-        const entries = (payload.items || []).map((item) => {
-          if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') {
-            throw new Error('Secure stock movement IDs are unavailable');
-          }
-          const quantity = Number(item.quantity);
-          if (!Number.isFinite(quantity) || quantity === 0) throw new Error('Stock quantity must be non-zero');
-          const delta = endpoint === 'out' || endpoint === 'damage' ? -Math.abs(quantity) : quantity;
-          return {
-            row: {
-              id: crypto.randomUUID(),
-              variantId: item.variantId,
-              qtyDelta: delta,
-              reason: endpoint,
-              notes: payload.notes,
-              unitCost: item.unitCost,
-              syncStatus: 'pending',
-            },
-            endpoint,
-            item,
-            notes: payload.notes,
-          };
-        });
-        const result = await localSaveStockMovementsAndQueue(entries);
-        const stockPatches: Array<{ variantId: string; productId?: string; stockQty: number }> = [];
-        for (const [index, item] of (payload.items || []).entries()) {
-          const saved = result.movements[index];
-          const delta = entries[index].row.qtyDelta;
-          // Keep Billing / Price Management caches in sync with SQLite stock.
-          try {
-            const { readCachedProducts, applyCatalogPricePatches, upsertCachedProduct } = await import(
-              './catalogCache'
-            );
-            const { sqliteGetProduct } = await import('../offline/sqliteApi');
-            const cached = await readCachedProducts();
-            let productId = item.productId ? String(item.productId) : undefined;
-            let prevQty = 0;
-            for (const p of cached?.items || []) {
-              const v = (p.variants || []).find((x) => x.id === item.variantId);
-              if (!v) continue;
-              if (!productId) productId = p.id;
-              prevQty = Number(
-                (v as { stockQty?: number; stock_qty?: number }).stockQty
-                  ?? (v as { stock_qty?: number }).stock_qty,
-              ) || 0;
-              break;
-            }
-            let nextQty =
-              saved?.stockQty != null && Number.isFinite(Number(saved.stockQty))
-                ? Number(saved.stockQty) || 0
-                : Math.max(0, prevQty + delta);
-            if (productId) {
-              const fresh = await sqliteGetProduct(productId);
-              if (fresh) {
-                await upsertCachedProduct(fresh as any);
-                const fv = ((fresh as any).variants || []).find(
-                  (x: { id?: string }) => x.id === item.variantId,
-                );
-                if (fv) {
-                  nextQty = Number(fv.stockQty ?? fv.stock_qty) || nextQty;
-                }
-              }
-            }
-            stockPatches.push({
-              variantId: String(item.variantId),
-              productId,
-              stockQty: nextQty,
-            });
-            await applyCatalogPricePatches([
-              { variantId: String(item.variantId), productId, stockQty: nextQty },
-            ]);
-          } catch {
-            stockPatches.push({
-              variantId: String(item.variantId),
-              productId: item.productId ? String(item.productId) : undefined,
-              stockQty: saved?.stockQty != null ? Number(saved.stockQty) || 0 : Math.max(0, delta),
-            });
-            try {
-              const { applyCatalogPricePatches } = await import('./catalogCache');
-              await applyCatalogPricePatches(stockPatches.slice(-1));
-            } catch {
-              /* cache patch is best-effort */
-            }
-          }
+      const { applyCatalogPricePatches } = await import('./catalogCache');
+      const entries = (payload.items || []).map((item) => {
+        if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') {
+          throw new Error('Secure stock movement IDs are unavailable');
         }
-        return { ok: true, stockPatches };
+        const quantity = Number(item.quantity);
+        if (!Number.isFinite(quantity) || quantity === 0 || Number(quantity.toFixed(3)) !== quantity) {
+          throw new Error('Stock quantity must be non-zero with at most three decimal places');
+        }
+        const delta = endpoint === 'out' || endpoint === 'damage' ? -Math.abs(quantity) : quantity;
+        return {
+          row: {
+            id: crypto.randomUUID(),
+            variantId: item.variantId,
+            qtyDelta: delta,
+            reason: endpoint,
+            notes: payload.notes,
+            unitCost: item.unitCost,
+            syncStatus: 'pending',
+          },
+          endpoint,
+          item,
+          notes: payload.notes,
+        };
+      });
+      const result = await localSaveStockMovementsAndQueue(entries);
+      const stockPatches = result.movements.map((movement, index) => ({
+        variantId: movement.variantId,
+        productId: entries[index].item.productId,
+        stockQty: movement.stockQty,
+      }));
+      await applyCatalogPricePatches(stockPatches);
+      return { ok: true, stockPatches };
     }
   }
   const { data } = await api.post(`/stock/${endpoint}`, {

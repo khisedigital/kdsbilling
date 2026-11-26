@@ -11,6 +11,8 @@ import { sqliteSaveSale as cacheBillLocally } from '../offline/sqliteApi';
 export interface BillDetail {
   id: string;
   bill_number: string;
+  device_id?: string | null;
+  branch_id?: string;
   status: 'draft' | 'held' | 'completed' | 'void' | 'partially_returned' | 'fully_returned';
   is_returnable?: boolean;
   subtotal: string | number;
@@ -107,8 +109,8 @@ export async function previewBill(payload: Record<string, unknown>) {
   return data.data;
 }
 
-export async function createBill(payload: Record<string, unknown>) {
-  const { data } = await api.post('/bills', payload);
+export async function createBill(payload: Record<string, unknown>, offlineSync = false) {
+  const { data } = await api.post(offlineSync ? '/bills/sync' : '/bills', payload);
   return data.data;
 }
 

@@ -69,6 +69,7 @@ export type DesktopBridge = {
   sqliteStatus?: (options: { shopCode: string }) => Promise<{
     ok: boolean;
     schemaVersion?: number;
+    syncGuardVersion?: number;
     catalogUpdatedAt?: string | null;
     catalogProductCount?: number;
     pendingSales?: number;
@@ -85,6 +86,7 @@ export type DesktopBridge = {
     clearProducts?: boolean;
     syncStock?: boolean;
     insertOnly?: boolean;
+    protectPending?: boolean;
   }) => Promise<{ ok: boolean; products?: number; categories?: number; brands?: number }>;
   sqliteListProducts?: (options: {
     shopCode: string;
@@ -174,7 +176,7 @@ export type DesktopBridge = {
       item: { variantId: string; quantity: number; unitCost?: number; productId?: string };
       notes?: string;
     }>;
-  }) => Promise<{ ok: boolean; movements: Array<{ id: string; variantId: string | null; stockQty: number | null }> }>;
+  }) => Promise<{ ok: boolean; movements: Array<{ id: string; variantId: string; stockQty: number }> }>;
   sqliteListSyncQueue?: (options: { shopCode: string }) => Promise<{ ok: boolean; rows: any[] }>;
   sqliteReplaceJsonTable?: (options: {
     shopCode: string;

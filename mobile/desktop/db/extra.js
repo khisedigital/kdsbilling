@@ -715,7 +715,7 @@ function saveStockMovement(db, row) {
   let stockQty = null;
   if (vid && delta !== 0) {
     db.prepare(
-      `UPDATE product_variants SET stock_qty = MAX(0, stock_qty + ?), updated_at = ? WHERE id = ?`,
+      `UPDATE product_variants SET stock_qty = stock_qty + ?, updated_at = ? WHERE id = ?`,
     ).run(delta, nowIso(), vid);
     const after = db.prepare(`SELECT stock_qty FROM product_variants WHERE id = ?`).get(vid);
     stockQty = after ? Number(after.stock_qty) || 0 : null;

@@ -169,6 +169,7 @@ export async function sqliteReplaceCatalogBatched(payload: {
   clearProducts?: boolean;
   syncStock?: boolean;
   insertOnly?: boolean;
+  protectPending?: boolean;
   productChunkSize?: number;
 }): Promise<{ products: number; categories: number; brands: number }> {
   const bridge = getDesktopBridge();
@@ -190,6 +191,7 @@ export async function sqliteReplaceCatalogBatched(payload: {
     clearProducts: false,
     syncStock: payload.syncStock !== false,
     insertOnly: payload.insertOnly,
+    protectPending: payload.protectPending,
   });
 
   let written = 0;
@@ -208,6 +210,7 @@ export async function sqliteReplaceCatalogBatched(payload: {
       clearProducts: clear,
       syncStock: payload.syncStock !== false,
       insertOnly: payload.insertOnly,
+      protectPending: payload.protectPending,
     });
     written += result.products ?? chunk.length;
   }

@@ -9,12 +9,20 @@ import { isDesktopOfflineCapable } from './capability';
 import { isOfflineNow, useConnectivityStore } from './connectivityStore';
 import { buildLocalPreview } from './localPreview';
 import { saveOutboxSale, type OutboxSale } from './outbox';
-import { hasSqliteBridge } from './sqliteApi';
+import { hasSqliteBridge, sqliteGetMeta } from './sqliteApi';
 
 function newClientBillId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  if (hasSqliteBridge()) throw new Error('Secure offline bill IDs are unavailable');
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
@@ -88,7 +96,7 @@ function round2(n: number) {
   return Math.round(Number(n) * 100) / 100;
 }
 
-function buildLocalBill(input: CreateSaleInput, clientBillId: string): BillDetail {
+function buildLocalBill(input: CreateSaleInput, clientBillId: string, deviceId?: string): BillDetail {
   const preview = buildLocalPreview(input.items, {
     billDiscountAmount: input.billDiscountAmount,
     billDiscountPercent: input.billDiscountPercent,
@@ -99,6 +107,7 @@ function buildLocalBill(input: CreateSaleInput, clientBillId: string): BillDetai
   return {
     id: clientBillId,
     bill_number: localBillNumber(),
+    ...(deviceId ? { device_id: deviceId } : {}),
     status: 'completed',
     subtotal: preview.subtotal,
     discount_amount: preview.discountAmount,
@@ -174,7 +183,9 @@ async function reduceLocalStock(items: SaleItem[]) {
 }
 
 async function saveOfflineSale(input: CreateSaleInput, clientBillId: string, lastError?: string) {
-  const bill = buildLocalBill(input, clientBillId);
+  const deviceId = hasSqliteBridge() ? await sqliteGetMeta('sync_device_id') : null;
+  if (hasSqliteBridge() && !deviceId) throw new Error('Restart the desktop app to initialize its sync device ID');
+  const bill = buildLocalBill(input, clientBillId, deviceId || undefined);
   const sale: OutboxSale = {
     clientBillId,
     createdAt: new Date().toISOString(),

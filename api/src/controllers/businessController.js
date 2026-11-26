@@ -106,6 +106,11 @@ async function createBill(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function syncOfflineBill(req, res) {
+  const data = await billingService.syncOfflineBill(req.db, branchId(req), req.auth.sub, req.body);
+  res.status(201).json({ success: true, data });
+}
+
 async function getBill(req, res) {
   const data = await billingService.getBill(req.db, req.params.id);
   res.json({ success: true, data });
@@ -318,7 +323,7 @@ module.exports = {
   dashboard, salesReport, monthlySalesReport, productSalesReport, categorySalesReport, brandSalesReport,
   profitReport, purchaseReport, gstReport, stockReport, lowStockReport, customerReport, supplierReport,
   expenseReport, cashFlowReport,
-  previewBill, createBill, getBill, listBills, voidBill, printBill,
+  previewBill, createBill, syncOfflineBill, getBill, listBills, voidBill, printBill,
   holdBill, listHeld, resumeHeld, deleteHeld,
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, addStoreCredit,
   createReturn, listReturns, getReturn,

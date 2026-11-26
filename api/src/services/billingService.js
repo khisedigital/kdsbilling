@@ -3,6 +3,8 @@ const AppError = require('../utils/AppError');
 const { getPagination, paginatedResponse } = require('../utils/pagination');
 const { calculateBill, toPaise, fromPaise, round2 } = require('./taxCalculator');
 const { applyStockMovement, MOVEMENT_TYPES, generateDocNumber, getLocalDatePrefix } = require('./stockEngine');
+const { validate: validateUuid } = require('uuid');
+const { createHash } = require('crypto');
 
 function round3(n) {
   return Math.round((Number(n) || 0) * 1000) / 1000;
@@ -125,7 +127,7 @@ async function previewBill(db, payload) {
   return calculateBill(db, { ...payload, offer });
 }
 
-async function createBill(db, branchId, userId, payload) {
+async function createBill(db, branchId, userId, payload, options = {}) {
   const { SalesOrder, SalesOrderItem, SalesOrderItemTax, SalesPayment, Customer, Offer } = db;
 
   if (!payload.items?.length) throw new AppError('Bill items required', 400, 'VALIDATION_ERROR');
@@ -184,6 +186,25 @@ async function createBill(db, branchId, userId, payload) {
   if (payload.offerId) offer = await Offer.findOne({ where: { id: payload.offerId, status: 'active' } });
 
   const calculated = await calculateBill(db, { ...payload, offer });
+  if (options.offlineIdentity) {
+    const original = payload.offlineTotals;
+    const same = (left, right, precision = 4) => left != null && Number.isFinite(Number(left))
+      && Number(Number(left).toFixed(precision)) === Number(Number(right).toFixed(precision));
+    if (!original || !Array.isArray(original.items) || original.items.length !== calculated.items.length
+      || !same(original.subtotal, calculated.subtotal)
+      || !same(original.taxAmount, calculated.taxAmount)
+      || !same(original.discountAmount, calculated.discountAmount)
+      || !same(original.roundOffAmount, calculated.roundOffAmount, 2)
+      || !same(original.totalAmount, calculated.totalAmount, 2)
+      || calculated.items.some((line, index) => {
+        const item = original.items[index];
+        return !item || !same(item.quantity, line.quantity, 3) || !same(item.unitPrice, line.unitPrice)
+          || !same(item.discountAmount, line.discountAmount) || !same(item.taxAmount, line.taxAmount)
+          || !same(item.lineTotal, line.lineTotal, 2);
+      })) {
+      throw new AppError('Offline bill totals differ from the live calculation; manual reconciliation is required', 409, 'SYNC_CONFLICT');
+    }
+  }
   const paidPaise = (payload.payments || []).reduce((s, p) => s + toPaise(p.amount), 0);
   const totalPaise = toPaise(calculated.totalAmount);
 
@@ -201,7 +222,7 @@ async function createBill(db, branchId, userId, payload) {
 
   const transaction = await db.sequelize.transaction();
   try {
-    const billNumber = await nextBillNumber(db, branchId, transaction);
+    const billNumber = options.offlineIdentity?.billNumber || await nextBillNumber(db, branchId, transaction);
 
     let customer = null;
     if (payload.customerId) {
@@ -230,6 +251,11 @@ async function createBill(db, branchId, userId, payload) {
     };
     if (supportsClientBillId && clientBillId) {
       billData.client_bill_id = clientBillId;
+    }
+    if (options.offlineIdentity) {
+      billData.id = clientBillId;
+      billData.device_id = options.offlineIdentity.deviceId;
+      billData.sync_payload_hash = options.offlineIdentity.payloadHash;
     }
     const bill = await SalesOrder.create(billData, { transaction });
 
@@ -345,6 +371,47 @@ async function createBill(db, branchId, userId, payload) {
     }
     throw err;
   }
+}
+
+async function syncOfflineBill(db, branchId, userId, payload) {
+  const clientBillId = payload?.clientBillId;
+  const billNumber = typeof payload?.billNumber === 'string' ? payload.billNumber.trim() : '';
+  const deviceId = typeof payload?.deviceId === 'string' ? payload.deviceId.trim() : '';
+  if (!validateUuid(clientBillId || '') || !billNumber || billNumber.length > 30
+    || !deviceId || deviceId.length > 128) {
+    throw new AppError('Offline bill UUID, original bill number and device ID are required', 400, 'VALIDATION_ERROR');
+  }
+  const queryInterface = db.sequelize.getQueryInterface();
+  const [indexes, table] = await Promise.all([
+    queryInterface.showIndex('sales_orders'),
+    queryInterface.describeTable('sales_orders'),
+  ]);
+  if (!table.device_id || !table.sync_payload_hash || !indexes.some((index) => index.unique && index.fields?.length === 1
+    && (index.fields[0].attribute || index.fields[0].name) === 'client_bill_id')
+    || indexes.some((index) => index.unique && index.fields?.some(
+      (field) => (field.attribute || field.name) === 'bill_number'
+    ))) {
+    throw new AppError('Offline bill sync requires the bill identity database migration', 503, 'SYNC_UNAVAILABLE');
+  }
+  const canonicalPayload = JSON.stringify(payload, (_key, value) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+      : value);
+  const payloadHash = createHash('sha256').update(canonicalPayload).digest('hex');
+  const existing = await db.SalesOrder.findOne({ where: { client_bill_id: clientBillId } });
+  if (existing && (existing.id !== clientBillId || existing.branch_id !== branchId
+    || existing.bill_number !== billNumber || existing.device_id !== deviceId
+    || existing.sync_payload_hash !== payloadHash)) {
+    throw new AppError('Previously uploaded bill identity differs; manual reconciliation is required', 409, 'SYNC_CONFLICT');
+  }
+  const bill = await createBill(db, branchId, userId, { ...payload, syncRequireIdempotency: true }, {
+    offlineIdentity: { billNumber, deviceId, payloadHash },
+  });
+  if (bill.id !== clientBillId || bill.branch_id !== branchId
+    || bill.bill_number !== billNumber || bill.device_id !== deviceId || bill.sync_payload_hash !== payloadHash) {
+    throw new AppError('Previously uploaded bill identity differs; manual reconciliation is required', 409, 'SYNC_CONFLICT');
+  }
+  return bill;
 }
 
 async function getBill(db, id) {
@@ -529,6 +596,7 @@ async function deleteHeldBill(db, branchId, heldId) {
 module.exports = {
   previewBill,
   createBill,
+  syncOfflineBill,
   getBill,
   listBills,
   voidBill,

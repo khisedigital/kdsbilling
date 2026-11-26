@@ -1,6 +1,6 @@
 'use strict';
 
-const { DataTypes } = require('sequelize');
+const { DataTypes, QueryTypes } = require('sequelize');
 
 module.exports = {
   async up(queryInterface) {
@@ -22,11 +22,18 @@ module.exports = {
   },
 
   async down(queryInterface) {
+    const table = await queryInterface.describeTable('stock_ledger');
+    if (table.client_movement_id) {
+      const [row] = await queryInterface.sequelize.query(
+        'SELECT COUNT(*) AS count FROM stock_ledger WHERE client_movement_id IS NOT NULL',
+        { type: QueryTypes.SELECT },
+      );
+      if (Number(row.count) > 0) throw new Error('Cannot remove recorded stock movement identities');
+    }
     const indexes = await queryInterface.showIndex('stock_ledger');
     if (indexes.some((index) => index.name === 'stock_ledger_client_movement_id_unique')) {
       await queryInterface.removeIndex('stock_ledger', 'stock_ledger_client_movement_id_unique');
     }
-    const table = await queryInterface.describeTable('stock_ledger');
     if (table.client_movement_id) await queryInterface.removeColumn('stock_ledger', 'client_movement_id');
   },
 };

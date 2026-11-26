@@ -78,7 +78,10 @@ async function createProduct(req, res) {
 }
 
 async function ensureOfflineVariant(req, res) {
-  const data = await productService.ensureOfflineVariant(req.db, req.body);
+  const data = await productService.ensureOfflineVariant(req.db, req.body, {
+    branchId: req.auth?.branchId,
+    userId: req.auth?.sub,
+  });
   res.json({ success: true, data });
 }
 

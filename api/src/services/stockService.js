@@ -167,9 +167,11 @@ async function recordSyncedMovement(db, branchId, userId, payload) {
     adjust: MOVEMENT_TYPES.ADJUSTMENT,
     damage: MOVEMENT_TYPES.DAMAGE,
   };
-  const movementType = operations[payload?.operation];
+  const movementType = Object.prototype.hasOwnProperty.call(operations, payload?.operation)
+    ? operations[payload.operation]
+    : null;
   if (!clientMovementId || clientMovementId.length > 128 || !variantId || !movementType
-    || !Number.isFinite(quantity) || quantity === 0) {
+    || !Number.isFinite(quantity) || quantity === 0 || Number(quantity.toFixed(3)) !== quantity) {
     throw new AppError('Invalid offline stock movement', 400, 'VALIDATION_ERROR');
   }
   const quantityChange = Number((['out', 'damage'].includes(payload.operation)
@@ -180,6 +182,9 @@ async function recordSyncedMovement(db, branchId, userId, payload) {
     throw new AppError('Invalid unit cost', 400, 'VALIDATION_ERROR');
   }
   const unitCost = parsedUnitCost === null ? null : Number(parsedUnitCost.toFixed(4));
+  if (payload.notes != null && typeof payload.notes !== 'string') {
+    throw new AppError('Invalid stock movement notes', 400, 'VALIDATION_ERROR');
+  }
   const notes = payload.notes || null;
   const indexes = await db.sequelize.getQueryInterface().showIndex('stock_ledger');
   if (!indexes.some((index) => index.unique && index.fields?.length === 1

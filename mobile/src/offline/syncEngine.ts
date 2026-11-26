@@ -17,6 +17,7 @@ import {
   refreshPendingCount,
   removeOutboxSale,
 } from './outbox';
+import type { OutboxSale } from './outbox';
 import {
   localListSyncQueue,
   localMarkSyncQueueDone,
@@ -24,8 +25,6 @@ import {
   localSaveDailyClosing,
   localSaveExpense,
   localSaveReturn,
-  localUpsertProduct,
-  localDeleteProduct,
 } from './localApi';
 import {
   hasSqliteBridge,
@@ -46,6 +45,7 @@ let running = false;
 const PRODUCT_ID_MAP_KEY = 'product_sync_id_map';
 
 type ProductIdMap = Record<string, string>;
+type QueueItem = Awaited<ReturnType<typeof localListSyncQueue>>[number];
 
 class LocalOnlySyncError extends Error {}
 
@@ -55,53 +55,28 @@ function isRecordSyncError(err: unknown): boolean {
     || (status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status));
 }
 
-function remapProductIds<T>(value: T, ids: ProductIdMap): T {
-  if (typeof value === 'string') return (ids[value] || value) as T;
-  if (Array.isArray(value)) return value.map((item) => remapProductIds(item, ids)) as T;
+function remapProductIds<T>(value: T, ids: ProductIdMap, variantEntry = false): T {
+  if (Array.isArray(value)) return value.map((item) => remapProductIds(item, ids, variantEntry)) as T;
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, remapProductIds(item, ids)]),
+      Object.entries(value).map(([key, item]) => {
+        const isProductId = ['productId', 'product_id', 'variantId', 'variant_id'].includes(key)
+          || (key === 'id' && variantEntry);
+        if (isProductId && typeof item === 'string') return [key, ids[item] || item];
+        return [key, remapProductIds(item, ids, key === 'variants')];
+      }),
     ) as T;
   }
   return value;
 }
 
-function variantCodes(variant: any): string[] {
-  return [
-    variant?.barcode,
-    ...(variant?.barcodes || []).map((row: any) => typeof row === 'string' ? row : row?.barcode),
-  ].filter(Boolean).map(String);
-}
-
-function mapCreatedProduct(local: any, remote: any, ids: ProductIdMap): ProductIdMap {
-  if (!local?.id || !remote?.id) throw new LocalOnlySyncError('Cannot map synced product');
-  const localVariants = Array.isArray(local.variants) ? local.variants : [];
-  const remoteVariants = Array.isArray(remote.variants) ? remote.variants : [];
-  const next = { ...ids, [String(local.id)]: String(remote.id) };
-  const used = new Set<string>();
-  for (const variant of localVariants) {
-    const codes = variantCodes(variant);
-    let matches = remoteVariants.filter((row: any) =>
-      !used.has(String(row.id)) && codes.some((code) => variantCodes(row).includes(code)),
-    );
-    if (!matches.length && variant.sku) {
-      matches = remoteVariants.filter((row: any) => !used.has(String(row.id)) && row.sku === variant.sku);
-    }
-    if (!matches.length) {
-      matches = remoteVariants.filter((row: any) =>
-        !used.has(String(row.id))
-        && (row.size || '') === (variant.size || '')
-        && (row.color || '') === (variant.color || ''),
-      );
-    }
-    if (matches.length !== 1 || !variant.id || !matches[0].id) {
-      throw new LocalOnlySyncError('Cannot match local product variants to the synced product');
-    }
-    const id = String(matches[0].id);
-    used.add(id);
-    next[String(variant.id)] = id;
-  }
-  return next;
+function containsAbsoluteStock(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsAbsoluteStock);
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, item]) =>
+    ((key === 'stockQty' || key === 'stock_qty') && item != null)
+    || containsAbsoluteStock(item),
+  );
 }
 
 function errStatus(err: unknown): number {
@@ -136,25 +111,21 @@ function isNotFoundErr(err: unknown): boolean {
   );
 }
 
-async function reconcileSaleVariant(variantId: string, ids: ProductIdMap): Promise<void> {
+async function syncLocalProduct(
+  local: Product,
+  ids: ProductIdMap,
+  openingStock?: Record<string, number>,
+  missingVariantId?: string,
+): Promise<void> {
   const unresolved = () => new LocalOnlySyncError(
-    `Cannot safely match local variant ${variantId} to the live catalog. The bill is still pending; verify the product and stock before resolving it.`,
+    `Cannot safely match local product ${local.id} to the live catalog. Verify the product and stock before resolving it.`,
   );
-  const products: Product[] = [];
-  for (const status of ['active', 'inactive']) {
-    const limit = 500;
-    for (let offset = 0; ; offset += limit) {
-      const page = await sqliteListProducts({ status, limit, offset });
-      products.push(...(page.items as Product[]).filter((product) =>
-        product.variants?.some((variant) => variant.id === variantId),
-      ));
-      if (page.items.length < limit) break;
-    }
+  if (!local.uom_id || !local.variants?.length) throw unresolved();
+  if (openingStock && (local.variants.length !== Object.keys(openingStock).length
+    || local.variants.some((variant) => !(variant.id in openingStock)
+      || openingStock[variant.id] == null || !Number.isFinite(Number(openingStock[variant.id]))))) {
+    throw new LocalOnlySyncError(`Cannot safely determine initial stock for product ${local.id}; its variants changed before sync`);
   }
-  if (products.length !== 1) throw unresolved();
-  const local = products[0];
-  const localVariant = local.variants?.find((variant) => variant.id === variantId);
-  if (!localVariant || !local.uom_id) throw unresolved();
   const variants = (local.variants || []).map((localRow) => {
     const variant = localRow as ProductVariant & { quantityBarcodes?: QuantityBarcodeInput[] };
     const barcodeRows = [
@@ -171,11 +142,15 @@ async function reconcileSaleVariant(variantId: string, ids: ProductIdMap): Promi
       costPrice: variant.cost_price, sellingPrice: variant.selling_price, mrp: variant.mrp,
       wholesalePrice: variant.wholesale_price, uomId: variant.uom_id, taxGroupId: variant.tax_group_id,
       reorderLevel: variant.reorder_level, status: variant.status, barcodes: barcodeRows,
+      ...(openingStock ? { openingStock: openingStock[variant.id] } : {}),
     };
   });
   let response;
   try {
-    response = await api.post('/products/sync-missing-variant', {
+    const deviceId = await sqliteGetMeta('sync_device_id');
+    if (!deviceId) throw new Error('Offline device identity is unavailable; restart the desktop app before syncing');
+    response = await api.post('/products/sync-catalog', {
+      deviceId,
       remoteProductId: ids[local.id],
       product: {
         id: local.id, name: local.name, nameMr: local.name_mr, description: local.description,
@@ -192,10 +167,13 @@ async function reconcileSaleVariant(variantId: string, ids: ProductIdMap): Promi
     throw err;
   }
   const remote = response.data?.data as {
-    productId?: string; variants?: Array<{ localId: string; variantId: string }>;
+    identityProtocol?: number; productId?: string; variants?: Array<{ localId: string; variantId: string }>;
   } | undefined;
-  if (!remote?.productId || !Array.isArray(remote.variants) || remote.variants.length !== variants.length) {
-    throw new Error('Invalid missing product recovery response');
+  if (remote?.identityProtocol !== 1) {
+    throw new Error('Update the live server and apply the catalog sync identity migration before syncing products');
+  }
+  if (!remote.productId || !Array.isArray(remote.variants) || remote.variants.length !== variants.length) {
+    throw new Error('Invalid product sync response');
   }
   if (ids[local.id] && ids[local.id] !== remote.productId) throw unresolved();
   const next = { ...ids };
@@ -205,30 +183,133 @@ async function reconcileSaleVariant(variantId: string, ids: ProductIdMap): Promi
     if (matches.length !== 1 || used.has(matches[0].variantId)) throw unresolved();
     const remoteId = matches[0].variantId;
     used.add(remoteId);
-    if (variant.id === variantId && (ids[variantId] || variantId) === remoteId) {
+    if (variant.id === missingVariantId && (ids[variant.id] || variant.id) === remoteId) {
       throw new LocalOnlySyncError(`Live variant ${remoteId} is still unavailable for this bill`);
     }
-    if (variant.id !== variantId && ids[variant.id] && ids[variant.id] !== remoteId) throw unresolved();
-    if (variant.id !== remoteId) next[variant.id] = remoteId;
-    else delete next[variant.id];
+    if (ids[variant.id] && ids[variant.id] !== remoteId) throw unresolved();
+    next[variant.id] = remoteId;
   }
-  if (local.id !== remote.productId) next[local.id] = remote.productId;
+  next[local.id] = remote.productId;
   await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(next));
   Object.assign(ids, next);
 }
 
-async function createPendingBill(payload: Record<string, unknown>, ids: ProductIdMap): Promise<BillDetail> {
+async function reconcileSaleVariant(variantId: string, ids: ProductIdMap): Promise<void> {
+  const local = await findLocalProductForVariant(variantId);
+  await syncLocalProduct(local, ids, undefined, variantId);
+}
+
+async function findLocalProductForVariant(variantId: string): Promise<Product> {
+  const products: Product[] = [];
+  for (const status of ['active', 'inactive']) {
+    const limit = 500;
+    for (let offset = 0; ; offset += limit) {
+      const page = await sqliteListProducts({ status, limit, offset });
+      products.push(...(page.items as Product[]).filter((product) =>
+        product.variants?.some((variant) => variant.id === variantId),
+      ));
+      if (page.items.length < limit) break;
+    }
+  }
+  if (products.length !== 1) {
+    throw new LocalOnlySyncError(`Cannot find a unique local product for variant ${variantId}; verify the product before syncing`);
+  }
+  return products[0];
+}
+
+function initialProductStock(row: Pick<QueueItem, 'payload'>, local: Product): Record<string, number> {
+  const payload = row.payload || {};
+  const variants = local.variants || [];
+  const initialVariants = Array.isArray(payload.variants) ? payload.variants : [];
+  if (payload.localInitialVariantStock) return payload.localInitialVariantStock;
+  if (variants.length !== (initialVariants.length || 1) || variants.length !== 1) {
+    throw new LocalOnlySyncError(`Cannot safely determine initial stock for product ${local.id}`);
+  }
+  return { [variants[0].id]: initialVariants[0]?.stockQty ?? payload.stockQty ?? 0 };
+}
+
+async function preflightSaleProducts(
+  sale: OutboxSale,
+  ids: ProductIdMap,
+  queue: QueueItem[],
+  verified: Set<string>,
+): Promise<void> {
+  const items = sale.payload.items;
+  if (!Array.isArray(items) || !items.length) throw new LocalOnlySyncError(`Bill ${sale.clientBillId} has no product items`);
+  for (const item of items) {
+    if (item && typeof item === 'object'
+      && (item.isCustom === true || (typeof item.variantId === 'string' && item.variantId.startsWith('custom-')))) {
+      continue;
+    }
+    if (!item || typeof item !== 'object' || typeof item.variantId !== 'string' || !item.variantId) {
+      throw new LocalOnlySyncError(`Bill ${sale.clientBillId} contains an item without a variant ID`);
+    }
+    await preflightVariant(item.variantId, ids, queue, verified);
+  }
+}
+
+async function preflightVariant(
+  variantId: string,
+  ids: ProductIdMap,
+  queue: QueueItem[],
+  verified: Set<string>,
+): Promise<void> {
+  if (verified.has(variantId)) return;
+  const local = await findLocalProductForVariant(variantId);
+  const create = queue.find((row) => row.entityType === 'product' && row.op === 'create' && row.entityId === local.id);
+  await syncLocalProduct(local, ids, create ? initialProductStock(create, local) : undefined);
+  for (const variant of local.variants || []) verified.add(variant.id);
+}
+
+async function createPendingBill(sale: OutboxSale, ids: ProductIdMap): Promise<BillDetail> {
+  const payload = sale.payload;
   const items = Array.isArray(payload.items) ? payload.items : [];
+  const desktop = hasSqliteBridge();
+  const deviceId = desktop ? (sale.bill.device_id || await sqliteGetMeta('sync_device_id')) : null;
+  if (desktop && (!deviceId || !sale.bill.bill_number || !sale.clientBillId)) {
+    throw new Error('Offline bill identity is unavailable; restart the desktop app before syncing');
+  }
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await createBill({ ...remapProductIds(payload, ids), syncRequireIdempotency: true }) as BillDetail;
+      const request = {
+        ...remapProductIds(payload, ids),
+        syncRequireIdempotency: true,
+        ...(desktop ? {
+          clientBillId: sale.clientBillId,
+          billNumber: sale.bill.bill_number,
+          deviceId,
+          offlineTotals: {
+            subtotal: sale.bill.subtotal,
+            taxAmount: sale.bill.tax_amount,
+            discountAmount: sale.bill.discount_amount,
+            roundOffAmount: sale.bill.round_off_amount ?? 0,
+            totalAmount: sale.bill.total_amount,
+            items: sale.bill.items?.map((item) => ({
+              quantity: item.quantity,
+              unitPrice: item.unit_price,
+              discountAmount: item.discount_amount ?? 0,
+              taxAmount: item.tax_amount ?? 0,
+              lineTotal: item.line_total,
+            })),
+          },
+        } : {}),
+      };
+      const bill = await createBill(request, desktop) as BillDetail;
+      if (desktop && (!bill || bill.id !== sale.clientBillId || bill.bill_number !== sale.bill.bill_number
+        || bill.device_id !== deviceId)) {
+        throw new Error(`Invalid identity acknowledgment for offline bill ${sale.clientBillId}`);
+      }
+      return bill;
     } catch (err) {
+      if (desktop && errStatus(err) === 404 && /route not found/i.test(errMessage(err))) {
+        throw new Error('Update the live server to enable offline bill identity sync');
+      }
       const missing = /^Variant not found:\s*(\S+)\s*$/i.exec(errMessage(err))?.[1];
       const item = items.find((row) =>
         row && typeof row === 'object' && typeof row.variantId === 'string'
         && (ids[row.variantId] || row.variantId) === missing,
       );
-      if (!missing || !item || attempt >= items.length || !hasSqliteBridge()) throw err;
+      if (!missing || !item || attempt >= items.length || !desktop) throw err;
       try {
         await reconcileSaleVariant(item.variantId, ids);
       } catch (reconcileError) {
@@ -250,7 +331,7 @@ async function pushSyncQueueItem(row: {
   const type = row.entityType;
   const op = row.op;
   const originalEntityId = row.entityId;
-  row = { ...row, entityId: ids[row.entityId] || row.entityId };
+  if (type === 'product') row = { ...row, entityId: ids[row.entityId] || row.entityId };
   const p = remapProductIds(row.payload || {}, ids);
 
   if (type === 'customer' && op === 'create') {
@@ -382,66 +463,17 @@ async function pushSyncQueueItem(row: {
     return;
   }
   if (type === 'product' && op === 'create') {
-      const localProduct = (await sqliteGetProduct(originalEntityId)) as any;
-      if (ids[originalEntityId]) {
-        if (!localProduct) throw new LocalOnlySyncError('Pending product not found in local database');
-        const { data } = await api.get(`/products/${ids[originalEntityId]}`);
-        const nextIds = mapCreatedProduct(localProduct, data.data, ids);
-        await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(nextIds));
-        Object.assign(ids, nextIds);
-        return;
-      }
+      const localProduct = await sqliteGetProduct(originalEntityId) as Product | null;
       if (!localProduct) throw new LocalOnlySyncError('Pending product not found in local database');
-      const localProd = localProduct;
-      const { localInitialVariantStock, ...serverPayload } = p;
-      const localVariants = Array.isArray(localProd.variants) ? localProd.variants : [];
-      const initialVariants = Array.isArray(p.variants) ? p.variants : [];
-      if (localInitialVariantStock) {
-        if (localVariants.length !== Object.keys(localInitialVariantStock).length
-          || localVariants.some((variant: any) => !(variant.id in localInitialVariantStock))) {
-          throw new LocalOnlySyncError('Cannot safely sync a new product whose variants changed before its first sync');
-        }
-      } else if (localVariants.length !== (initialVariants.length || 1) || localVariants.length > 1) {
-        throw new LocalOnlySyncError('Cannot safely determine initial stock for this unsynced product');
-      }
-      const payloadToSend = {
-              ...serverPayload,
-              name: localProd.name || p.name,
-              nameMr: localProd.nameMr ?? localProd.name_mr ?? p.nameMr,
-              categoryId: localProd.categoryId ?? localProd.category_id ?? p.categoryId,
-              brandId: localProd.brandId ?? localProd.brand_id ?? p.brandId,
-              uomId: localProd.uomId ?? localProd.uom_id ?? p.uomId,
-              taxGroupId: localProd.taxGroupId ?? localProd.tax_group_id ?? p.taxGroupId,
-              taxCode: localProd.taxCode ?? localProd.tax_code ?? p.taxCode,
-              variants: localVariants.length
-                ? localVariants.map((lv: any, index: number) => ({
-                    sku: lv.sku || '',
-                    barcode: lv.barcode || (Array.isArray(lv.barcodes) ? (lv.barcodes[0]?.barcode || lv.barcodes[0]) : null),
-                    barcodes: lv.barcodes || [],
-                    quantityBarcodes: lv.quantityBarcodes || [],
-                    sellingPrice: lv.sellingPrice ?? lv.selling_price ?? 0,
-                    costPrice: lv.costPrice ?? lv.cost_price ?? 0,
-                    mrp: lv.mrp != null ? lv.mrp : undefined,
-                    stockQty: localInitialVariantStock
-                      ? localInitialVariantStock[lv.id]
-                      : (initialVariants[index]?.stockQty ?? p.stockQty ?? 0),
-                    size: lv.size || null,
-                    color: lv.color || null,
-                  }))
-                : p.variants,
-      };
-
-      const { data } = await api.post('/products', payloadToSend);
-      const created = data?.data;
-      if (!created?.id) throw new Error('Could not map synced product to local catalog');
-      ids[originalEntityId] = String(created.id);
-      await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(ids));
-      const nextIds = mapCreatedProduct(localProduct, created, ids);
-      await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(nextIds));
-      Object.assign(ids, nextIds);
+      await syncLocalProduct(localProduct, ids, initialProductStock(row, localProduct));
       return;
   }
   if (type === 'product' && op === 'update') {
+    if (containsAbsoluteStock(p)) {
+      throw new LocalOnlySyncError(
+        `Product ${originalEntityId} has an absolute stock edit; verify live stock and reconcile the change before syncing`,
+      );
+    }
     const { id, ...rest } = p;
     const targetId = row.entityId || id;
     try {
@@ -483,6 +515,9 @@ async function pushSyncQueueItem(row: {
   if (type === 'price_bulk' && op === 'update') {
     const items = Array.isArray((p as any).items) ? (p as any).items : [];
     if (!items.length) return;
+    if (containsAbsoluteStock(items)) {
+      throw new LocalOnlySyncError('Bulk product edits contain absolute stock changes; verify live stock and reconcile them before syncing');
+    }
     await api.post('/products/price-bulk', { items });
     return;
   }
@@ -591,12 +626,18 @@ async function pushSyncQueueItem(row: {
         notes: p.notes,
       });
     } catch (err) {
-      if (errStatus(err) === 404 && errCode(err) !== 'NOT_FOUND') {
+      if (errStatus(err) === 404 && /route not found/i.test(errMessage(err))) {
         throw new Error('Update the live server to enable retry-safe stock sync');
       }
       throw err;
     }
-    if (response.data?.data?.clientMovementId !== originalEntityId || !response.data?.data?.movementId) {
+    const operation = p.endpoint || op;
+    const quantity = Number(p.item?.quantity);
+    const expectedChange = Number((operation === 'out' || operation === 'damage'
+      ? -Math.abs(quantity) : quantity).toFixed(3));
+    if (response.data?.data?.clientMovementId !== originalEntityId || !response.data?.data?.movementId
+      || response.data?.data?.variantId !== p.item?.variantId
+      || Number(response.data?.data?.quantityChange) !== expectedChange) {
       throw new Error(`Invalid acknowledgment for stock movement ${originalEntityId}`);
     }
     return;
@@ -623,14 +664,18 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number; s
   let failed = 0;
   let skipped = 0;
   try {
-    if (hasSqliteBridge() && typeof (await sqliteStatus())?.localOnlyCount !== 'number') {
-      throw new Error('Restart the desktop app to enable safe sync');
+    if (hasSqliteBridge()) {
+      const status = await sqliteStatus();
+      if (typeof status?.localOnlyCount !== 'number' || status.syncGuardVersion !== 1) {
+        throw new Error('Restart the desktop app to enable safe sync');
+      }
     }
     if (hasSqliteBridge()) await sqliteRetryMissingVariantSales();
     const storedMap = hasSqliteBridge() ? await sqliteGetMeta(PRODUCT_ID_MAP_KEY) : null;
     const ids: ProductIdMap = storedMap ? JSON.parse(storedMap) : {};
     const queue = hasSqliteBridge() ? await localListSyncQueue() : [];
     const sales = await listOutboxSales();
+    const verifiedVariants = new Set<string>();
     const pending = [
       ...queue.map((row) => ({ kind: 'queue' as const, row })),
       ...sales.map((row) => ({ kind: 'sale' as const, row })),
@@ -639,6 +684,13 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number; s
       if (entry.kind === 'queue') {
         const row = entry.row;
         try {
+          if (hasSqliteBridge() && row.entityType === 'stock_movement' && row.payload?.syncProtocol === 2) {
+            const variantId = row.payload?.item?.variantId;
+            if (typeof variantId !== 'string' || !variantId) {
+              throw new LocalOnlySyncError(`Stock movement ${row.entityId} has no variant ID`);
+            }
+            await preflightVariant(variantId, ids, queue, verifiedVariants);
+          }
           await pushSyncQueueItem(row, ids);
         } catch (err) {
           const message = apiError(err, err instanceof Error ? err.message : String(err));
@@ -655,7 +707,8 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number; s
         const row = entry.row;
         let created: BillDetail;
         try {
-          created = await createPendingBill(row.payload, ids);
+          if (hasSqliteBridge()) await preflightSaleProducts(row, ids, queue, verifiedVariants);
+          created = await createPendingBill(row, ids);
         } catch (err) {
           const message = apiError(err, err instanceof Error ? err.message : String(err));
           const canSkip = isRecordSyncError(err) && hasSqliteBridge();
@@ -682,8 +735,6 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number; s
           )) {
             throw new Error('Local product has variants that are not yet synced; retry sync before downloading');
           }
-          await localUpsertProduct(data.data);
-          await localDeleteProduct(localId);
         }
       }
     }
@@ -787,7 +838,7 @@ export async function pullEverythingToSqlite(): Promise<{
 
   const pullErrors: string[] = [];
   const status = await sqliteStatus();
-  if (typeof status?.localOnlyCount !== 'number') {
+  if (typeof status?.localOnlyCount !== 'number' || status.syncGuardVersion !== 1) {
     throw new Error('Restart the desktop app to enable safe sync');
   }
   const insertOnly = status.localOnlyCount > 0;
@@ -870,13 +921,19 @@ export async function pullEverythingToSqlite(): Promise<{
 
   const supplierRows = Array.isArray(suppliers) ? suppliers : [];
 
-  if (insertOnly) {
+  {
     const storedMap = await sqliteGetMeta(PRODUCT_ID_MAP_KEY);
     const ids: ProductIdMap = storedMap ? JSON.parse(storedMap) : {};
     const mappedProducts = new Map<string, Product>();
     for (const [localId, remoteId] of Object.entries(ids)) {
       const local = await sqliteGetProduct(localId) as Product | null;
-      if (local) mappedProducts.set(remoteId, local);
+      if (local) {
+        const existing = mappedProducts.get(remoteId);
+        if (existing && existing.id !== local.id) {
+          throw new Error(`Multiple local products map to live product ${remoteId}; manual reconciliation is required`);
+        }
+        mappedProducts.set(remoteId, local);
+      }
     }
     const mappedRemoteIds = new Set(Object.values(ids));
     const translatedProducts: Product[] = [];
@@ -917,8 +974,9 @@ export async function pullEverythingToSqlite(): Promise<{
         categories: categories || [],
         brands: brands || [],
         clearProducts: false,
-        syncStock: true,
+        syncStock: false,
         insertOnly,
+        protectPending: true,
       });
       catalogWritten = written.products;
       categoriesWritten = written.categories;

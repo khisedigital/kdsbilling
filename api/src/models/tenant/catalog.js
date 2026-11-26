@@ -124,6 +124,21 @@ function defineProductImage(sequelize) {
   }, { tableName: 'product_images' });
 }
 
+function defineCatalogSyncIdentity(sequelize) {
+  return sequelize.define('CatalogSyncIdentity', {
+    device_id: { type: DataTypes.STRING(128), primaryKey: true },
+    entity_type: { type: DataTypes.STRING(16), primaryKey: true },
+    local_id: { type: DataTypes.STRING(128), primaryKey: true },
+    server_id: { type: DataTypes.UUID, allowNull: false },
+    opening_quantity: { type: DataTypes.DECIMAL(15, 3), allowNull: true },
+    opening_branch_id: { type: DataTypes.UUID, allowNull: true },
+  }, {
+    tableName: 'catalog_sync_identities',
+    timestamps: false,
+    indexes: [{ unique: true, fields: ['device_id', 'entity_type', 'server_id'] }],
+  });
+}
+
 function initCatalogModels(sequelize, { UnitOfMeasure }) {
   const TaxJurisdiction = defineTaxJurisdiction(sequelize);
   const TaxType = defineTaxType(sequelize);
@@ -135,6 +150,7 @@ function initCatalogModels(sequelize, { UnitOfMeasure }) {
   const ProductVariant = defineProductVariant(sequelize);
   const Barcode = defineBarcode(sequelize);
   const ProductImage = defineProductImage(sequelize);
+  const CatalogSyncIdentity = defineCatalogSyncIdentity(sequelize);
 
   TaxJurisdiction.hasMany(TaxGroup, { foreignKey: 'jurisdiction_id', as: 'taxGroups' });
   TaxGroup.belongsTo(TaxJurisdiction, { foreignKey: 'jurisdiction_id', as: 'jurisdiction' });
@@ -176,6 +192,7 @@ function initCatalogModels(sequelize, { UnitOfMeasure }) {
     ProductVariant,
     Barcode,
     ProductImage,
+    CatalogSyncIdentity,
   };
 }
 
