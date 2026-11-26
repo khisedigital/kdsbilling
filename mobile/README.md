@@ -88,6 +88,9 @@ The same `src/` code runs on desktop through react-native-web, packaged with Ele
 Files named `*.web.ts(x)` replace their mobile counterparts on desktop (barcode scanner, printing,
 logo picker, report export).
 
+Desktop billing loads products and resolves barcode scans from the local SQLite catalog. Generated
+unit and quantity barcodes are available for billing immediately; server catalog changes require sync.
+
 ```sh
 npm run web            # browser dev server on http://localhost:8090 (uses local API)
 npm run desktop:dev    # Electron window on top of the dev server (run `npm run web` first)

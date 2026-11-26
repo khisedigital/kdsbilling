@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, StyleSheet, TouchableOpacity, View } from 're
 import { Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useT } from '../i18n';
-import { triggerAutoSync, useConnectivityStore } from '../offline/connectivityStore';
+import { useConnectivityStore } from '../offline/connectivityStore';
 import { colors } from '../theme/colors';
 
 interface OnlineOfflineToggleProps {
@@ -14,7 +14,6 @@ export default function OnlineOfflineToggle({ pinned = false }: OnlineOfflineTog
   const t = useT();
   const online = useConnectivityStore((s) => s.online);
   const syncing = useConnectivityStore((s) => s.syncing);
-  const autoSync = useConnectivityStore((s) => s.autoSync);
   const setOnline = useConnectivityStore((s) => s.setOnline);
   const setManualOffline = useConnectivityStore((s) => s.setManualOffline);
 
@@ -43,9 +42,6 @@ export default function OnlineOfflineToggle({ pinned = false }: OnlineOfflineTog
       setManualOffline(false);
       setOnline(true);
 
-      if (autoSync) {
-        void triggerAutoSync();
-      }
     }
   };
 

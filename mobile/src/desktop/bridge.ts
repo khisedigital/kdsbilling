@@ -72,6 +72,8 @@ export type DesktopBridge = {
     catalogUpdatedAt?: string | null;
     catalogProductCount?: number;
     pendingSales?: number;
+    localOnlyCount?: number;
+    localOnlyRecords?: Array<{ type: string; id: string; label: string | null; error: string | null }>;
   }>;
   sqliteSaveShopSettings?: (options: { shopCode: string; settings: unknown }) => Promise<{ ok: boolean }>;
   sqliteReadShopSettings?: (options: { shopCode: string }) => Promise<{ ok: boolean; settings: unknown }>;
@@ -82,19 +84,23 @@ export type DesktopBridge = {
     brands?: unknown[];
     clearProducts?: boolean;
     syncStock?: boolean;
-  }) => Promise<{ ok: boolean; products?: number }>;
+    insertOnly?: boolean;
+  }) => Promise<{ ok: boolean; products?: number; categories?: number; brands?: number }>;
   sqliteListProducts?: (options: {
     shopCode: string;
     search?: string;
     limit?: number;
     offset?: number;
     categoryId?: string | null;
+    brandId?: string | null;
+    status?: string;
   }) => Promise<{ ok: boolean; items: unknown[]; total: number }>;
   sqliteListCategories?: (options: { shopCode: string }) => Promise<{ ok: boolean; items: unknown[] }>;
   sqliteListBrands?: (options: { shopCode: string }) => Promise<{ ok: boolean; items: unknown[] }>;
   sqliteReplaceCustomers?: (options: {
     shopCode: string;
     customers?: unknown[];
+    insertOnly?: boolean;
   }) => Promise<{ ok: boolean; customers?: number }>;
   sqliteListCustomers?: (options: {
     shopCode: string;
@@ -115,7 +121,7 @@ export type DesktopBridge = {
     key: string;
     fallback?: string | null;
   }) => Promise<{ ok: boolean; value: string | null }>;
-  sqliteSaveSale?: (options: { shopCode: string; sale: unknown }) => Promise<{ ok: boolean; pending?: number }>;
+  sqliteSaveSale?: (options: { shopCode: string; sale: unknown }) => Promise<{ ok: boolean; pending?: number; skipped?: boolean }>;
   sqliteListPendingSales?: (options: { shopCode: string }) => Promise<{
     ok: boolean;
     rows: Array<{
@@ -128,6 +134,7 @@ export type DesktopBridge = {
     }>;
     pending: number;
   }>;
+  sqliteRetryMissingVariantSales?: (options: { shopCode: string }) => Promise<{ ok: boolean; count: number }>;
   sqliteMarkSaleSynced?: (options: {
     shopCode: string;
     clientBillId: string;
@@ -138,6 +145,7 @@ export type DesktopBridge = {
     clientBillId: string;
     message: string;
     attempts: number;
+    localOnly?: boolean;
   }) => Promise<{ ok: boolean; pending?: number }>;
   sqliteDeletePendingSale?: (options: {
     shopCode: string;
@@ -158,16 +166,34 @@ export type DesktopBridge = {
   sqliteDashboard?: (options: { shopCode: string }) => Promise<{ ok: boolean; data: any }>;
   sqliteSalesReport?: (options: Record<string, unknown>) => Promise<{ ok: boolean; data: any }>;
   sqliteEnqueueSync?: (options: Record<string, unknown>) => Promise<{ ok: boolean; id?: string }>;
+  sqliteSaveStockMovementsAndQueue?: (options: {
+    shopCode: string;
+    entries: Array<{
+      row: { id: string; variantId: string; qtyDelta: number; reason: string; notes?: string; unitCost?: number; syncStatus: string };
+      endpoint: string;
+      item: { variantId: string; quantity: number; unitCost?: number; productId?: string };
+      notes?: string;
+    }>;
+  }) => Promise<{ ok: boolean; movements: Array<{ id: string; variantId: string | null; stockQty: number | null }> }>;
   sqliteListSyncQueue?: (options: { shopCode: string }) => Promise<{ ok: boolean; rows: any[] }>;
   sqliteReplaceJsonTable?: (options: {
     shopCode: string;
     table: string;
     rows: unknown[];
+    insertOnly?: boolean;
   }) => Promise<{ ok: boolean }>;
   sqliteListJsonTable?: (options: { shopCode: string; table: string }) => Promise<{ ok: boolean; items: any[] }>;
   sqliteSaveExpense?: (options: { shopCode: string; expense: unknown }) => Promise<{ ok: boolean }>;
   sqliteListExpenses?: (options: Record<string, unknown>) => Promise<{ ok: boolean; items: any[] }>;
+  sqliteUpsertProduct?: (options: { shopCode: string; product: unknown }) => Promise<{ ok: boolean; id: string }>;
+  sqliteUpsertProductsAndQueue?: (options: {
+    shopCode: string;
+    products: unknown[];
+    entry: { entityType: string; entityId: string; op: string; payload: unknown };
+  }) => Promise<{ ok: boolean; id: string }>;
   sqliteDeleteProduct?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean }>;
+  sqliteDeleteProductAndQueue?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted: boolean }>;
+  sqliteDeleteAllProducts?: (options: { shopCode: string }) => Promise<{ ok: boolean; deleted: number }>;
   sqliteDeleteCategory?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;
   sqliteDeleteBrand?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;
   sqliteDeleteCustomer?: (options: { shopCode: string; id: string }) => Promise<{ ok: boolean; deleted?: boolean; id?: string }>;

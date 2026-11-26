@@ -100,13 +100,15 @@ export async function removeOutboxSale(
 export async function markOutboxSaleError(
   sale: OutboxSale,
   message: string,
+  localOnly = false,
 ): Promise<void> {
   const attempts = (sale.syncAttempts || 0) + 1;
   if (hasSqliteBridge()) {
-    await sqliteMarkSaleError(sale.clientBillId, message, attempts);
+    await sqliteMarkSaleError(sale.clientBillId, message, attempts, localOnly);
     await refreshPendingCount();
     return;
   }
+  if (localOnly) throw new Error('Local-only sales require the desktop database');
   await saveOutboxSale({ ...sale, syncAttempts: attempts, lastError: message });
 }
 

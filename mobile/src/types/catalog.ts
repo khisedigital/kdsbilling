@@ -41,7 +41,9 @@ export interface ProductVariant {
   mrp?: string | number | null;
   wholesale_price?: string | number;
   status?: string;
+  uom_id?: string | null;
   tax_group_id?: string | null;
+  reorder_level?: number | string | null;
   taxGroup?: TaxGroup;
   barcode?: string;
   barcodes?: { barcode: string; is_primary: boolean; quantity?: string | number | null }[];

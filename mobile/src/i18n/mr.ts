@@ -426,6 +426,8 @@ export const mr: Record<string, string> = {
     'बिलावर UPI आयडी प्रिंट करा जेणेकरून ग्राहक सहज पैसे भरू शकतील',
   'When entered, "UPI: yourshop@upi" appears before the footer on printed receipts.':
     'हा आयडी टाकल्यास बिलावर "UPI: ..." दिसेल.',
+  'When set, the UPI ID and a payment QR for the bill total are printed on receipts.':
+    'UPI आयडी दिल्यास बिलावर आयडी आणि एकूण रकमेचा पेमेंट QR प्रिंट होईल.',
   'Bill Footer & Terms and Conditions': 'बिलाचा तळटीप मजकूर आणि अटी-शर्ती',
   'Custom greeting and policy terms printed at the bottom of bills':
     'बिलाच्या शेवटी दिसणारा मजकूर आणि परतावा / बदलून देण्याच्या अटी',

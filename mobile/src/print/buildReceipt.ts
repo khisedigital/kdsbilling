@@ -8,6 +8,7 @@ import { billItemUom, formatBillQuantity, formatReceiptQuantity } from '../utils
 import type { ThermalPrintPayload } from './PrintService';
 import { buildThermalHtml, receiptCharsForPaper } from './escpos';
 import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari } from './indicText';
+import { paymentQrData, paymentQrSvg } from './qrCodeGenerator';
 
 /** English bills keep their current words. Marathi bills use the bill-language dictionary. */
 function L(english: string, englishPrint = english): string {
@@ -433,11 +434,13 @@ export function buildThermalReceipt(
   if (n(bill.discount_amount) > 0) {
     lines.push(kv(w, L('Discount'), `-${money(bill.discount_amount)}`));
   }
+  if (w >= 48) lines.push('');
   lines.push(kv(w, L('Tax'), money(bill.tax_amount)));
   if (Math.abs(n(bill.round_off_amount)) >= 0.005) {
     const ro = n(bill.round_off_amount);
     lines.push(kv(w, L('Round off'), `${ro > 0 ? '+' : '-'}${money(Math.abs(ro))}`));
   }
+  lines.push('');
   lines.push(kv(w, L('TOTAL'), money(bill.total_amount)));
   lines.push(rule(w, '-'));
 
@@ -520,14 +523,10 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
     ? `<img class="logo" src="${escapeHtml(logoUrl)}" alt="" />`
     : '';
 
-  // Prepare payment QR code if enabled (actual rendering happens client-side)
-  let paymentQrBlock = '';
-  if (shop?.enablePaymentQr && shop?.paymentQrUpiId) {
-    const shopName = shopTextForBill(shop, useLanguageStore.getState().bill).shopName;
-    const qrData = `upi://pay?pa=${encodeURIComponent(shop.paymentQrUpiId)}&pn=${encodeURIComponent(shopName)}&am=${n(bill.total_amount)}&tn=${encodeURIComponent(bill.bill_number || 'Bill')}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qrData)}`;
-    paymentQrBlock = `<div style="text-align:center;margin:12px 0"><img src="${escapeHtml(qrUrl)}" alt="Payment QR" style="max-width:150px;border:1px solid #000;padding:4px"/><p style="font-size:11px;margin:4px 0">Pay Now</p></div>`;
-  }
+  const qrData = paymentQrData(upi, shopName, Number(bill.total_amount));
+  const paymentQrBlock = qrData
+    ? `<div class="payment-qr">${paymentQrSvg(qrData)}<div>Pay Now</div></div>`
+    : '';
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>${escapeHtml(pickBillNo(bill))}</title>
@@ -562,10 +561,12 @@ export function buildA4Receipt(bill: BillDetail, shop: ShopSettings | null): str
   .sku{color:#000;font-size:11px;margin-top:2px}
   .itemTax{font-size:10px;line-height:1.35;margin-top:2px}
   .totals{width:300px;margin:12px 0 0 auto;font-size:13px}
-  .totals .row{display:flex;justify-content:space-between;padding:3px 0}
+  .totals .row{display:flex;justify-content:space-between;gap:16px;padding:5px 0;line-height:1.45}
   .totals .grand{border-top:1px solid #000;margin-top:6px;padding-top:6px;font-size:16px}
   .totals .save{margin-top:6px;padding-top:6px;border-top:1px dashed #000;font-weight:700}
   .pay{display:flex;justify-content:space-between;width:300px;margin:3px 0 0 auto;font-size:13px}
+  .payment-qr{text-align:center;margin:12px 0;font-size:11px;break-inside:avoid}
+  .payment-qr svg{display:block;width:150px;height:150px;margin:0 auto}
   .foot{text-align:center;margin-top:18px;padding-top:10px;border-top:1px dashed #000;color:#000;font-size:13px;width:100%}
   .cut-space{height:16mm;width:100%}
   @media print {
@@ -643,12 +644,14 @@ export function buildReceiptPayload(
   }
   const charsPerLine = receiptCharsForPaper(format);
   const raw = buildThermalReceipt(bill, shop, charsPerLine);
-  const thermal = buildThermalHtml(raw, charsPerLine, format);
+  const qrData = paymentQrData(pickUpi(shop), pickShopName(shop), Number(bill.total_amount));
+  const thermal = buildThermalHtml(raw, charsPerLine, format, qrData);
   return {
     format,
     charsPerLine,
     lines: raw.split('\n'),
     raw,
     html: thermal.html,
+    paymentQrData: qrData,
   };
 }

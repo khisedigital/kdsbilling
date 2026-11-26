@@ -43,6 +43,8 @@ import {
   type VariantBarcodeStatusKind,
 } from '../../services/catalogService';
 import { getShopSettings, shopTextForBill } from '../../services/shopSettingsService';
+import { subscribeCatalogChanges } from '../../services/catalogCache';
+import { shouldUseLocalCatalog } from '../../offline/localCatalog';
 import {
   getLabelPrinterSettings,
   resolveLabelBatchSize,
@@ -342,6 +344,7 @@ export default function BarcodeLabelScreen() {
   const [productMeta, setProductMeta] = useState<ProductBarcodeStatus | null>(null);
   const [rows, setRows] = useState<VariantRow[]>([]);
   const rowsRef = useRef<VariantRow[]>([]);
+  const barcodeStatusRequest = useRef(0);
   rowsRef.current = rows;
   const extraPacksRef = useRef<{ variantId: string; barcode?: string | null; quantity: number }[]>([]);
   const searchUomRef = useRef<ProductBarcodeStatus['uom']>(null);
@@ -477,7 +480,7 @@ export default function BarcodeLabelScreen() {
   ) => {
     // Default off — user picks which variants to print (Select all is still available).
     const preferSelectAvailable = opts?.preferSelectAvailable === true;
-    const expanded = expandLabelRows(data, extraPacksRef.current);
+    const expanded = expandLabelRows(data, shouldUseLocalCatalog() ? [] : extraPacksRef.current);
     const previous = new Map((opts?.preserveRows || []).map((row) => [row.rowKey, row]));
     const uom = data.uom || searchUomRef.current || null;
     setProductMeta({ ...data, uom });
@@ -512,10 +515,12 @@ export default function BarcodeLabelScreen() {
 
   const loadBarcodeStatus = useCallback(
     async (productId: string, preserveSelection = false, selectPackQty?: number) => {
+      const request = ++barcodeStatusRequest.current;
       setLoadingProduct(true);
       setStatus(null);
       try {
         const data = await fetchProductBarcodeStatus(productId);
+        if (request !== barcodeStatusRequest.current) return;
         const preserveRows = preserveSelection ? rowsRef.current : undefined;
         applyBarcodeStatus(data, {
           preferSelectAvailable: false,
@@ -523,9 +528,10 @@ export default function BarcodeLabelScreen() {
           selectPackQty,
         });
       } catch (err) {
+        if (request !== barcodeStatusRequest.current) return;
         // Robust fallback: if fetch failed, build from the selected search result item
         const lastSelected = lastSelectedProductRef.current;
-        if (lastSelected && lastSelected.productId === productId) {
+        if (!shouldUseLocalCatalog() && lastSelected && lastSelected.productId === productId) {
           const plain = (lastSelected.barcodes || []).map((b) => (typeof b === 'string' ? b : String(b))).filter(Boolean);
           const primaryBarcode = plain[0] || null;
           const fallbackData: ProductBarcodeStatus = {
@@ -571,11 +577,17 @@ export default function BarcodeLabelScreen() {
         setRows([]);
         showStatus('err', err instanceof Error ? t(err.message) : t('Could not load barcodes.'));
       } finally {
-        setLoadingProduct(false);
+        if (request === barcodeStatusRequest.current) setLoadingProduct(false);
       }
     },
     [applyBarcodeStatus, showStatus, t],
   );
+
+  useEffect(() => subscribeCatalogChanges(() => {
+    if (shouldUseLocalCatalog() && lastSelectedProductRef.current?.productId) {
+      void loadBarcodeStatus(lastSelectedProductRef.current.productId, true);
+    }
+  }), [loadBarcodeStatus]);
 
   const onSelectProduct = async (item: SearchProductResult) => {
     if (!item.productId) {
@@ -593,6 +605,8 @@ export default function BarcodeLabelScreen() {
   };
 
   const clearProduct = () => {
+    barcodeStatusRequest.current += 1;
+    setLoadingProduct(false);
     lastSelectedProductRef.current = null;
     setProductMeta(null);
     setRows([]);

@@ -1,5 +1,12 @@
 /** Screen copy collected from the app. Keys are the English source strings. */
 export const mrExtra: Record<string, string> = {
+  '{{count}} record(s) are local-only and will not upload. Live stock and balances may differ. Only missing live records are downloaded.': '{{count}} नोंदी फक्त या संगणकावर आहेत आणि अपलोड होणार नाहीत. लाइव्ह साठा आणि शिल्लक वेगळी असू शकते. फक्त नसलेल्या लाइव्ह नोंदी डाउनलोड केल्या जातील.',
+  '{{count}} record(s) are local-only. Previously skipped missing-variant bills will be retried; other records stay local. Live stock and balances may differ. Only missing live records are downloaded.': '{{count}} नोंदी फक्त स्थानिक आहेत. व्हेरियंट नसल्यामुळे आधी वगळलेली बिले पुन्हा अपलोड करण्याचा प्रयत्न होईल; इतर नोंदी स्थानिक राहतील. लाइव्ह साठा आणि शिल्लक वेगळी असू शकते. फक्त नसलेल्या लाइव्ह नोंदी डाउनलोड केल्या जातील.',
+  '{{count}} local-only': '{{count}} फक्त स्थानिक',
+  'Local only': 'फक्त स्थानिक',
+  'Latest local-only records (up to 20)': 'अलीकडील फक्त स्थानिक नोंदी (२० पर्यंत)',
+  'Downloads include the catalog and recent bills, expenses and returns; purchase and stock-movement history is not downloaded.': 'डाउनलोडमध्ये उत्पादने आणि अलीकडील बिले, खर्च व परतावे समाविष्ट आहेत; खरेदी आणि साठा हालचालींचा इतिहास डाउनलोड होत नाही.',
+  'Upload pending changes, then add missing live records without overwriting existing local data.': 'प्रलंबित बदल अपलोड करा, नंतर विद्यमान स्थानिक माहिती न बदलता नसलेल्या लाइव्ह नोंदी जोडा.',
   ' · Already returned {{qty}}': ' · आधी परत {{qty}}',
   ' · Custom': ' · खास',
   ' · New': ' · नवीन',
@@ -827,6 +834,9 @@ export const mrExtra: Record<string, string> = {
   'Sync products, stock and online orders with your POS': 'उत्पादने, साठा आणि ऑनलाइन ऑर्डर POS शी सिंक करा',
   'Sync status': 'सिंक स्थिती',
   'Syncing…': 'सिंक होत आहे…',
+  'Back to bill': 'बिलावर परत जा',
+  'Total tax': 'एकूण कर',
+  'Search for a product above to add it here. Edit quantity in the Qty column, then take payment.': 'बिलात वस्तू जोडण्यासाठी वरील शोध वापरा. नग बदलायचे असतील तर बदला, आणि मग पेमेंट घ्या.',
   'Tap + to add your first customer': 'पहिला ग्राहक जोडण्यासाठी + दाबा.',
   'Tap + to add your first product': 'पहिले उत्पादन जोडण्यासाठी + दाबा.',
   'Tap a product on the left to add it here. Edit quantity in the Qty column, then take payment.': 'बिल सुरू करण्यासाठी डावीकडून वस्तू निवडा. नग बदलायचे असतील तर बदला, आणि मग पेमेंट घ्या.',

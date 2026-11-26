@@ -1,4 +1,5 @@
 import { clipCols, colLength, DEVANAGARI_FONTS, graphemes, hasDevanagari, keepPrintable } from './indicText';
+import { paymentQrSvg } from './qrCodeGenerator';
 
 export interface ThermalPrintPayload {
   format: string;
@@ -7,6 +8,7 @@ export interface ThermalPrintPayload {
   raw?: string;
   html?: string;
   mimeType?: string;
+  paymentQrData?: string;
 }
 
 /** Keep printable text. Marathi (Devanagari) is preserved; other symbols become ?. */
@@ -101,6 +103,7 @@ export function buildThermalHtml(
   text: string,
   charsPerLine: number,
   paper: ThermalHtmlPaper = charsPerLine <= 32 ? '58' : '80',
+  qrData = '',
 ) {
   const cols = receiptCharsForPaper(paper);
   const source = String(text || '').replace(/\r/g, '');
@@ -119,7 +122,7 @@ export function buildThermalHtml(
   const lineMm = fontMm * 1.4;
   const bodyLines = withoutShop.split('\n');
   const lineCount = Math.max(1, bodyLines.length + shopTitles.length * 2);
-  const heightMm = Math.max(90, Math.ceil(lineCount * lineMm + 35));
+  const heightMm = Math.max(90, Math.ceil(lineCount * lineMm + 35 + (qrData ? 40 : 0)));
   const shopHtml = shopTitles
     .map((title) => `<div class="shop">${escapeHtml(title)}</div>`)
     .join('');
@@ -200,6 +203,8 @@ html, body {
 .gap {
   height: ${lineMm}mm;
 }
+.payment-qr { text-align: center; margin: 3mm auto; }
+.payment-qr svg { display: block; width: 32mm; height: 32mm; margin: 0 auto; }
 .cut-space {
   height: 16mm;
   width: 100%;
@@ -233,7 +238,7 @@ html, body {
     font-smooth: never !important;
   }
 }
-</style></head><body>${shopHtml}<div class="body">${bodyHtml}<div class="cut-space"></div></div></body></html>`;
+</style></head><body>${shopHtml}<div class="body">${bodyHtml}${qrData ? `<div class="payment-qr">${paymentQrSvg(qrData)}</div>` : ''}<div class="cut-space"></div></div></body></html>`;
 
   return {
     html,

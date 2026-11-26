@@ -280,6 +280,8 @@ export default function ProductListScreen({ navigation }: Props) {
 
   const hydrateFromCache = useCallback(async () => {
     if (!isCatalogCacheEnabled()) return false;
+    const { shouldUseLocalCatalog } = await import('../../offline/localCatalog');
+    if (shouldUseLocalCatalog()) return false;
     const [cachedCats, cachedProducts] = await Promise.all([
       readCachedCategories(),
       readCachedProducts(),

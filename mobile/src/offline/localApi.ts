@@ -1,4 +1,5 @@
 import { getDesktopBridge } from '../desktop/bridge';
+import type { DesktopBridge } from '../desktop/bridge';
 import { useAuthStore } from '../store/authStore';
 import { hasSqliteBridge } from './sqliteApi';
 
@@ -102,7 +103,7 @@ export async function localEnqueueSync(entry: {
   payload: unknown;
 }) {
   const b = bridge();
-  if (!b?.sqliteEnqueueSync) return null;
+  if (!b?.sqliteEnqueueSync) throw new Error('Local sync queue is unavailable');
   return b.sqliteEnqueueSync({ shopCode: shopCode(), ...entry });
 }
 
@@ -148,23 +149,63 @@ export const localListDailyClosings = () =>
   call<{ items: any[] }>('sqliteListDailyClosings', {}).then((r) => r?.items || []);
 export const localPreviewDailyClosing = (closingDate?: string) =>
   call<{ data: any }>('sqlitePreviewDailyClosing', { closingDate }).then((r) => r?.data || null);
-export const localUpsertProduct = (product: unknown) => call('sqliteUpsertProduct', { product });
-export const localDeleteProduct = (id: string) => call('sqliteDeleteProduct', { id });
+export async function localUpsertProduct(product: unknown) {
+  const b = bridge();
+  if (!b?.sqliteUpsertProduct) throw new Error('Local product database is unavailable');
+  return b.sqliteUpsertProduct({ shopCode: shopCode(), product });
+}
+export async function localUpsertProductsAndQueue(
+  products: unknown[],
+  entry: { entityType: string; entityId: string; op: string; payload: unknown },
+) {
+  const b = bridge();
+  if (!b?.sqliteUpsertProductsAndQueue) throw new Error('Local product sync queue is unavailable');
+  return b.sqliteUpsertProductsAndQueue({ shopCode: shopCode(), products, entry });
+}
+export async function localDeleteProduct(id: string) {
+  const b = bridge();
+  if (!b?.sqliteDeleteProduct) throw new Error('Local product database is unavailable');
+  return b.sqliteDeleteProduct({ shopCode: shopCode(), id });
+}
+export async function localDeleteProductAndQueue(id: string): Promise<{ deleted: boolean }> {
+  const b = bridge();
+  if (!b?.sqliteDeleteProductAndQueue) throw new Error('Local product database is unavailable');
+  return b.sqliteDeleteProductAndQueue({ shopCode: shopCode(), id });
+}
+export async function localDeleteAllProducts(): Promise<{ deleted: number }> {
+  const b = bridge();
+  if (!b?.sqliteDeleteAllProducts) throw new Error('Local product database is unavailable');
+  return b.sqliteDeleteAllProducts({ shopCode: shopCode() });
+}
 export const localDeleteCategory = (id: string) => call('sqliteDeleteCategory', { id });
 export const localDeleteBrand = (id: string) => call('sqliteDeleteBrand', { id });
 export const localDeleteCustomer = (id: string) => call('sqliteDeleteCustomer', { id });
 export const localDeleteSupplier = (id: string) => call('sqliteDeleteSupplier', { id });
-export const localSetProductFavorite = (id: string, isFavorite: boolean) =>
-  call('sqliteSetProductFavorite', { id, isFavorite });
-export const localSetProductsFavoriteBulk = (params: {
+export async function localSetProductFavorite(id: string, isFavorite: boolean) {
+  const b = bridge();
+  if (!b?.sqliteSetProductFavorite) throw new Error('Local product database is unavailable');
+  return b.sqliteSetProductFavorite({ shopCode: shopCode(), id, isFavorite });
+}
+export async function localSetProductsFavoriteBulk(params: {
   categoryId: string;
   isFavorite: boolean;
   brandId?: string | null;
-}) => call('sqliteSetProductsFavoriteBulk', params);
+}) {
+  const b = bridge();
+  if (!b?.sqliteSetProductsFavoriteBulk) throw new Error('Local product database is unavailable');
+  return b.sqliteSetProductsFavoriteBulk({ shopCode: shopCode(), ...params });
+}
 export const localAddCustomerLedger = (entry: unknown) => call('sqliteAddCustomerLedger', { entry });
 export const localListCustomerLedger = (customerId: string) =>
   call<{ items: any[] }>('sqliteListCustomerLedger', { customerId }).then((r) => r?.items || []);
 export const localSaveStockMovement = (row: unknown) => call('sqliteSaveStockMovement', { row });
+export async function localSaveStockMovementsAndQueue(
+  entries: Parameters<NonNullable<DesktopBridge['sqliteSaveStockMovementsAndQueue']>>[0]['entries'],
+) {
+  const b = bridge();
+  if (!b?.sqliteSaveStockMovementsAndQueue) throw new Error('Restart the desktop app to enable safe stock sync');
+  return b.sqliteSaveStockMovementsAndQueue({ shopCode: shopCode(), entries });
+}
 export const localListStockMovements = (opts?: { limit?: number }) =>
   call<{ items: any[] }>('sqliteListStockMovements', opts || {}).then((r) => r?.items || []);
 export const localProfitReport = (opts?: { from?: string; to?: string }) =>
@@ -175,6 +216,11 @@ export const localCashflowReport = (opts?: { from?: string; to?: string }) =>
   call<{ data: any }>('sqliteCashflowReport', opts || {}).then((r) => r?.data || null);
 export const localListSyncQueue = () =>
   call<{ rows: any[] }>('sqliteListSyncQueue', {}).then((r) => r?.rows || []);
-export const localMarkSyncQueueDone = (id: string) => call('sqliteMarkSyncQueueDone', { id });
-export const localMarkSyncQueueError = (id: string, message: string, attempts: number) =>
-  call('sqliteMarkSyncQueueError', { id, message, attempts });
+export async function localMarkSyncQueueDone(id: string) {
+  const result = await call<{ ok: boolean }>('sqliteMarkSyncQueueDone', { id });
+  if (!result?.ok) throw new Error('Local sync queue is unavailable');
+}
+export async function localMarkSyncQueueError(id: string, message: string, attempts: number, localOnly = false) {
+  const result = await call<{ ok: boolean }>('sqliteMarkSyncQueueError', { id, message, attempts, localOnly });
+  if (!result?.ok) throw new Error('Local sync queue is unavailable');
+}

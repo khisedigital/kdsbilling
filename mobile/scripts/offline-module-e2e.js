@@ -679,6 +679,214 @@ try {
   } catch (e) {
     fail('20. Product search (name/barcode)', e);
   }
+
+  // ========== 21. Locally generated barcodes in billing ==========
+  try {
+    db.upsertProductLocal(conn, {
+      id: 'barcode-product', name: 'Local barcode product', category_id: 'barcode-cat',
+      variants: [{ id: 'barcode-variant', sku: 'LOCAL', sellingPrice: 25 }],
+    });
+    const oldJson = conn.prepare(`SELECT json FROM products WHERE id = ?`).get('barcode-product').json;
+    const unit = db.generateBarcodesLocal(conn, ['barcode-variant'])[0];
+    const pack = db.ensureQuantityBarcodesLocal(conn, [{ variantId: 'barcode-variant', quantity: 2.5 }])[0];
+    assert(unit?.barcode && pack?.barcode, 'barcodes generated');
+
+    // Simulate older/stale product JSON; the barcode table is the authoritative source.
+    conn.prepare(`UPDATE products SET json = ? WHERE id = ?`).run(oldJson, 'barcode-product');
+    db.upsertProductLocal(conn, {
+      id: 'barcode-decoy', name: unit.barcode, category_id: 'barcode-cat',
+      variants: [{ id: 'barcode-decoy-variant', sku: 'DECOY' }],
+    });
+    const unitResult = db.listProducts(conn, { search: unit.barcode, limit: 1, categoryId: 'barcode-cat' })[0];
+    assert(unitResult?.id === 'barcode-product', 'exact barcode wins over a name match');
+    assert(unitResult.variants[0].barcode === unit.barcode, 'generated unit barcode hydrated');
+    const packResult = db.listProducts(conn, { search: pack.barcode, limit: 1 })[0];
+    assert(packResult?.id === 'barcode-product', 'generated pack barcode found');
+    assert(
+      packResult.variants[0].quantityBarcodes.some((b) => b.barcode === pack.barcode && b.quantity === 2.5),
+      'pack quantity hydrated',
+    );
+    ok('21. Local barcode search');
+  } catch (e) {
+    fail('21. Local barcode search', e);
+  }
+
+  // ========== 22. Product changes remain local until sync ==========
+  try {
+    db.upsertProductLocal(conn, {
+      id: 'existing-barcode-product', name: 'Existing barcode product',
+      variants: [{ id: 'existing-barcode-variant', sku: 'EXISTING', sellingPrice: 10 }],
+    });
+    const generated = db.generateBarcodesAndQueue(conn, ['existing-barcode-variant']);
+    const pack = db.generateBarcodesAndQueue(conn, [{ variantId: 'existing-barcode-variant', quantity: 3 }], true);
+    const queued = db.listPendingSyncQueue(conn).filter((row) => row.entityId === 'existing-barcode-product');
+    assert(queued.length === 2, 'generated barcodes queued for manual sync');
+    assert(queued[1].payload.variants[0].quantityBarcodes.some((b) => b.barcode === pack[0].barcode), 'pack code queued');
+    assert(generated[0].barcode, 'unit code generated');
+    const before = db.getProduct(conn, 'existing-barcode-product');
+    try {
+      db.generateBarcodesAndQueue(conn, ['missing-variant']);
+      throw new Error('missing variant was accepted');
+    } catch (err) {
+      assert(/not found/.test(err.message), 'missing variant reports an error');
+    }
+    assert(db.getProduct(conn, 'existing-barcode-product').variants[0].barcode === before.variants[0].barcode, 'failed generation rolled back');
+
+    db.upsertProductLocal(conn, {
+      id: 'local-only-delete', name: 'Unsynced', variants: [{ id: 'local-only-variant', sku: 'LOCAL-DELETE' }],
+    });
+    db.enqueueSync(conn, { entityType: 'product', entityId: 'local-only-delete', op: 'create', payload: {} });
+    db.deleteProductAndQueue(conn, 'local-only-delete');
+    assert(!db.listPendingSyncQueue(conn).some((row) => row.entityId === 'local-only-delete'), 'unsynced create cancelled');
+    db.deleteProductAndQueue(conn, 'existing-barcode-product');
+    const pending = db.listPendingSyncQueue(conn).filter((row) => row.entityId === 'existing-barcode-product');
+    assert(pending.length === 1 && pending[0].op === 'delete', 'existing product deletion queued');
+    db.upsertProductLocal(conn, {
+      id: 'pending-stock-product', name: 'Pending stock',
+      variants: [{ id: 'pending-stock-variant', sku: 'PENDING-STOCK' }],
+    });
+    const stockQueue = db.enqueueSync(conn, {
+      entityType: 'stock_movement', entityId: 'move-pending', op: 'adjust',
+      payload: { item: { variantId: 'pending-stock-variant' } },
+    });
+    try {
+      db.deleteProductAndQueue(conn, 'pending-stock-product');
+      throw new Error('pending stock movement was ignored');
+    } catch (err) {
+      assert(/pending transactions/.test(err.message), 'pending stock movement blocks deletion');
+    }
+    assert(db.getProduct(conn, 'pending-stock-product'), 'blocked deletion retains product');
+    db.markSyncQueueDone(conn, stockQueue.id);
+    db.deleteProductAndQueue(conn, 'pending-stock-product');
+    db.upsertProductLocal(conn, {
+      id: 'mapped-create', name: 'Mapped product', variants: [{ id: 'mapped-variant' }],
+    });
+    db.enqueueSync(conn, { entityType: 'product', entityId: 'mapped-create', op: 'create', payload: {} });
+    db.setMeta(conn, 'product_sync_id_map', JSON.stringify({ 'mapped-create': 'remote-product' }));
+    db.deleteProductAndQueue(conn, 'mapped-create');
+    assert(db.listPendingSyncQueue(conn).some((row) => row.entityId === 'mapped-create' && row.op === 'delete'),
+      'partially synced creation queues deletion');
+    db.upsertProductLocal(conn, {
+      id: 'filter-product', name: 'Filter product', brandId: 'filter-brand',
+      status: 'inactive', variants: [{ id: 'filter-variant', sku: 'FILTER-SKU' }],
+    });
+    const filter = { status: 'inactive', brandId: 'filter-brand', search: 'FILTER-SKU' };
+    assert(db.countProducts(conn, filter) === 1, 'filtered total matches search');
+    assert(db.listProducts(conn, filter)[0].id === 'filter-product', 'filtered page matches total');
+    try {
+      db.upsertProductsAndQueue(conn, [
+        { id: 'atomic-product', name: 'Atomic', variants: [] },
+        { name: 'Missing ID' },
+      ], { entityType: 'product', entityId: 'atomic-product', op: 'create', payload: {} });
+      throw new Error('invalid product was accepted');
+    } catch (err) {
+      assert(/product.id required/.test(err.message), 'invalid product reports an error');
+    }
+    assert(!db.getProduct(conn, 'atomic-product'), 'failed batch rolls back product writes');
+    assert(!db.listPendingSyncQueue(conn).some((row) => row.entityId === 'atomic-product'),
+      'failed batch does not queue sync');
+    ok('22. Local barcode and delete queue');
+  } catch (e) {
+    fail('22. Local barcode and delete queue', e);
+  }
+
+  try {
+    const id = 'local-only-bill';
+    const bill = buildUiBill(id, {
+      total: 10, items: [{ name: 'Rice', variantId: 'v1', qty: 1, price: 10 }],
+    });
+    db.saveSale(conn, { clientBillId: id, bill, payload: { items: [] }, syncStatus: 'pending', skipStock: true });
+    db.markSaleSyncError(conn, id, 'missing variant', 1, true);
+    const queued = db.enqueueSync(conn, { entityType: 'expense', entityId: 'local-only-expense', op: 'create', payload: {} });
+    db.markSyncQueueError(conn, queued.id, 'invalid expense', 1, true);
+    assert(!db.listPendingSales(conn).some((row) => row.clientBillId === id), 'local-only sale is not retried');
+    assert(!db.listPendingSyncQueue(conn).some((row) => row.id === queued.id), 'local-only queue record is not retried');
+    assert(db.getStatus(conn).localOnlyCount === 2, 'local-only records counted');
+    assert(conn.prepare('SELECT last_error FROM sales WHERE client_bill_id = ?').get(id).last_error === 'missing variant', 'sale error preserved');
+    db.saveSale(conn, { clientBillId: id, bill: { ...bill, total_amount: 999 }, syncStatus: 'synced', skipStock: true, insertOnly: true });
+    assert(Number(db.getSale(conn, id).total_amount) === 10, 'pull cannot overwrite local-only bill');
+    ok('23. Local-only records persist');
+  } catch (e) {
+    fail('23. Local-only records persist', e);
+  }
+
+  try {
+    const bill = buildUiBill('retry-missing-product', {
+      total: 10, items: [{ name: 'Rice', variantId: 'v1', qty: 1, price: 10 }],
+    });
+    for (const id of ['retry-missing-product', 'retry-conflict', 'retry-ambiguous', 'retry-no-client-id', 'retry-other-error']) {
+      db.saveSale(conn, {
+        clientBillId: id,
+        bill: { ...bill, id },
+        payload: id === 'retry-no-client-id' ? {} : { clientBillId: id },
+        syncStatus: 'pending',
+        skipStock: true,
+      });
+      const error = id === 'retry-other-error' ? 'Invalid customer'
+        : id === 'retry-conflict'
+          ? 'Cannot safely sync product: SKU, barcode or product identity conflicts with the live catalog'
+          : id === 'retry-ambiguous'
+            ? 'Cannot safely match local variant v1 to the live catalog. The bill is still pending; verify the product and stock before resolving it.'
+            : 'Variant not found: v1';
+      db.markSaleSyncError(conn, id, error, 1, true);
+    }
+    assert(db.retryMissingVariantSales(conn) === 1, 'only missing-variant bills with a retry ID are requeued');
+    const pending = db.listPendingSales(conn).map((row) => row.clientBillId);
+    assert(pending.includes('retry-missing-product'), 'missing-variant bill retried');
+    assert(!pending.includes('retry-conflict') && !pending.includes('retry-ambiguous'), 'identity conflicts remain local-only');
+    assert(!pending.includes('retry-no-client-id') && !pending.includes('retry-other-error'), 'unrelated local-only bills retained');
+    assert(db.retryMissingVariantSales(conn) === 0, 'pending bill is not requeued twice');
+    ok('23a. Retry missing-variant bills');
+  } catch (e) {
+    fail('23a. Retry missing-variant bills', e);
+  }
+
+  try {
+    const before = db.getProduct(conn, 'p1');
+    const result = db.replaceCatalog(conn, {
+      insertOnly: true,
+      products: [
+        { id: 'p1', name: 'Overwritten', variants: [
+          { id: 'v1', stockQty: 999, quantityBarcodes: [{ barcode: '9876500000001', quantity: 2 }] },
+          { id: 'v1-new', sku: 'RICE-NEW', barcode: '9876500000002', stockQty: 4 },
+        ] },
+        { id: 'pull-new', name: 'New live product', variants: [{ id: 'pull-new-v', barcode: '9876543210987', stockQty: 3 }] },
+      ],
+    });
+    assert(result.products === 2, 'new product and missing variants counted');
+    assert(db.getProduct(conn, 'p1').name === before.name, 'existing product preserved');
+    assert(db.getProduct(conn, 'p1').variants[0].stockQty === before.variants[0].stockQty, 'local stock preserved');
+    assert(db.getProduct(conn, 'p1').variants.some((v) => v.id === 'v1-new'), 'missing live variant added');
+    assert(db.getProduct(conn, 'p1').variants[0].quantityBarcodes.some((v) => v.barcode === '9876500000001'), 'missing live pack barcode added');
+    assert(db.getProduct(conn, 'pull-new'), 'missing product added');
+    try {
+      db.replaceCatalog(conn, { insertOnly: true, products: [
+        { id: 'collision', name: 'Conflict', variants: [{ id: 'collision-v', barcode: '9876543210987' }] },
+      ] });
+      throw new Error('conflicting barcode was accepted');
+    } catch (err) {
+      assert(/barcode belongs/.test(err.message), 'barcode conflict reported');
+    }
+    assert(!db.getProduct(conn, 'collision'), 'conflicting import rolled back');
+    try {
+      db.replaceCatalog(conn, { insertOnly: true, products: [
+        { id: 'duplicate-codes', name: 'Conflict', variants: [
+          { id: 'duplicate-a', barcode: '9876500000003' },
+          { id: 'duplicate-b', barcode: '9876500000003' },
+        ] },
+      ] });
+      throw new Error('duplicate incoming barcodes were accepted');
+    } catch (err) {
+      assert(/barcode belongs/.test(err.message), 'duplicate incoming barcodes reported');
+    }
+    assert(!db.getProduct(conn, 'duplicate-codes'), 'duplicate incoming barcode import rolled back');
+    db.replaceCustomers(conn, [{ id: 'cu-e2e', name: 'Overwrite' }, { id: 'new-customer', name: 'New' }], true);
+    assert(db.listCustomers(conn).find((c) => c.id === 'cu-e2e').name !== 'Overwrite', 'existing customer preserved');
+    assert(db.listCustomers(conn).some((c) => c.id === 'new-customer'), 'missing customer added');
+    ok('24. Add-only pull preserves local data');
+  } catch (e) {
+    fail('24. Add-only pull preserves local data', e);
+  }
 } finally {
   try {
     db.closeAll();

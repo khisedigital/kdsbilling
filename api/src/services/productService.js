@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { v4: uuidv4 } = require('uuid');
+const { v4: uuidv4, v5: uuidv5 } = require('uuid');
 const AppError = require('../utils/AppError');
 const { getPagination, paginatedResponse } = require('../utils/pagination');
 const { MOVEMENT_TYPES, toDecimal, getOrCreateBalance, applyStockMovement } = require('./stockEngine');
@@ -707,6 +707,176 @@ async function createProduct(db, data, options = {}) {
     await transaction.rollback();
     throw err;
   }
+}
+
+const OFFLINE_PRODUCT_NAMESPACE = '4a555fe6-faa8-4efb-88bf-9a9e1d853cb0';
+
+async function ensureOfflineVariant(db, data) {
+  const { Product, ProductVariant, Barcode, UnitOfMeasure } = db;
+  const localProductId = String(data?.product?.id || '').trim();
+  const source = data?.product;
+  if (!localProductId || !source.name?.trim() || !source.uomId || !Array.isArray(data?.variants) || !data.variants.length) {
+    throw new AppError('Local product, variant and unit are required', 400, 'VALIDATION_ERROR');
+  }
+  const generatedProductId = uuidv5(`product:${localProductId}`, OFFLINE_PRODUCT_NAMESPACE);
+  const conflict = () => new AppError(
+    'Cannot safely sync product: SKU, barcode or product identity conflicts with the live catalog',
+    409,
+    'SYNC_CONFLICT'
+  );
+  const normalize = (value) => String(value || '').trim().toLowerCase();
+  const seenIds = new Set();
+  const seenSkus = new Set();
+  const seenCodes = new Map();
+  const inputs = data.variants.map((input) => {
+    const id = String(input?.id || '').trim();
+    const price = Number(input?.sellingPrice);
+    if (!id || input.sellingPrice == null || !Number.isFinite(price) || price < 0 || !Array.isArray(input.barcodes)) {
+      throw new AppError('A local variant, valid selling price and barcodes are required', 400, 'VALIDATION_ERROR');
+    }
+    const sku = String(input.sku || '').trim();
+    if (seenIds.has(id) || (sku && seenSkus.has(normalize(sku)))) throw conflict();
+    seenIds.add(id);
+    if (sku) seenSkus.add(normalize(sku));
+    const codes = new Map();
+    for (const row of input.barcodes) {
+      const code = String(row?.barcode || '').trim();
+      const quantity = row?.quantity == null ? null : Number(row.quantity);
+      if (!isNumericBarcode(code) || (quantity !== null && (!Number.isFinite(quantity) || quantity <= 0))) {
+        throw new AppError('Invalid local barcode', 400, 'VALIDATION_ERROR');
+      }
+      if ((codes.has(code) && codes.get(code) !== quantity)
+        || (seenCodes.has(code) && seenCodes.get(code) !== id)) throw conflict();
+      codes.set(code, quantity);
+      seenCodes.set(code, id);
+    }
+    return { input, id, sku, price, codes, generatedId: uuidv5(`variant:${id}`, OFFLINE_PRODUCT_NAMESPACE) };
+  });
+  const transaction = await db.sequelize.transaction();
+  let result;
+  try {
+    const unit = await UnitOfMeasure.findByPk(source.uomId, { transaction });
+    if (!unit) throw new AppError('Invalid unit of measure', 400, 'VALIDATION_ERROR');
+    const lookupProduct = async (id) => id ? Product.findByPk(id, { transaction }) : null;
+    const originalProduct = await lookupProduct(localProductId);
+    const generatedProduct = await lookupProduct(generatedProductId);
+    const mappedProduct = await lookupProduct(data.remoteProductId);
+    if (data.remoteProductId && !mappedProduct) throw conflict();
+    const knownProducts = [originalProduct, generatedProduct, mappedProduct].filter(Boolean);
+    const productIds = new Set(knownProducts.map((row) => row.id));
+    const claimedVariants = new Set();
+    for (const row of inputs) {
+      const originalVariant = await ProductVariant.findByPk(row.id, { transaction });
+      const generatedVariant = await ProductVariant.findByPk(row.generatedId, { transaction });
+      const mappedVariant = row.input.remoteVariantId
+        ? await ProductVariant.findByPk(row.input.remoteVariantId, { transaction })
+        : null;
+      const skuVariant = row.sku ? await ProductVariant.findOne({ where: { sku: row.sku }, transaction }) : null;
+      const barcodeOwners = [];
+      for (const code of row.codes.keys()) {
+        const owner = await Barcode.findOne({ where: { barcode: code }, transaction });
+        if (owner) barcodeOwners.push(owner);
+      }
+      const variantIds = new Set([
+        originalVariant?.id, generatedVariant?.id, mappedVariant?.id, skuVariant?.id,
+        ...barcodeOwners.map((owner) => owner.variant_id),
+      ].filter(Boolean));
+      if (variantIds.size > 1) throw conflict();
+      const id = [...variantIds][0];
+      row.variant = id ? await ProductVariant.findByPk(id, { transaction }) : null;
+      if (row.variant && !originalVariant && !generatedVariant && !mappedVariant
+        && (!skuVariant || !barcodeOwners.some((owner) => owner.variant_id === row.variant.id)
+          || normalize(row.variant.size) !== normalize(row.input.size)
+          || normalize(row.variant.color) !== normalize(row.input.color))) throw conflict();
+      if (row.variant?.deleted_at
+        || (row.variant?.status === 'inactive' && row.input.status !== 'inactive')) throw conflict();
+      if (row.variant) {
+        if (claimedVariants.has(row.variant.id)) throw conflict();
+        claimedVariants.add(row.variant.id);
+        productIds.add(row.variant.product_id);
+      }
+    }
+    if (productIds.size > 1) throw conflict();
+    let product = knownProducts[0] || await lookupProduct([...productIds][0]);
+    if (product && product.deleted_at) throw conflict();
+    if (product && !knownProducts.length
+      && (normalize(product.name) !== normalize(source.name) || product.uom_id !== source.uomId)) throw conflict();
+    if (productIds.size && !product) throw conflict();
+
+    if (!product) {
+      product = await Product.create({
+        id: generatedProductId,
+        name: source.name.trim(),
+        name_mr: cleanNameMr(source.nameMr),
+        description: source.description || null,
+        category_id: source.categoryId || null,
+        brand_id: source.brandId || null,
+        uom_id: source.uomId,
+        tax_group_id: source.taxGroupId || null,
+        tax_code: source.taxCode || null,
+        is_weight_based: !!source.isWeightBased,
+        allow_decimal_qty: !!source.allowDecimalQty,
+        has_variants: !!source.hasVariants,
+        is_favorite: !!source.isFavorite,
+        status: source.status || 'active',
+      }, { transaction });
+    }
+    const mappings = [];
+    for (const row of inputs) {
+      const { input, codes } = row;
+      let variant = row.variant;
+      if (!variant) {
+        variant = await ProductVariant.create({
+          id: row.generatedId,
+          product_id: product.id,
+          sku: row.sku || `OFF-${row.generatedId}`,
+          size: input.size || null,
+          color: input.color || null,
+          cost_price: input.costPrice ?? 0,
+          selling_price: row.price,
+          mrp: input.mrp ?? null,
+          wholesale_price: input.wholesalePrice ?? null,
+          uom_id: input.uomId || product.uom_id,
+          tax_group_id: input.taxGroupId ?? product.tax_group_id,
+          reorder_level: input.reorderLevel ?? 0,
+          status: input.status || 'active',
+        }, { transaction });
+      }
+      const existingBarcodes = await Barcode.findAll({ where: { variant_id: variant.id }, transaction });
+      for (const [barcode, quantity] of codes) {
+        const existing = existingBarcodes.find((barcodeRow) => barcodeRow.barcode === barcode);
+        if (existing) {
+          if ((existing.quantity == null ? null : Number(existing.quantity)) !== quantity) throw conflict();
+          continue;
+        }
+        const primary = quantity === null && !existingBarcodes.some((barcodeRow) => barcodeRow.is_primary);
+        const added = await Barcode.create({
+          variant_id: variant.id, barcode, quantity, is_primary: primary,
+        }, { transaction });
+        existingBarcodes.push(added);
+      }
+      if (!existingBarcodes.some((barcodeRow) => barcodeRow.is_primary)) {
+        const barcode = await uniqueInStoreBarcode(db, transaction);
+        await Barcode.create({
+          variant_id: variant.id, barcode, is_primary: true, quantity: null,
+        }, { transaction });
+      }
+      mappings.push({ localId: row.id, variantId: variant.id });
+    }
+    if (!product.has_variants && (inputs.some((row) => row.input.size || row.input.color)
+      || await ProductVariant.count({ where: { product_id: product.id, deleted_at: null }, transaction }) > 1)) {
+      await product.update({ has_variants: true }, { transaction });
+    }
+    result = { productId: product.id, variants: mappings };
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    if (err?.name === 'SequelizeUniqueConstraintError' || err?.parent?.code === 'ER_DUP_ENTRY') {
+      throw new AppError('Product sync changed concurrently; retry sync', 503, 'SYNC_RETRY');
+    }
+    throw err;
+  }
+  return result;
 }
 
 async function upsertVariantBarcode(db, variantId, barcodeValue, transaction) {
@@ -2061,6 +2231,7 @@ module.exports = {
   listProducts,
   getProduct,
   createProduct,
+  ensureOfflineVariant,
   updateProduct,
   setProductFavorite,
   setProductsFavoriteBulk,

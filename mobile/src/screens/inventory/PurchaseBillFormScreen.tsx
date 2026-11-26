@@ -31,6 +31,7 @@ import {
   type SearchProductResult,
 } from '../../services/catalogService';
 import { useT } from '../../i18n';
+import { useLocalCatalogRevision } from '../../offline/useLocalCatalogRevision';
 import { apiError } from '../../utils/apiError';
 import { variantLabel } from '../../utils/variantLabel';
 import { colors } from '../../theme/colors';
@@ -149,6 +150,7 @@ function sameVariantKey(size?: string | null, color?: string | null) {
 
 export default function PurchaseBillFormScreen({ route, navigation }: Props) {
   const t = useT();
+  const localCatalogRevision = useLocalCatalogRevision();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierId, setSupplierId] = useState(route.params?.supplierId || '');
   const [loadingSuppliers, setLoadingSuppliers] = useState(true);
@@ -220,7 +222,7 @@ export default function PurchaseBillFormScreen({ route, navigation }: Props) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [search, t]);
+  }, [search, t, localCatalogRevision]);
 
   const upsertLine = (product: SearchProductResult & { productId?: string }, quantity: number, unitCost: number) => {
     if (!(quantity > 0)) return;

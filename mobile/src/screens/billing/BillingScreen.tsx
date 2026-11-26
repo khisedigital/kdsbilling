@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainStackParamList } from '../../navigation/MainNavigator';
 import { useT } from '../../i18n';
+import { getDesktopBridge } from '../../desktop/bridge';
 import { useLanguageStore } from '../../i18n/languageStore';
 import QtyStepper from '../../components/ui/QtyStepper';
 import CategoryPickerSheet from '../../components/ui/CategoryPickerSheet';
@@ -40,6 +41,8 @@ import {
   type SearchProductResult,
 } from '../../services/catalogService';
 import { previewBillSmart } from '../../offline/billPreview';
+import { readSqliteBillingCatalog, shouldUseLocalCatalog } from '../../offline/localCatalog';
+import { useLocalCatalogRevision } from '../../offline/useLocalCatalogRevision';
 import { useKeyboardOverlap } from '../../hooks/useKeyboardOverlap';
 import { useProductAddToCart } from '../../hooks/useProductAddToCart';
 import { useCartStore } from '../../store/cartStore';
@@ -55,6 +58,7 @@ import ProductGridTile from './ProductGridTile';
 import QuantityEntryDialog from './QuantityEntryDialog';
 import CustomItemDialog from './CustomItemDialog';
 import WideBillPanel from './WideBillPanel';
+import DesktopBillSearchResults, { desktopSearchKeyAction } from './DesktopBillSearchResults';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Billing'>;
 type DiscountMode = 'amount' | 'percent';
@@ -116,7 +120,8 @@ export default function BillingScreen({ navigation, route }: Props) {
   const keyboardOverlap = useKeyboardOverlap();
   const [hostWidth, setHostWidth] = useState(windowWidth);
   const layoutWidth = hostWidth || windowWidth;
-  const isWideBill = layoutWidth >= 900;
+  const isDesktopBill = !!getDesktopBridge();
+  const isWideBill = isDesktopBill || layoutWidth >= 900;
   const productWidth = isWideBill ? layoutWidth * 0.6 : layoutWidth;
   const narrowPhone = !isWideBill && layoutWidth < 400;
   const cols = colsForPane(productWidth, isWideBill);
@@ -128,6 +133,7 @@ export default function BillingScreen({ navigation, route }: Props) {
   }, [productWidth, cols, gridPad]);
 
   const [search, setSearch] = useState('');
+  const localCatalogRevision = useLocalCatalogRevision();
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const categoryIdRef = useRef<string | null>(null);
   categoryIdRef.current = categoryId;
@@ -138,6 +144,7 @@ export default function BillingScreen({ navigation, route }: Props) {
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const [loadError, setLoadError] = useState('');
   const [preview, setPreview] = useState<{
     totalAmount: number;
@@ -156,6 +163,11 @@ export default function BillingScreen({ navigation, route }: Props) {
   const [priceDraft, setPriceDraft] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [searchSelection, setSearchSelection] = useState<{
+    query: string;
+    results: SearchProductResult[];
+    index: number;
+  } | null>(null);
 
   const items = useCartStore((s) => s.items);
   const addItem = useCartStore((s) => s.addItem);
@@ -183,6 +195,7 @@ export default function BillingScreen({ navigation, route }: Props) {
 
   const skipNextFocusLoad = useRef(true);
   const catalogLoadedAt = useRef(0);
+  const localCatalogRequest = useRef(0);
   const catalogRevisionSeen = useRef(getCatalogRevision());
   const hydratedFromCacheRef = useRef(false);
   const refreshAfterProductEdit = useRef(false);
@@ -381,6 +394,7 @@ export default function BillingScreen({ navigation, route }: Props) {
 
   /** Keep a known good price when a progressive/network row briefly arrives as ₹0. */
   const mergeCatalogPrices = useCallback((next: SearchProductResult[]) => {
+    if (shouldUseLocalCatalog()) return next;
     const prevByVariant = new Map(catalogRef.current.map((row) => [row.variantId, row]));
     if (!prevByVariant.size) return next;
     return next.map((row) => {
@@ -446,33 +460,31 @@ export default function BillingScreen({ navigation, route }: Props) {
     const revision = getCatalogRevision();
     const revisionChanged = revision !== catalogRevisionSeen.current;
     const catId = opts?.categoryId !== undefined ? opts.categoryId : categoryIdRef.current;
-    if (
-      !force &&
-      !revisionChanged &&
-      opts?.categoryId === undefined &&
-      catalogLoadedAt.current > 0 &&
-      Date.now() - catalogLoadedAt.current < CATALOG_TTL_MS
-    ) {
-      return;
-    }
+    const localCatalog = shouldUseLocalCatalog();
     try {
       setLoadError('');
       // Desktop local DB: load a small favorites-first page (not all 10k+ products).
       // Search still queries SQLite; full sync keeps the DB complete.
-      const { shouldUseLocalCatalog, readSqliteBillingCatalog } = await import(
-        '../../offline/localCatalog'
-      );
-      if (shouldUseLocalCatalog()) {
+      if (localCatalog) {
+        const request = ++localCatalogRequest.current;
         const page = await readSqliteBillingCatalog({ categoryId: catId });
+        if (request !== localCatalogRequest.current) return;
         if (page?.items?.length) {
           applyCatalogProducts(page.items, { forcePrices: force || revisionChanged, alreadySorted: true });
-          return;
-        }
-        const hit = await hydrateCatalogFromCache({ force: true });
-        if (!hit && !hydratedFromCacheRef.current) {
+        } else {
+          catalogRef.current = [];
           setCatalog([]);
-          setLoadError('Could not load products');
+          setLoadingCatalog(false);
         }
+        return;
+      }
+      if (
+        !force &&
+        !revisionChanged &&
+        opts?.categoryId === undefined &&
+        catalogLoadedAt.current > 0 &&
+        Date.now() - catalogLoadedAt.current < CATALOG_TTL_MS
+      ) {
         return;
       }
       // Progressive paint via onPage — no separate 80-row prefetch (that was a double download).
@@ -506,6 +518,10 @@ export default function BillingScreen({ navigation, route }: Props) {
         setLoadError('Could not load products');
       }
     } catch (err) {
+      if (localCatalog) {
+        setLoadError(apiError(err, 'Could not load products'));
+        return;
+      }
       // Network failed: keep / reload from SQLite or AsyncStorage cache.
       const hit = await hydrateCatalogFromCache({ force: true });
       if (!hit && !hydratedFromCacheRef.current) {
@@ -537,7 +553,6 @@ export default function BillingScreen({ navigation, route }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const { shouldUseLocalCatalog } = await import('../../offline/localCatalog');
         if (!shouldUseLocalCatalog()) return;
         setLoadingCatalog(true);
         await loadCatalog(true, { categoryId });
@@ -554,14 +569,9 @@ export default function BillingScreen({ navigation, route }: Props) {
   const refreshCatalogAfterChange = useCallback(async (pricePatches: CatalogPricePatch[]) => {
     applyPricePatches(pricePatches);
     const hasStockPatch = (pricePatches || []).some((p) => p.stockQty !== undefined);
-    try {
-      const { shouldUseLocalCatalog } = await import('../../offline/localCatalog');
-      if (shouldUseLocalCatalog() && (hasStockPatch || !pricePatches?.length)) {
-        await loadCatalog(true);
-        return;
-      }
-    } catch {
-      /* fall through */
+    if (shouldUseLocalCatalog()) {
+      await loadCatalog(true);
+      return;
     }
     if (hasStockPatch) return;
     const ok = await hydrateCatalogFromCache({ force: true });
@@ -660,25 +670,35 @@ export default function BillingScreen({ navigation, route }: Props) {
   }, [q]);
 
   useEffect(() => {
-    // Names need 2+ chars; pack barcodes are numeric — search as soon as they look like a scan.
-    if (q.length < 2 && !looksLikeBarcode(q)) {
-      setRemoteResults([]);
+    let cancelled = false;
+    setRemoteResults([]);
+    setSearchError('');
+    // Non-desktop name searches need 2+ chars; desktop searches SQLite directly.
+    if (!q || (!isDesktopBill && q.length < 2 && !looksLikeBarcode(q))) {
       setSearching(false);
       return;
     }
+    if (isDesktopBill) setSearching(true);
     const delay = looksLikeBarcode(q) ? 60 : 280;
     const timer = setTimeout(async () => {
       setSearching(true);
       try {
-        setRemoteResults(await searchProducts(q));
-      } catch {
-        setRemoteResults([]);
+        const results = await searchProducts(q);
+        if (!cancelled) setRemoteResults(results);
+      } catch (err) {
+        if (!cancelled) {
+          setRemoteResults([]);
+          if (isDesktopBill) setSearchError(apiError(err, t('Could not load products')));
+        }
       } finally {
-        setSearching(false);
+        if (!cancelled) setSearching(false);
       }
     }, delay);
-    return () => clearTimeout(timer);
-  }, [q]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [q, localCatalogRevision, isDesktopBill, t]);
 
   const catalogSearchBlobs = useMemo(
     () => catalog.map((p) => productSearchBlob(p)),
@@ -690,6 +710,9 @@ export default function BillingScreen({ navigation, route }: Props) {
       !categoryId || p.categoryId === categoryId;
 
     if (debouncedQ) {
+      if (shouldUseLocalCatalog()) {
+        return remoteResults.filter(inCategory);
+      }
       const local = catalog.filter((p, index) => (
         inCategory(p) && productMatches(p, debouncedQ, catalogSearchBlobs[index])
       ));
@@ -718,6 +741,17 @@ export default function BillingScreen({ navigation, route }: Props) {
     if (!categoryId) return catalog;
     return catalog.filter(inCategory);
   }, [catalog, catalogSearchBlobs, debouncedQ, remoteResults, categoryId]);
+  const selectedSearchIndex =
+    searchSelection?.query === q && searchSelection.results === gridItems
+      ? searchSelection.index
+      : -1;
+  const desktopSearchState = useRef({ query: q, results: gridItems, selectedIndex: -1, available: false });
+  desktopSearchState.current = {
+    query: q,
+    results: gridItems,
+    selectedIndex: selectedSearchIndex,
+    available: isDesktopBill && !!q && q === debouncedQ && !searching && !searchError && !pendingProduct,
+  };
 
   const openDiscount = () => {
     if (billDiscountPercent > 0) {
@@ -773,6 +807,13 @@ export default function BillingScreen({ navigation, route }: Props) {
     [requestAdd],
   );
 
+  const selectDesktopProduct = useCallback((product: SearchProductResult) => {
+    addProduct(product);
+    setSearch('');
+    setDebouncedQ('');
+    setRemoteResults([]);
+  }, [addProduct]);
+
   const commitScan = useCallback(
     async (raw: string) => {
       const code = raw.trim();
@@ -786,17 +827,18 @@ export default function BillingScreen({ navigation, route }: Props) {
       }
       lastScanRef.current = { code, at: now };
 
-      let product = matchBarcodeProduct(catalog, code);
-      if (!product) {
-        product = matchBarcodeProduct(remoteResults, code);
-      }
-      if (!product) {
-        try {
+      let product: SearchProductResult | null = null;
+      try {
+        if (shouldUseLocalCatalog()) {
           product = matchBarcodeProduct(await searchProducts(code), code);
-        } catch {
-          lastScanRef.current = { code: '', at: 0 };
-          return false;
+        } else {
+          product = matchBarcodeProduct(catalog, code) || matchBarcodeProduct(remoteResults, code);
+          if (!product) product = matchBarcodeProduct(await searchProducts(code), code);
         }
+      } catch (err) {
+        lastScanRef.current = { code: '', at: 0 };
+        Alert.alert(t('Error'), apiError(err, 'Failed to lookup product'));
+        return false;
       }
       if (!product) {
         lastScanRef.current = { code: '', at: 0 };
@@ -808,7 +850,7 @@ export default function BillingScreen({ navigation, route }: Props) {
       setRemoteResults([]);
       return true;
     },
-    [catalog, remoteResults, requestScanAdd],
+    [catalog, remoteResults, requestScanAdd, t],
   );
 
   // Auto-add when search text is an exact barcode (local catalog or remote lookup).
@@ -1028,6 +1070,24 @@ export default function BillingScreen({ navigation, route }: Props) {
           event.preventDefault();
           event.stopPropagation();
           void commitScan(code);
+          return;
+        }
+      }
+
+      const desktopSearch = desktopSearchState.current;
+      const searchFocused = !!activeEl && activeEl === (searchRef.current as unknown as HTMLElement | null);
+      const action = desktopSearchKeyAction(event.key, {
+        ...desktopSearch,
+        available: searchFocused && desktopSearch.available,
+      });
+      if (action) {
+        event.preventDefault();
+        event.stopPropagation();
+        buffer = '';
+        if ('index' in action) {
+          setSearchSelection({ query: desktopSearch.query, results: desktopSearch.results, index: action.index });
+        } else {
+          selectDesktopProduct(action.product);
         }
         return;
       }
@@ -1055,6 +1115,7 @@ export default function BillingScreen({ navigation, route }: Props) {
     items,
     navigation,
     pendingProduct,
+    selectDesktopProduct,
     t,
   ]);
 
@@ -1076,7 +1137,7 @@ export default function BillingScreen({ navigation, route }: Props) {
     [qtyByVariant, tileWidth, addProduct, handleIncrease, handleDecrease, handleEditQty, handleEditProduct],
   );
 
-  const searchingNow = searching && q.length >= 2;
+  const searchingNow = searching && (isDesktopBill ? !!q : q.length >= 2);
   const barPad = !isWideBill && hasItems
     ? BAR_HEIGHT + Math.max(insets.bottom, spacing.sm) + spacing.md
     : spacing.lg;
@@ -1188,13 +1249,13 @@ export default function BillingScreen({ navigation, route }: Props) {
 
   return (
     <View
-      style={[common.screen, isWideBill && styles.wideRoot]}
+      style={[common.screen, isWideBill && !isDesktopBill && styles.wideRoot]}
       onLayout={(event) => {
         const next = Math.round(event.nativeEvent.layout.width);
         setHostWidth((prev) => (prev === next ? prev : next));
       }}>
-      <View style={isWideBill ? styles.productPane : styles.fill}>
-      <View style={[styles.header, isWideBill && styles.headerCompact, narrowPhone && styles.headerNarrow]}>
+      <View style={isDesktopBill ? styles.desktopHeaderPane : isWideBill ? styles.productPane : styles.fill}>
+      <View style={[styles.header, isDesktopBill && styles.desktopHeader, isWideBill && styles.headerCompact, narrowPhone && styles.headerNarrow]}>
         {!isWideBill ? (
           <View style={styles.actionsRow}>
             <Pressable
@@ -1224,7 +1285,7 @@ export default function BillingScreen({ navigation, route }: Props) {
             </Pressable>
           </View>
         ) : null}
-        <View style={[styles.searchRow, narrowPhone && styles.searchRowNarrow]}>
+        <View style={[styles.searchRow, (narrowPhone || (isDesktopBill && layoutWidth < 650)) && styles.searchRowNarrow]}>
           {isWideBill ? (
             <>
               <Pressable
@@ -1247,7 +1308,7 @@ export default function BillingScreen({ navigation, route }: Props) {
               </Pressable>
             </>
           ) : null}
-          <View style={[styles.searchBox, isWideBill && styles.searchBoxCompact, narrowPhone && styles.searchBoxNarrow]}>
+          <View style={[styles.searchBox, isDesktopBill && styles.desktopSearchBox, isWideBill && styles.searchBoxCompact, (narrowPhone || (isDesktopBill && layoutWidth < 650)) && styles.searchBoxNarrow]}>
             <Icon name="magnify" size={20} color={colors.textMuted} />
             <TextInput
               ref={searchRef}
@@ -1270,6 +1331,15 @@ export default function BillingScreen({ navigation, route }: Props) {
               <Pressable onPress={() => setSearch('')} hitSlop={8}>
                 <Icon name="close-circle" size={18} color={colors.textMuted} />
               </Pressable>
+            ) : null}
+            {isDesktopBill && q && q === debouncedQ && !pendingProduct ? (
+              <DesktopBillSearchResults
+                items={gridItems}
+                loading={searchingNow}
+                error={searchError}
+                selectedIndex={selectedSearchIndex}
+                onSelect={selectDesktopProduct}
+              />
             ) : null}
           </View>
           {categories.length > 0 ? (
@@ -1330,7 +1400,7 @@ export default function BillingScreen({ navigation, route }: Props) {
         </View>
       ) : null}
 
-      <FlatList
+      {!isDesktopBill ? <FlatList
         data={gridItems}
         key={`grid-${cols}`}
         keyExtractor={gridKeyExtractor}
@@ -1395,7 +1465,7 @@ export default function BillingScreen({ navigation, route }: Props) {
         }
         renderItem={renderProduct}
         extraData={gridExtraData}
-      />
+      /> : null}
 
       {hasItems && !isWideBill ? (
         <View style={[styles.payBar, narrowPhone && styles.payBarNarrow, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
@@ -1427,7 +1497,7 @@ export default function BillingScreen({ navigation, route }: Props) {
         </View>
       ) : null}
 
-      {isWideBill ? (
+      {isWideBill && !isDesktopBill ? (
         <QuantityEntryDialog
           product={pendingProduct}
           initialQuantity={initialQty}
@@ -1440,7 +1510,18 @@ export default function BillingScreen({ navigation, route }: Props) {
 
       </View>
 
-      {isWideBill ? <WideBillPanel /> : null}
+      {isWideBill ? <WideBillPanel fullWidth={isDesktopBill} /> : null}
+
+      {isDesktopBill ? (
+        <QuantityEntryDialog
+          product={pendingProduct}
+          initialQuantity={initialQty}
+          editing={!!editingVariantId}
+          contained
+          onConfirm={confirmQuantity}
+          onDismiss={dismissQuantity}
+        />
+      ) : null}
 
       {!isWideBill ? <Modal
         visible={cartOpen}
@@ -1637,6 +1718,7 @@ export default function BillingScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   wideRoot: { flexDirection: 'row' },
+  desktopHeaderPane: { zIndex: 10, overflow: 'visible' },
   productPane: { flex: 3, minWidth: 0, minHeight: 0, overflow: 'hidden', position: 'relative' },
   fill: { flex: 1, minHeight: 0 },
   header: {
@@ -1647,6 +1729,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
+  desktopHeader: { zIndex: 2 },
   headerCompact: {
     paddingTop: spacing.xs,
     paddingBottom: spacing.xs,
@@ -1682,6 +1765,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surfaceVariant,
   },
+  desktopSearchBox: { zIndex: 1 },
   searchBoxCompact: {
     height: 38,
     paddingHorizontal: spacing.sm,

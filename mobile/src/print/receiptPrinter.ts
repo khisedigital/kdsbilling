@@ -108,21 +108,21 @@ async function sendPayloadToPrinter(
         throw new Error('Select a Bluetooth printer in Printer Settings first.');
       }
       if (!text.trim()) throw new Error('Print data was empty. Try again.');
-      await printViaBluetooth(settings.bluetoothAddress, text, rollWidth, roll);
+      await printViaBluetooth(settings.bluetoothAddress, text, rollWidth, roll, payload.paymentQrData);
       return { ok: true, mode: 'bluetooth' };
     }
 
     if (settings.type === 'system') {
       if (!text.trim()) throw new Error('Print data was empty. Try again.');
       // Desktop: raw ESC/POS — main-process FIFO prints every click in order.
-      await printViaSystem(settings.systemPrinterName || '', text, rollWidth, roll);
+      await printViaSystem(settings.systemPrinterName || '', text, rollWidth, roll, payload.paymentQrData);
       return { ok: true, mode: 'system' };
     }
 
     if (settings.type === 'network') {
       if (settings.networkHost) {
         if (!text.trim()) throw new Error('Print data was empty. Try again.');
-        await printViaNetwork(settings.networkHost, settings.networkPort || 9100, text, rollWidth, roll);
+        await printViaNetwork(settings.networkHost, settings.networkPort || 9100, text, rollWidth, roll, payload.paymentQrData);
         return { ok: true, mode: 'network' };
       }
       if (settings.serverPrinterId) {

@@ -166,6 +166,20 @@ async function createBill(db, branchId, userId, payload) {
     }
   }
 
+  if (payload.syncRequireIdempotency) {
+    if (!clientBillId || !supportsClientBillId) {
+      throw new AppError('Bill sync requires a unique client bill ID', 503, 'SYNC_UNAVAILABLE');
+    }
+    const indexes = await db.sequelize.getQueryInterface().showIndex('sales_orders');
+    const uniqueClientId = indexes.some((index) =>
+      index.unique && index.fields?.length === 1
+      && (index.fields[0].attribute || index.fields[0].name) === 'client_bill_id'
+    );
+    if (!uniqueClientId) {
+      throw new AppError('Bill sync requires the client bill ID database migration', 503, 'SYNC_UNAVAILABLE');
+    }
+  }
+
   let offer = null;
   if (payload.offerId) offer = await Offer.findOne({ where: { id: payload.offerId, status: 'active' } });
 

@@ -1,4 +1,6 @@
 import api from './api';
+import { allBarcodesOf } from './catalogService';
+import { hasSqliteBridge } from '../offline/sqliteApi';
 
 export interface StockBalance {
   id: string;
@@ -88,10 +90,16 @@ export async function fetchStockBalances(params?: {
         limit: 50000,
         offset: 0,
       });
-      let rows: StockBalance[] = [];
+      const rows: StockBalance[] = [];
       for (const p of items as any[]) {
         for (const v of p.variants || []) {
           if (!v?.id) continue;
+          if (search) {
+            const q = search.toLowerCase();
+            const matches = [p.name, p.name_mr, p.nameMr, v.sku, ...allBarcodesOf(v)]
+              .some((value) => String(value || '').toLowerCase().includes(q));
+            if (!matches) continue;
+          }
           const qty = Number(v.stockQty ?? v.stock_qty) || 0;
           const reorder = Number(v.reorderLevel ?? v.reorder_level) || 0;
           if (params?.lowStock && !(qty <= reorder)) continue;
@@ -112,14 +120,6 @@ export async function fetchStockBalances(params?: {
           });
         }
       }
-      if (search) {
-        const q = search.toLowerCase();
-        rows = rows.filter(
-          (r) =>
-            r.variant?.sku?.toLowerCase().includes(q) ||
-            r.variant?.product?.name?.toLowerCase().includes(q),
-        );
-      }
       const total = rows.length;
       const start = (page - 1) * limit;
       const pageItems = rows.slice(start, start + limit);
@@ -133,8 +133,8 @@ export async function fetchStockBalances(params?: {
         },
       };
     }
-  } catch {
-    /* fall through */
+  } catch (err) {
+    if (hasSqliteBridge()) throw err;
   }
   const { data } = await api.get('/stock/balances', {
     params: {
@@ -204,40 +204,35 @@ export async function postStockMovement(
   opts?: { forceNetwork?: boolean },
 ) {
   if (!opts?.forceNetwork) {
-    try {
-      const { isFullyLocalMode, localSaveStockMovement, localEnqueueSync } = await import(
-        '../offline/localApi'
-      );
-      if (isFullyLocalMode()) {
-        const sign = endpoint === 'out' || endpoint === 'damage' ? -1 : 1;
-        const stockPatches: Array<{ variantId: string; productId?: string; stockQty: number }> = [];
-        for (const item of payload.items || []) {
-          const id =
-            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-              ? crypto.randomUUID()
-              : `stk-${Date.now()}-${item.variantId}`;
-          const delta = sign * Math.abs(Number(item.quantity) || 0);
-          const row = {
-            id,
-            variantId: item.variantId,
-            qtyDelta: delta,
-            reason: endpoint,
+    const { isFullyLocalMode, localSaveStockMovementsAndQueue } = await import('../offline/localApi');
+    if (isFullyLocalMode()) {
+        const entries = (payload.items || []).map((item) => {
+          if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') {
+            throw new Error('Secure stock movement IDs are unavailable');
+          }
+          const quantity = Number(item.quantity);
+          if (!Number.isFinite(quantity) || quantity === 0) throw new Error('Stock quantity must be non-zero');
+          const delta = endpoint === 'out' || endpoint === 'damage' ? -Math.abs(quantity) : quantity;
+          return {
+            row: {
+              id: crypto.randomUUID(),
+              variantId: item.variantId,
+              qtyDelta: delta,
+              reason: endpoint,
+              notes: payload.notes,
+              unitCost: item.unitCost,
+              syncStatus: 'pending',
+            },
+            endpoint,
+            item,
             notes: payload.notes,
-            unitCost: item.unitCost,
-            syncStatus: 'pending',
           };
-          const saved = (await localSaveStockMovement(row)) as {
-            id?: string;
-            variantId?: string;
-            stockQty?: number | null;
-          } | null;
-          await localEnqueueSync({
-            entityType: 'stock_movement',
-            entityId: id,
-            op: endpoint,
-            payload: { endpoint, item, notes: payload.notes },
-          });
-
+        });
+        const result = await localSaveStockMovementsAndQueue(entries);
+        const stockPatches: Array<{ variantId: string; productId?: string; stockQty: number }> = [];
+        for (const [index, item] of (payload.items || []).entries()) {
+          const saved = result.movements[index];
+          const delta = entries[index].row.qtyDelta;
           // Keep Billing / Price Management caches in sync with SQLite stock.
           try {
             const { readCachedProducts, applyCatalogPricePatches, upsertCachedProduct } = await import(
@@ -296,9 +291,6 @@ export async function postStockMovement(
           }
         }
         return { ok: true, stockPatches };
-      }
-    } catch {
-      /* fall through */
     }
   }
   const { data } = await api.post(`/stock/${endpoint}`, {

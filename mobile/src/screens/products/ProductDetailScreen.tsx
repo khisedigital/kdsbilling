@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, HelperText, Portal, SegmentedButtons, Text } from 'react-native-paper';
 import AppDialog from '../../components/ui/AppDialog';
@@ -12,6 +12,7 @@ import SurfaceCard from '../../components/ui/SurfaceCard';
 import { useT } from '../../i18n';
 import { fetchProduct, mainBarcodeOf, plainBarcodesOf, quantityBarcodesOf } from '../../services/catalogService';
 import { postStockMovement } from '../../services/inventoryService';
+import { useLocalCatalogRevision } from '../../offline/useLocalCatalogRevision';
 import type { Product, ProductVariant } from '../../types/catalog';
 import { apiError } from '../../utils/apiError';
 import { formatQuantity } from '../../utils/quantity';
@@ -31,6 +32,8 @@ function variantStockOf(v: ProductVariant | null | undefined): number {
 
 export default function ProductDetailScreen({ route, navigation }: Props) {
   const t = useT();
+  const localCatalogRevision = useLocalCatalogRevision();
+  const lastCatalogRevision = useRef(localCatalogRevision);
   const tRef = useRef(t);
   tRef.current = t;
   const [product, setProduct] = useState<Product | null>(null);
@@ -61,6 +64,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       load();
     }, [load]),
   );
+
+  useEffect(() => {
+    if (lastCatalogRevision.current === localCatalogRevision) return;
+    lastCatalogRevision.current = localCatalogRevision;
+    load();
+  }, [load, localCatalogRevision]);
 
   const openAddStock = (variant?: ProductVariant) => {
     const target = variant || product?.variants?.[0] || null;

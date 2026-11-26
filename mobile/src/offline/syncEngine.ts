@@ -1,11 +1,16 @@
 import api from '../services/api';
-import { createBill } from '../services/businessService';
+import { createBill, fetchCustomers } from '../services/businessService';
 import type { BillDetail } from '../services/businessService';
 import { fetchAllProducts, fetchBrands, fetchCategories } from '../services/catalogService';
 import { getShopSettings } from '../services/shopSettingsService';
+import { fetchSuppliers } from '../services/inventoryService';
+import { bumpCatalogRevision, writeCachedCategories, writeCachedProducts } from '../services/catalogCache';
+import { getDesktopBridge } from '../desktop/bridge';
+import { useAuthStore } from '../store/authStore';
+import type { Product, ProductVariant, QuantityBarcodeInput } from '../types/catalog';
 import { apiError } from '../utils/apiError';
 import { isDesktopOfflineCapable } from './capability';
-import { registerAutoSyncRunner, triggerAutoSync, useConnectivityStore } from './connectivityStore';
+import { useConnectivityStore } from './connectivityStore';
 import {
   listOutboxSales,
   markOutboxSaleError,
@@ -19,6 +24,8 @@ import {
   localSaveDailyClosing,
   localSaveExpense,
   localSaveReturn,
+  localUpsertProduct,
+  localDeleteProduct,
 } from './localApi';
 import {
   hasSqliteBridge,
@@ -26,11 +33,76 @@ import {
   sqliteReplaceCustomers,
   sqliteSaveSale,
   sqliteSaveShopSettings,
+  sqliteReadShopSettings,
+  sqliteRetryMissingVariantSales,
+  sqliteGetMeta,
+  sqliteGetProduct,
+  sqliteListProducts,
   sqliteSetMeta,
   sqliteStatus,
 } from './sqliteApi';
 
 let running = false;
+const PRODUCT_ID_MAP_KEY = 'product_sync_id_map';
+
+type ProductIdMap = Record<string, string>;
+
+class LocalOnlySyncError extends Error {}
+
+function isRecordSyncError(err: unknown): boolean {
+  const status = errStatus(err);
+  return err instanceof LocalOnlySyncError
+    || (status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status));
+}
+
+function remapProductIds<T>(value: T, ids: ProductIdMap): T {
+  if (typeof value === 'string') return (ids[value] || value) as T;
+  if (Array.isArray(value)) return value.map((item) => remapProductIds(item, ids)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, remapProductIds(item, ids)]),
+    ) as T;
+  }
+  return value;
+}
+
+function variantCodes(variant: any): string[] {
+  return [
+    variant?.barcode,
+    ...(variant?.barcodes || []).map((row: any) => typeof row === 'string' ? row : row?.barcode),
+  ].filter(Boolean).map(String);
+}
+
+function mapCreatedProduct(local: any, remote: any, ids: ProductIdMap): ProductIdMap {
+  if (!local?.id || !remote?.id) throw new LocalOnlySyncError('Cannot map synced product');
+  const localVariants = Array.isArray(local.variants) ? local.variants : [];
+  const remoteVariants = Array.isArray(remote.variants) ? remote.variants : [];
+  const next = { ...ids, [String(local.id)]: String(remote.id) };
+  const used = new Set<string>();
+  for (const variant of localVariants) {
+    const codes = variantCodes(variant);
+    let matches = remoteVariants.filter((row: any) =>
+      !used.has(String(row.id)) && codes.some((code) => variantCodes(row).includes(code)),
+    );
+    if (!matches.length && variant.sku) {
+      matches = remoteVariants.filter((row: any) => !used.has(String(row.id)) && row.sku === variant.sku);
+    }
+    if (!matches.length) {
+      matches = remoteVariants.filter((row: any) =>
+        !used.has(String(row.id))
+        && (row.size || '') === (variant.size || '')
+        && (row.color || '') === (variant.color || ''),
+      );
+    }
+    if (matches.length !== 1 || !variant.id || !matches[0].id) {
+      throw new LocalOnlySyncError('Cannot match local product variants to the synced product');
+    }
+    const id = String(matches[0].id);
+    used.add(id);
+    next[String(variant.id)] = id;
+  }
+  return next;
+}
 
 function errStatus(err: unknown): number {
   return Number((err as { response?: { status?: number } })?.response?.status) || 0;
@@ -64,37 +136,107 @@ function isNotFoundErr(err: unknown): boolean {
   );
 }
 
-function isBarcodeConflictErr(err: unknown): boolean {
-  const status = errStatus(err);
-  const code = errCode(err);
-  const message = errMessage(err);
-  return (
-    status === 409
-    || code === 'BARCODE_TAKEN'
-    || code === 'DUPLICATE_ENTRY'
-    || /barcode .* already used/i.test(message)
-    || /listed twice/i.test(message)
-    || /duplicate barcode/i.test(message)
+async function reconcileSaleVariant(variantId: string, ids: ProductIdMap): Promise<void> {
+  const unresolved = () => new LocalOnlySyncError(
+    `Cannot safely match local variant ${variantId} to the live catalog. The bill is still pending; verify the product and stock before resolving it.`,
   );
+  const products: Product[] = [];
+  for (const status of ['active', 'inactive']) {
+    const limit = 500;
+    for (let offset = 0; ; offset += limit) {
+      const page = await sqliteListProducts({ status, limit, offset });
+      products.push(...(page.items as Product[]).filter((product) =>
+        product.variants?.some((variant) => variant.id === variantId),
+      ));
+      if (page.items.length < limit) break;
+    }
+  }
+  if (products.length !== 1) throw unresolved();
+  const local = products[0];
+  const localVariant = local.variants?.find((variant) => variant.id === variantId);
+  if (!localVariant || !local.uom_id) throw unresolved();
+  const variants = (local.variants || []).map((localRow) => {
+    const variant = localRow as ProductVariant & { quantityBarcodes?: QuantityBarcodeInput[] };
+    const barcodeRows = [
+      ...(variant.barcodes || []).map((row) => typeof row === 'string'
+        ? { barcode: row, quantity: null }
+        : { barcode: row.barcode, quantity: row.quantity ?? null }),
+      ...(variant.quantityBarcodes || []).map((row) => ({ barcode: row.barcode || '', quantity: row.quantity })),
+    ];
+    if (variant.barcode && !barcodeRows.some((row) => row.barcode === variant.barcode)) {
+      barcodeRows.unshift({ barcode: variant.barcode, quantity: null });
+    }
+    return {
+      id: variant.id, remoteVariantId: ids[variant.id], sku: variant.sku, size: variant.size, color: variant.color,
+      costPrice: variant.cost_price, sellingPrice: variant.selling_price, mrp: variant.mrp,
+      wholesalePrice: variant.wholesale_price, uomId: variant.uom_id, taxGroupId: variant.tax_group_id,
+      reorderLevel: variant.reorder_level, status: variant.status, barcodes: barcodeRows,
+    };
+  });
+  let response;
+  try {
+    response = await api.post('/products/sync-missing-variant', {
+      remoteProductId: ids[local.id],
+      product: {
+        id: local.id, name: local.name, nameMr: local.name_mr, description: local.description,
+        uomId: local.uom_id, categoryId: local.category_id, brandId: local.brand_id,
+        taxGroupId: local.tax_group_id, taxCode: local.tax_code, isWeightBased: local.is_weight_based,
+        allowDecimalQty: local.allow_decimal_qty, hasVariants: local.has_variants,
+        isFavorite: local.is_favorite ?? local.isFavorite, status: local.status,
+      },
+      variants,
+    });
+  } catch (err) {
+    if (errStatus(err) === 409) throw new LocalOnlySyncError(errMessage(err));
+    if (errStatus(err) === 404) throw new Error('Update the live server to enable missing product recovery');
+    throw err;
+  }
+  const remote = response.data?.data as {
+    productId?: string; variants?: Array<{ localId: string; variantId: string }>;
+  } | undefined;
+  if (!remote?.productId || !Array.isArray(remote.variants) || remote.variants.length !== variants.length) {
+    throw new Error('Invalid missing product recovery response');
+  }
+  if (ids[local.id] && ids[local.id] !== remote.productId) throw unresolved();
+  const next = { ...ids };
+  const used = new Set<string>();
+  for (const variant of variants) {
+    const matches = remote.variants.filter((row) => row.localId === variant.id && row.variantId);
+    if (matches.length !== 1 || used.has(matches[0].variantId)) throw unresolved();
+    const remoteId = matches[0].variantId;
+    used.add(remoteId);
+    if (variant.id === variantId && (ids[variantId] || variantId) === remoteId) {
+      throw new LocalOnlySyncError(`Live variant ${remoteId} is still unavailable for this bill`);
+    }
+    if (variant.id !== variantId && ids[variant.id] && ids[variant.id] !== remoteId) throw unresolved();
+    if (variant.id !== remoteId) next[variant.id] = remoteId;
+    else delete next[variant.id];
+  }
+  if (local.id !== remote.productId) next[local.id] = remote.productId;
+  await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(next));
+  Object.assign(ids, next);
 }
 
-function stripBarcodesFromProductPayload(payload: any): any {
-  if (!payload || typeof payload !== 'object') return payload;
-  const next = { ...payload };
-  delete next.barcode;
-  delete next.barcodes;
-  delete next.quantityBarcodes;
-  if (Array.isArray(next.variants)) {
-    next.variants = next.variants.map((v: any) => {
-      if (!v || typeof v !== 'object') return v;
-      const copy = { ...v };
-      delete copy.barcode;
-      delete copy.barcodes;
-      delete copy.quantityBarcodes;
-      return copy;
-    });
+async function createPendingBill(payload: Record<string, unknown>, ids: ProductIdMap): Promise<BillDetail> {
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await createBill({ ...remapProductIds(payload, ids), syncRequireIdempotency: true }) as BillDetail;
+    } catch (err) {
+      const missing = /^Variant not found:\s*(\S+)\s*$/i.exec(errMessage(err))?.[1];
+      const item = items.find((row) =>
+        row && typeof row === 'object' && typeof row.variantId === 'string'
+        && (ids[row.variantId] || row.variantId) === missing,
+      );
+      if (!missing || !item || attempt >= items.length || !hasSqliteBridge()) throw err;
+      try {
+        await reconcileSaleVariant(item.variantId, ids);
+      } catch (reconcileError) {
+        if (reconcileError instanceof LocalOnlySyncError) throw reconcileError;
+        throw new Error(`Could not verify the live product: ${errMessage(reconcileError)}`);
+      }
+    }
   }
-  return next;
 }
 
 async function pushSyncQueueItem(row: {
@@ -104,10 +246,12 @@ async function pushSyncQueueItem(row: {
   op: string;
   payload: any;
   syncAttempts?: number;
-}): Promise<void> {
+}, ids: ProductIdMap): Promise<void> {
   const type = row.entityType;
   const op = row.op;
-  const p = row.payload || {};
+  const originalEntityId = row.entityId;
+  row = { ...row, entityId: ids[row.entityId] || row.entityId };
+  const p = remapProductIds(row.payload || {}, ids);
 
   if (type === 'customer' && op === 'create') {
     const { name, phone, email, address, notes } = p;
@@ -238,15 +382,30 @@ async function pushSyncQueueItem(row: {
     return;
   }
   if (type === 'product' && op === 'create') {
-    try {
-      let payloadToSend = p;
-      if (row.entityId && hasSqliteBridge()) {
-        try {
-          const { sqliteGetProduct } = await import('./sqliteApi');
-          const localProd = (await sqliteGetProduct(row.entityId)) as any;
-          if (localProd) {
-            payloadToSend = {
-              ...p,
+      const localProduct = (await sqliteGetProduct(originalEntityId)) as any;
+      if (ids[originalEntityId]) {
+        if (!localProduct) throw new LocalOnlySyncError('Pending product not found in local database');
+        const { data } = await api.get(`/products/${ids[originalEntityId]}`);
+        const nextIds = mapCreatedProduct(localProduct, data.data, ids);
+        await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(nextIds));
+        Object.assign(ids, nextIds);
+        return;
+      }
+      if (!localProduct) throw new LocalOnlySyncError('Pending product not found in local database');
+      const localProd = localProduct;
+      const { localInitialVariantStock, ...serverPayload } = p;
+      const localVariants = Array.isArray(localProd.variants) ? localProd.variants : [];
+      const initialVariants = Array.isArray(p.variants) ? p.variants : [];
+      if (localInitialVariantStock) {
+        if (localVariants.length !== Object.keys(localInitialVariantStock).length
+          || localVariants.some((variant: any) => !(variant.id in localInitialVariantStock))) {
+          throw new LocalOnlySyncError('Cannot safely sync a new product whose variants changed before its first sync');
+        }
+      } else if (localVariants.length !== (initialVariants.length || 1) || localVariants.length > 1) {
+        throw new LocalOnlySyncError('Cannot safely determine initial stock for this unsynced product');
+      }
+      const payloadToSend = {
+              ...serverPayload,
               name: localProd.name || p.name,
               nameMr: localProd.nameMr ?? localProd.name_mr ?? p.nameMr,
               categoryId: localProd.categoryId ?? localProd.category_id ?? p.categoryId,
@@ -254,8 +413,8 @@ async function pushSyncQueueItem(row: {
               uomId: localProd.uomId ?? localProd.uom_id ?? p.uomId,
               taxGroupId: localProd.taxGroupId ?? localProd.tax_group_id ?? p.taxGroupId,
               taxCode: localProd.taxCode ?? localProd.tax_code ?? p.taxCode,
-              variants: Array.isArray(localProd.variants) && localProd.variants.length
-                ? localProd.variants.map((lv: any) => ({
+              variants: localVariants.length
+                ? localVariants.map((lv: any, index: number) => ({
                     sku: lv.sku || '',
                     barcode: lv.barcode || (Array.isArray(lv.barcodes) ? (lv.barcodes[0]?.barcode || lv.barcodes[0]) : null),
                     barcodes: lv.barcodes || [],
@@ -263,32 +422,24 @@ async function pushSyncQueueItem(row: {
                     sellingPrice: lv.sellingPrice ?? lv.selling_price ?? 0,
                     costPrice: lv.costPrice ?? lv.cost_price ?? 0,
                     mrp: lv.mrp != null ? lv.mrp : undefined,
-                    stockQty: lv.stockQty ?? lv.stock_qty ?? 0,
+                    stockQty: localInitialVariantStock
+                      ? localInitialVariantStock[lv.id]
+                      : (initialVariants[index]?.stockQty ?? p.stockQty ?? 0),
                     size: lv.size || null,
                     color: lv.color || null,
                   }))
                 : p.variants,
-            };
-          }
-        } catch {}
-      }
+      };
 
       const { data } = await api.post('/products', payloadToSend);
       const created = data?.data;
-      // Server always assigns its own id. Drop the desktop-only row so Labels
-      // searches the same product the phone already shows.
-      if (created?.id && row.entityId && String(created.id) !== String(row.entityId)) {
-        const { localDeleteProduct, localUpsertProduct } = await import('./localApi');
-        await localUpsertProduct(created);
-        await localDeleteProduct(String(row.entityId));
-      }
+      if (!created?.id) throw new Error('Could not map synced product to local catalog');
+      ids[originalEntityId] = String(created.id);
+      await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(ids));
+      const nextIds = mapCreatedProduct(localProduct, created, ids);
+      await sqliteSetMeta(PRODUCT_ID_MAP_KEY, JSON.stringify(nextIds));
+      Object.assign(ids, nextIds);
       return;
-    } catch (err) {
-      // Already on live (mobile/other PC created the same product + pack barcodes).
-      // Do not create a second product without barcodes — clear the queue item.
-      if (isBarcodeConflictErr(err)) return;
-      throw err;
-    }
   }
   if (type === 'product' && op === 'update') {
     const { id, ...rest } = p;
@@ -297,11 +448,6 @@ async function pushSyncQueueItem(row: {
       await api.put(`/products/${targetId}`, rest);
       return;
     } catch (err) {
-      if (isNotFoundErr(err)) return;
-      if (isBarcodeConflictErr(err)) {
-        await api.put(`/products/${targetId}`, stripBarcodesFromProductPayload(rest));
-        return;
-      }
       throw err;
     }
   }
@@ -318,7 +464,6 @@ async function pushSyncQueueItem(row: {
     try {
       await api.put(`/products/${row.entityId}/favorite`, { isFavorite: p.isFavorite });
     } catch (err) {
-      if (isNotFoundErr(err)) return;
       throw err;
     }
     return;
@@ -331,7 +476,6 @@ async function pushSyncQueueItem(row: {
         isFavorite: p.isFavorite,
       });
     } catch (err) {
-      if (isNotFoundErr(err)) return;
       throw err;
     }
     return;
@@ -339,43 +483,8 @@ async function pushSyncQueueItem(row: {
   if (type === 'price_bulk' && op === 'update') {
     const items = Array.isArray((p as any).items) ? (p as any).items : [];
     if (!items.length) return;
-    try {
-      await api.post('/products/price-bulk', { items });
-      return;
-    } catch (err) {
-      // Older servers / partial failures: apply row-by-row and skip stale local variant ids.
-      if (!isNotFoundErr(err) && !isBarcodeConflictErr(err) && errStatus(err) !== 400) {
-        throw err;
-      }
-      let anyOk = false;
-      let lastErr: unknown = err;
-      for (const item of items) {
-        try {
-          await api.post('/products/price-bulk', { items: [item] });
-          anyOk = true;
-        } catch (rowErr) {
-          lastErr = rowErr;
-          if (isNotFoundErr(rowErr)) continue;
-          if (isBarcodeConflictErr(rowErr)) {
-            const { barcode, barcodes, ...rest } = item || {};
-            try {
-              await api.post('/products/price-bulk', { items: [rest] });
-              anyOk = true;
-            } catch (rowErr2) {
-              if (isNotFoundErr(rowErr2) || isBarcodeConflictErr(rowErr2)) continue;
-              throw rowErr2;
-            }
-            continue;
-          }
-          // Keep going — one bad row must not block the rest of sync.
-          console.warn('[KDSPOZ] price_bulk row failed:', errMessage(rowErr));
-        }
-      }
-      if (!anyOk && lastErr && !isNotFoundErr(lastErr) && !isBarcodeConflictErr(lastErr)) {
-        throw lastErr;
-      }
-      return;
-    }
+    await api.post('/products/price-bulk', { items });
+    return;
   }
   if (type === 'daily_closing') {
     const closingDate = String(
@@ -466,15 +575,29 @@ async function pushSyncQueueItem(row: {
     }
   }
   if (type === 'stock_movement') {
-    const endpoint = p.endpoint || op;
+    if (p.syncProtocol !== 2) {
+      throw new LocalOnlySyncError(
+        `Stock movement ${originalEntityId} predates retry-safe sync; verify the live stock history before reconciling it`,
+      );
+    }
+    let response;
     try {
-      await api.post(`/stock/${endpoint}`, {
-        items: [p.item || p],
+      response = await api.post('/stock/sync-movement', {
+        clientMovementId: originalEntityId,
+        operation: p.endpoint || op,
+        variantId: p.item?.variantId,
+        quantity: p.item?.quantity,
+        unitCost: p.item?.unitCost,
         notes: p.notes,
       });
     } catch (err) {
-      if (isNotFoundErr(err)) return;
+      if (errStatus(err) === 404 && errCode(err) !== 'NOT_FOUND') {
+        throw new Error('Update the live server to enable retry-safe stock sync');
+      }
       throw err;
+    }
+    if (response.data?.data?.clientMovementId !== originalEntityId || !response.data?.data?.movementId) {
+      throw new Error(`Invalid acknowledgment for stock movement ${originalEntityId}`);
     }
     return;
   }
@@ -483,11 +606,11 @@ async function pushSyncQueueItem(row: {
     // Treat as synced locally so it doesn't block forever.
     return;
   }
-  throw new Error(`Unsupported sync item: ${type}/${op}`);
+  throw new LocalOnlySyncError(`Unsupported sync item: ${type}/${op}`);
 }
 
 /** Push pending sales + generic sync_queue (desktop → live DB). */
-export async function flushOutbox(): Promise<{ synced: number; failed: number }> {
+export async function flushOutbox(): Promise<{ synced: number; failed: number; skipped?: number }> {
   if (!isDesktopOfflineCapable()) return { synced: 0, failed: 0 };
   if (!navigator.onLine) {
     useConnectivityStore.getState().setOnline(false);
@@ -498,55 +621,80 @@ export async function flushOutbox(): Promise<{ synced: number; failed: number }>
 
   let synced = 0;
   let failed = 0;
+  let skipped = 0;
   try {
-    // 1) Push sync_queue first (products, categories, brands, customers, suppliers)
-    // so new products exist on the server before sales referencing them are created.
-    if (hasSqliteBridge()) {
-      const queue = await localListSyncQueue();
-      for (const row of queue) {
-        try {
-          await pushSyncQueueItem(row);
-          await localMarkSyncQueueDone(row.id);
-          synced += 1;
-        } catch (err) {
-          failed += 1;
-          const message = apiError(err, err instanceof Error ? err.message : String(err));
-          await localMarkSyncQueueError(row.id, message, (row.syncAttempts || 0) + 1);
-          useConnectivityStore.getState().setLastSyncError(message);
-          if (/401|403|login|unauthorized/i.test(message)) break;
-        }
-      }
+    if (hasSqliteBridge() && typeof (await sqliteStatus())?.localOnlyCount !== 'number') {
+      throw new Error('Restart the desktop app to enable safe sync');
     }
-
-    // 2) Push pending sales (bills)
+    if (hasSqliteBridge()) await sqliteRetryMissingVariantSales();
+    const storedMap = hasSqliteBridge() ? await sqliteGetMeta(PRODUCT_ID_MAP_KEY) : null;
+    const ids: ProductIdMap = storedMap ? JSON.parse(storedMap) : {};
+    const queue = hasSqliteBridge() ? await localListSyncQueue() : [];
     const sales = await listOutboxSales();
-    for (const row of sales) {
-      try {
-        const created = (await createBill(row.payload)) as BillDetail;
-        await removeOutboxSale(row.clientBillId, created?.id || null, created, row.payload);
-        synced += 1;
-      } catch (err) {
-        const message = apiError(err, err instanceof Error ? err.message : String(err));
-        // Stale offline bill whose variants were recreated on live — drop after enough attempts.
-        if (isNotFoundErr(err) && (row.syncAttempts || 0) >= 2) {
-          await removeOutboxSale(row.clientBillId, null);
-          synced += 1;
+    const pending = [
+      ...queue.map((row) => ({ kind: 'queue' as const, row })),
+      ...sales.map((row) => ({ kind: 'sale' as const, row })),
+    ].sort((a, b) => String(a.row.createdAt).localeCompare(String(b.row.createdAt)));
+    for (const entry of pending) {
+      if (entry.kind === 'queue') {
+        const row = entry.row;
+        try {
+          await pushSyncQueueItem(row, ids);
+        } catch (err) {
+          const message = apiError(err, err instanceof Error ? err.message : String(err));
+          const canSkip = isRecordSyncError(err) && hasSqliteBridge();
+          await localMarkSyncQueueError(row.id, message, (row.syncAttempts || 0) + 1, canSkip);
+          useConnectivityStore.getState().setLastSyncError(message);
+          if (!canSkip) { failed += 1; break; }
+          skipped += 1;
           continue;
         }
-        failed += 1;
-        await markOutboxSaleError(row, message);
-        useConnectivityStore.getState().setLastSyncError(message);
-        if (/401|403|login|unauthorized/i.test(message)) break;
+        await localMarkSyncQueueDone(row.id);
+        synced += 1;
+      } else {
+        const row = entry.row;
+        let created: BillDetail;
+        try {
+          created = await createPendingBill(row.payload, ids);
+        } catch (err) {
+          const message = apiError(err, err instanceof Error ? err.message : String(err));
+          const canSkip = isRecordSyncError(err) && hasSqliteBridge();
+          await markOutboxSaleError(row, message, canSkip);
+          useConnectivityStore.getState().setLastSyncError(message);
+          if (!canSkip) { failed += 1; break; }
+          skipped += 1;
+          continue;
+        }
+        await removeOutboxSale(row.clientBillId, created?.id || null, created, row.payload);
+        synced += 1;
+      }
+    }
+    const status = hasSqliteBridge() ? await sqliteStatus() : null;
+    if (!failed && !skipped && !status?.localOnlyCount) {
+      for (const [localId, remoteId] of Object.entries(ids)) {
+        const local = await sqliteGetProduct(localId) as Product | null;
+        if (local) {
+          const { data } = await api.get(`/products/${remoteId}`);
+          if (!data?.data?.id) throw new Error('Could not reload synced product');
+          const remoteVariants: ProductVariant[] = data.data.variants || [];
+          if ((local.variants || []).some((variant) =>
+            !remoteVariants.some((remote) => remote.id === (ids[variant.id] || variant.id)),
+          )) {
+            throw new Error('Local product has variants that are not yet synced; retry sync before downloading');
+          }
+          await localUpsertProduct(data.data);
+          await localDeleteProduct(localId);
+        }
       }
     }
   } finally {
     running = false;
     await refreshPendingCount();
   }
-  return { synced, failed };
+  return skipped ? { synced, failed, skipped } : { synced, failed };
 }
 
-async function pullServerSales(limitPages = 5): Promise<number> {
+async function pullServerSales(limitPages = 5, insertOnly = false): Promise<number> {
   let imported = 0;
   for (let page = 1; page <= limitPages; page += 1) {
     const { data } = await api.get('/bills', { params: { page, limit: 100, status: 'completed' } });
@@ -560,17 +708,18 @@ async function pullServerSales(limitPages = 5): Promise<number> {
     for (const bill of items) {
       if (!bill?.id) continue;
       const clientBillId = String(bill.client_bill_id || bill.clientBillId || `srv-${bill.id}`);
-      await sqliteSaveSale({
+      const saved = await sqliteSaveSale({
         clientBillId,
         serverBillId: String(bill.id),
         syncStatus: 'synced',
+        insertOnly,
         skipStock: true,
         syncedAt: new Date().toISOString(),
         createdAt: bill.created_at || bill.createdAt || new Date().toISOString(),
         bill,
         payload: {},
       });
-      imported += 1;
+      if (!saved?.skipped) imported += 1;
     }
     const totalPages = Number(payload?.pagination?.totalPages) || page;
     if (page >= totalPages) break;
@@ -578,56 +727,44 @@ async function pullServerSales(limitPages = 5): Promise<number> {
   return imported;
 }
 
-async function pullServerExpenses(): Promise<number> {
-  try {
-    const { data } = await api.get('/expenses', { params: { limit: 500 } });
-    const payload = data?.data;
-    const items: any[] = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload?.items)
-        ? payload.items
-        : [];
-    for (const row of items) {
-      if (!row?.id) continue;
-      await localSaveExpense({ ...row, syncStatus: 'synced' });
-    }
-    return items.length;
-  } catch {
-    return 0;
+async function pullServerExpenses(insertOnly = false): Promise<number> {
+  const { data } = await api.get('/expenses', { params: { limit: 500 } });
+  const payload = data?.data;
+  const items: any[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : [];
+  for (const row of items) {
+    if (!row?.id) continue;
+    await localSaveExpense({ ...row, syncStatus: 'synced', insertOnly });
   }
+  return items.length;
 }
 
-async function pullServerReturns(): Promise<number> {
-  try {
-    const { data } = await api.get('/returns', { params: { page: 1, limit: 200 } });
-    const payload = data?.data;
-    const items: any[] = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload?.items)
-        ? payload.items
-        : [];
-    for (const row of items) {
-      if (!row?.id) continue;
-      await localSaveReturn({ ...row, syncStatus: 'synced', skipStock: true });
-    }
-    return items.length;
-  } catch {
-    return 0;
+async function pullServerReturns(insertOnly = false): Promise<number> {
+  const { data } = await api.get('/returns', { params: { page: 1, limit: 200 } });
+  const payload = data?.data;
+  const items: any[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : [];
+  for (const row of items) {
+    if (!row?.id) continue;
+    await localSaveReturn({ ...row, syncStatus: 'synced', skipStock: true, insertOnly });
   }
+  return items.length;
 }
 
-async function pullServerClosings(): Promise<number> {
-  try {
-    const { data } = await api.get('/daily-closings');
-    const items: any[] = Array.isArray(data?.data) ? data.data : [];
-    for (const row of items) {
-      if (!row?.id) continue;
-      await localSaveDailyClosing({ ...row, syncStatus: 'synced' });
-    }
-    return items.length;
-  } catch {
-    return 0;
+async function pullServerClosings(insertOnly = false): Promise<number> {
+  const { data } = await api.get('/daily-closings');
+  const items: any[] = Array.isArray(data?.data) ? data.data : [];
+  for (const row of items) {
+    if (!row?.id) continue;
+    await localSaveDailyClosing({ ...row, syncStatus: 'synced', insertOnly });
   }
+  return items.length;
 }
 
 /**
@@ -643,12 +780,17 @@ export async function pullEverythingToSqlite(): Promise<{
   expenses: number;
   returns: number;
   closings: number;
+  errors?: string[];
 }> {
-  if (!hasSqliteBridge() || !navigator.onLine) {
-    return { products: 0, categories: 0, brands: 0, customers: 0, sales: 0, expenses: 0, returns: 0, closings: 0 };
-  }
+  if (!hasSqliteBridge()) throw new Error('Local database is unavailable');
+  if (!navigator.onLine) throw new Error('No internet connection');
 
   const pullErrors: string[] = [];
+  const status = await sqliteStatus();
+  if (typeof status?.localOnlyCount !== 'number') {
+    throw new Error('Restart the desktop app to enable safe sync');
+  }
+  const insertOnly = status.localOnlyCount > 0;
 
   // Products are critical — do not swallow failures into an empty upsert (that leaves
   // desktop missing everything created on mobile).
@@ -658,6 +800,7 @@ export async function pullEverythingToSqlite(): Promise<{
     products = await fetchAllProducts({
       forceNetwork: true,
       preferFull: true,
+      requireComplete: true,
     });
   } catch (err) {
     try {
@@ -665,7 +808,9 @@ export async function pullEverythingToSqlite(): Promise<{
         status: 'active',
         forceNetwork: true,
         preferFull: true,
+        requireComplete: true,
       });
+      pullErrors.push('Only active products could be downloaded; inactive products may be missing.');
     } catch (err2) {
       const message = apiError(err2, apiError(err, 'Could not download products'));
       pullErrors.push(message);
@@ -674,7 +819,9 @@ export async function pullEverythingToSqlite(): Promise<{
   }
 
   const [categories, brands, shop, customers, suppliers, expenseCats, units, taxGroups] = await Promise.all([
-    fetchCategories(undefined, { forceNetwork: true }).catch((err) => {
+    (insertOnly
+      ? api.get('/categories').then((response) => response.data?.data || [])
+      : fetchCategories(undefined, { forceNetwork: true })).catch((err) => {
       pullErrors.push(apiError(err, 'Could not download categories'));
       return [];
     }),
@@ -682,33 +829,85 @@ export async function pullEverythingToSqlite(): Promise<{
       pullErrors.push(apiError(err, 'Could not download brands'));
       return [];
     }),
-    getShopSettings({ forceNetwork: true }).catch(() => null),
-    import('../services/businessService')
-      .then((m) => m.fetchCustomers(undefined, { forceNetwork: true }))
+    (insertOnly
+      ? api.get('/shop-settings').then((response) => response.data?.data || null)
+      : getShopSettings({ forceNetwork: true })).catch((err) => {
+      pullErrors.push(apiError(err, 'Could not download shop settings'));
+      return null;
+    }),
+    fetchCustomers(undefined, { forceNetwork: true })
       .catch((err) => {
         pullErrors.push(apiError(err, 'Could not download customers'));
         return [];
       }),
-    import('../services/inventoryService')
-      .then((m) => m.fetchSuppliers(undefined, { forceNetwork: true }))
-      .catch(() => []),
+    fetchSuppliers(undefined, { forceNetwork: true })
+      .catch((err) => {
+        pullErrors.push(apiError(err, 'Could not download suppliers'));
+        return [];
+      }),
     api
       .get('/expense-categories')
       .then((r) => r.data?.data || [])
-      .catch(() => []),
+      .catch((err) => {
+        pullErrors.push(apiError(err, 'Could not download expense categories'));
+        return [];
+      }),
     api
       .get('/units')
       .then((r) => r.data?.data || [])
-      .catch(() => []),
+      .catch((err) => {
+        pullErrors.push(apiError(err, 'Could not download units'));
+        return [];
+      }),
     api
       .get('/tax-groups')
       .then((r) => r.data?.data || [])
-      .catch(() => []),
+      .catch((err) => {
+        pullErrors.push(apiError(err, 'Could not download tax groups'));
+        return [];
+      }),
   ]);
 
   const supplierRows = Array.isArray(suppliers) ? suppliers : [];
 
+  if (insertOnly) {
+    const storedMap = await sqliteGetMeta(PRODUCT_ID_MAP_KEY);
+    const ids: ProductIdMap = storedMap ? JSON.parse(storedMap) : {};
+    const mappedProducts = new Map<string, Product>();
+    for (const [localId, remoteId] of Object.entries(ids)) {
+      const local = await sqliteGetProduct(localId) as Product | null;
+      if (local) mappedProducts.set(remoteId, local);
+    }
+    const mappedRemoteIds = new Set(Object.values(ids));
+    const translatedProducts: Product[] = [];
+    for (const product of products) {
+      const local = mappedProducts.get(product.id)
+        || ((product.variants || []).some((variant) => mappedRemoteIds.has(variant.id))
+          ? await sqliteGetProduct(product.id) as Product | null
+          : null);
+      if (!local) {
+        translatedProducts.push(product);
+        continue;
+      }
+      const localVariantIds = new Map(
+        (local.variants || []).filter((variant) => ids[variant.id])
+          .map((variant) => [ids[variant.id], variant.id]),
+      );
+      translatedProducts.push({
+        ...product,
+        id: local.id,
+        variants: (product.variants || []).map((variant) => ({
+          ...variant,
+          id: localVariantIds.get(variant.id) || variant.id,
+        })),
+      });
+    }
+    products = translatedProducts;
+  }
+
   let catalogWritten = 0;
+  let categoriesWritten = 0;
+  let brandsWritten = 0;
   if (products.length || categories.length || brands.length) {
     try {
       // Chunked IPC upsert — a single huge replace often fails on Electron and
@@ -719,39 +918,45 @@ export async function pullEverythingToSqlite(): Promise<{
         brands: brands || [],
         clearProducts: false,
         syncStock: true,
+        insertOnly,
       });
       catalogWritten = written.products;
+      categoriesWritten = written.categories;
+      brandsWritten = written.brands;
     } catch (err) {
       const message = apiError(err, 'Could not save products to local database');
       pullErrors.push(message);
       console.error('[KDSPOZ] catalog replace failed:', err);
     }
   }
-  if (shop) await sqliteSaveShopSettings(shop);
+  if (shop && (!insertOnly || !(await sqliteReadShopSettings()))) await sqliteSaveShopSettings(shop);
   const customerRows = Array.isArray(customers)
     ? customers
     : Array.isArray((customers as { items?: unknown[] })?.items)
       ? (customers as { items: unknown[] }).items
       : [];
+  let customersWritten = 0;
   if (customerRows.length) {
     try {
-      await sqliteReplaceCustomers(customerRows);
+      const written = await sqliteReplaceCustomers(customerRows, insertOnly);
+      customersWritten = written?.customers ?? 0;
     } catch (err) {
       pullErrors.push(apiError(err, 'Could not save customers locally'));
     }
   }
 
-  const bridge = (await import('../desktop/bridge')).getDesktopBridge();
+  const bridge = getDesktopBridge();
   if (bridge?.sqliteReplaceSuppliers) {
     const shopCode =
-      (await import('../store/authStore')).useAuthStore.getState().savedLogin?.shopCode ||
+      useAuthStore.getState().savedLogin?.shopCode ||
       'default';
-    await bridge.sqliteReplaceSuppliers({ shopCode, suppliers: supplierRows });
+    await bridge.sqliteReplaceSuppliers({ shopCode, suppliers: supplierRows, insertOnly });
     if (bridge?.sqliteReplaceJsonTable && Array.isArray(expenseCats) && expenseCats.length) {
       await bridge.sqliteReplaceJsonTable({
         shopCode,
         table: 'expense_categories',
         rows: expenseCats,
+        insertOnly,
       });
     }
     if (bridge?.sqliteReplaceJsonTable && Array.isArray(units) && units.length) {
@@ -759,6 +964,7 @@ export async function pullEverythingToSqlite(): Promise<{
         shopCode,
         table: 'units',
         rows: units,
+        insertOnly,
       });
     }
     if (bridge?.sqliteReplaceJsonTable && Array.isArray(taxGroups) && taxGroups.length) {
@@ -766,40 +972,37 @@ export async function pullEverythingToSqlite(): Promise<{
         shopCode,
         table: 'tax_groups',
         rows: taxGroups,
+        insertOnly,
       });
     }
   }
 
   // Bills / expenses / returns / closings created on mobile (online) → desktop local DB.
-  const sales = await pullServerSales().catch(() => 0);
-  const expenses = await pullServerExpenses().catch(() => 0);
-  const returns = await pullServerReturns().catch(() => 0);
-  const closings = await pullServerClosings().catch(() => 0);
+  const onPullError = (label: string) => (err: unknown) => {
+    pullErrors.push(apiError(err, label));
+    return 0;
+  };
+  const sales = await pullServerSales(5, insertOnly).catch(onPullError('Could not download bills'));
+  const expenses = await pullServerExpenses(insertOnly).catch(onPullError('Could not download expenses'));
+  const returns = await pullServerReturns(insertOnly).catch(onPullError('Could not download returns'));
+  const closings = await pullServerClosings(insertOnly).catch(onPullError('Could not download closings'));
 
   // Refresh disk cache from the live pull so Billing / ProductList see new mobile rows.
   // Write then bump once (do not invalidate-first — that races listeners onto an empty cache).
   try {
-    const { writeCachedProducts, writeCachedCategories, bumpCatalogRevision } = await import(
-      '../services/catalogCache'
-    );
     if (products.length) {
       await writeCachedProducts(products, products.length, 'replace');
     }
-    if (categories.length) {
+    if (categories.length && !insertOnly) {
       await writeCachedCategories(categories);
     }
     bumpCatalogRevision();
   } catch (err) {
     console.warn('[KDSPOZ] catalog cache refresh failed:', err);
-    try {
-      const { bumpCatalogRevision } = await import('../services/catalogCache');
-      bumpCatalogRevision();
-    } catch {
-      /* ignore */
-    }
+    bumpCatalogRevision();
   }
 
-  if (products.length && catalogWritten === 0 && !pullErrors.some((e) => /local database/i.test(e))) {
+  if (!insertOnly && products.length && catalogWritten === 0 && !pullErrors.some((e) => /local database/i.test(e))) {
     pullErrors.push(`Downloaded ${products.length} products but none were saved locally`);
   } else if (!products.length && categories.length > 0 && !pullErrors.length) {
     // Shop has categories on live but product download returned empty — likely auth/API issue.
@@ -814,19 +1017,21 @@ export async function pullEverythingToSqlite(): Promise<{
   return {
     // Report what landed in SQLite (0 if download or local write failed).
     products: products.length ? catalogWritten : 0,
-    categories: (categories || []).length,
-    brands: (brands || []).length,
-    customers: customerRows.length,
+    categories: categoriesWritten,
+    brands: brandsWritten,
+    customers: customersWritten,
     sales,
     expenses,
     returns,
     closings,
+    ...(pullErrors.length ? { errors: pullErrors } : {}),
   };
 }
 
 export type SyncResult = {
   synced: number;
   failed: number;
+  skipped?: number;
   pulled?: {
     products: number;
     categories: number;
@@ -836,14 +1041,13 @@ export type SyncResult = {
     expenses?: number;
     returns?: number;
     closings?: number;
+    errors?: string[];
   };
 };
 
 /**
  * Two-way sync with live DB (mobile is online-only, so live DB may have newer masters/bills):
- * 1) PULL live catalog first (so Windows installs get server variant ids / pack barcodes)
- * 2) PUSH desktop pending sales + queue → server (resilient to stale ids / barcode clashes)
- * 3) PULL recent bills/expenses again after push
+ * Push local changes before pulling, so a download cannot overwrite pending edits.
  */
 export async function syncNow(): Promise<SyncResult> {
   if (!isDesktopOfflineCapable()) return { synced: 0, failed: 0 };
@@ -851,34 +1055,19 @@ export async function syncNow(): Promise<SyncResult> {
   if (!navigator.onLine) {
     useConnectivityStore.getState().setOnline(false);
     useConnectivityStore.getState().setLastSyncError('No internet connection');
-    return { synced: 0, failed: 0 };
+    return { synced: 0, failed: 1 };
   }
 
   useConnectivityStore.getState().setSyncing(true);
   useConnectivityStore.getState().setLastSyncError('');
   try {
+    const push = await flushOutbox();
+    if (push.failed) return push;
     let pulled: SyncResult['pulled'];
     if (hasSqliteBridge()) {
-      // Catalog first — reduces "variant not found" / duplicate barcode from stale local ids.
       pulled = await pullEverythingToSqlite();
     }
-    const push = await flushOutbox();
-    if (hasSqliteBridge()) {
-      // Refresh transactional rows created on other devices while we pushed.
-      const sales = await pullServerSales().catch(() => 0);
-      const expenses = await pullServerExpenses().catch(() => 0);
-      const returns = await pullServerReturns().catch(() => 0);
-      const closings = await pullServerClosings().catch(() => 0);
-      if (pulled) {
-        pulled = {
-          ...pulled,
-          sales: (pulled.sales || 0) + sales,
-          expenses: (pulled.expenses || 0) + expenses,
-          returns: (pulled.returns || 0) + returns,
-          closings: (pulled.closings || 0) + closings,
-        };
-      }
-    }
+    if (pulled?.errors?.length) return { ...push, failed: push.failed + 1, pulled };
     const syncedAt = new Date().toISOString();
     await sqliteSetMeta('last_sync_at', syncedAt).catch(() => undefined);
     useConnectivityStore.getState().setLastSyncAt(syncedAt);
@@ -886,7 +1075,7 @@ export async function syncNow(): Promise<SyncResult> {
   } catch (err) {
     const message = apiError(err, err instanceof Error ? err.message : String(err));
     useConnectivityStore.getState().setLastSyncError(message);
-    return { synced: 0, failed: 0 };
+    return { synced: 0, failed: 1 };
   } finally {
     useConnectivityStore.getState().setSyncing(false);
     if (hasSqliteBridge()) {
@@ -901,8 +1090,6 @@ export async function syncNow(): Promise<SyncResult> {
   }
 }
 
-registerAutoSyncRunner(syncNow);
-
 export function startOutboxSync(): () => void {
   if (!isDesktopOfflineCapable()) return () => {};
   void refreshPendingCount();
@@ -910,9 +1097,6 @@ export function startOutboxSync(): () => void {
     const s = useConnectivityStore.getState();
     if (s.manualOffline) return;
     s.setOnline(true);
-    if (s.autoSync) {
-      void triggerAutoSync();
-    }
   };
   const onOffline = () => useConnectivityStore.getState().setOnline(false);
   window.addEventListener('online', onOnline);

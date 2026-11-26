@@ -657,6 +657,7 @@ function registerIpc() {
       brands: options?.brands || [],
       clearProducts: options?.clearProducts === true,
       syncStock: options?.syncStock !== false,
+      insertOnly: options?.insertOnly === true,
     });
     return { ok: true, ...result };
   });
@@ -668,8 +669,10 @@ function registerIpc() {
       limit: options?.limit,
       offset: options?.offset,
       categoryId: options?.categoryId,
+      brandId: options?.brandId,
+      status: options?.status,
     });
-    return { ok: true, items, total: offlineDb.countProducts(db) };
+    return { ok: true, items, total: offlineDb.countProducts(db, options) };
   });
 
   ipcMain.handle('sqlite:get-product', async (_event, options) => {
@@ -690,7 +693,7 @@ function registerIpc() {
 
   ipcMain.handle('sqlite:replace-customers', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    const result = offlineDb.replaceCustomers(db, options?.customers || []);
+    const result = offlineDb.replaceCustomers(db, options?.customers || [], options?.insertOnly === true);
     return { ok: true, ...result };
   });
 
@@ -733,6 +736,12 @@ function registerIpc() {
     return { ok: true, rows, pending: rows.length };
   });
 
+  ipcMain.handle('sqlite:retry-missing-variant-sales', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    const count = offlineDb.retryMissingVariantSales(db);
+    return { ok: true, count };
+  });
+
   ipcMain.handle('sqlite:mark-sale-synced', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
     offlineDb.markSaleSynced(db, options?.clientBillId, options?.serverBillId);
@@ -741,7 +750,7 @@ function registerIpc() {
 
   ipcMain.handle('sqlite:mark-sale-error', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    offlineDb.markSaleSyncError(db, options?.clientBillId, options?.message, options?.attempts);
+    offlineDb.markSaleSyncError(db, options?.clientBillId, options?.message, options?.attempts, options?.localOnly === true);
     return { ok: true, pending: offlineDb.pendingSaleCount(db) };
   });
 
@@ -818,7 +827,7 @@ function registerIpc() {
     const table = String(options?.table || '');
     const allowed = new Set(['units', 'tax_groups', 'offers', 'expense_categories']);
     if (!allowed.has(table)) throw new Error(`Table not allowed: ${table}`);
-    return { ok: true, ...offlineDb.replaceJsonTable(db, table, options?.rows || []) };
+    return { ok: true, ...offlineDb.replaceJsonTable(db, table, options?.rows || [], 'id', options?.insertOnly === true) };
   });
 
   ipcMain.handle('sqlite:list-json-table', async (_event, options) => {
@@ -861,7 +870,7 @@ function registerIpc() {
   });
   ipcMain.handle('sqlite:replace-suppliers', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    return { ok: true, ...offlineDb.replaceSuppliers(db, options?.suppliers || []) };
+    return { ok: true, ...offlineDb.replaceSuppliers(db, options?.suppliers || [], options?.insertOnly === true) };
   });
   ipcMain.handle('sqlite:list-suppliers', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
@@ -887,9 +896,21 @@ function registerIpc() {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, ...offlineDb.upsertProductLocal(db, options?.product || {}) };
   });
+  ipcMain.handle('sqlite:upsert-products-and-queue', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.upsertProductsAndQueue(db, options?.products, options?.entry) };
+  });
   ipcMain.handle('sqlite:delete-product', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, ...offlineDb.deleteProductLocal(db, options?.id) };
+  });
+  ipcMain.handle('sqlite:delete-product-and-queue', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.deleteProductAndQueue(db, options?.id) };
+  });
+  ipcMain.handle('sqlite:delete-all-products', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.deleteAllProductsAndQueue(db) };
   });
   ipcMain.handle('sqlite:delete-category', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
@@ -935,6 +956,10 @@ function registerIpc() {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, ...offlineDb.saveStockMovement(db, options?.row || {}) };
   });
+  ipcMain.handle('sqlite:save-stock-movements-and-queue', async (_event, options) => {
+    const db = shopSqlite(options?.shopCode);
+    return { ok: true, ...offlineDb.saveStockMovementsAndQueue(db, options?.entries) };
+  });
   ipcMain.handle('sqlite:list-stock-movements', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
     return { ok: true, items: offlineDb.listStockMovements(db, options || {}) };
@@ -957,11 +982,11 @@ function registerIpc() {
   });
   ipcMain.handle('sqlite:generate-barcodes', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    return { ok: true, data: offlineDb.generateBarcodesLocal(db, options?.variantIds) };
+    return { ok: true, data: offlineDb.generateBarcodesAndQueue(db, options?.variantIds || []) };
   });
   ipcMain.handle('sqlite:ensure-quantity-barcodes', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    return { ok: true, data: offlineDb.ensureQuantityBarcodesLocal(db, options?.items) };
+    return { ok: true, data: offlineDb.generateBarcodesAndQueue(db, options?.items || [], true) };
   });
   ipcMain.handle('sqlite:mark-sync-queue-done', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
@@ -970,7 +995,7 @@ function registerIpc() {
   });
   ipcMain.handle('sqlite:mark-sync-queue-error', async (_event, options) => {
     const db = shopSqlite(options?.shopCode);
-    offlineDb.markSyncQueueError(db, options?.id, options?.message, options?.attempts);
+    offlineDb.markSyncQueueError(db, options?.id, options?.message, options?.attempts, options?.localOnly === true);
     return { ok: true };
   });
 

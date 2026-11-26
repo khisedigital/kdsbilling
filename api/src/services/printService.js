@@ -1,5 +1,47 @@
 const { DEVANAGARI, renderIndicLine, paperDotsForMarkup } = require('./indicEscPos');
 const { getMasterModels } = require('../models/master');
+const qrcode = require('qrcode-generator');
+
+function paymentQrData(upiId, shopName, amount) {
+  const id = String(upiId || '').trim();
+  const value = Number(amount);
+  if (!id || !Number.isFinite(value) || value <= 0 || value.toFixed(2) === '0.00') return '';
+  return `upi://pay?pa=${encodeURIComponent(id)}&pn=${encodeURIComponent(String(shopName || '').trim())}&am=${value.toFixed(2)}&cu=INR`;
+}
+
+function makePaymentQr(data) {
+  const qr = qrcode(0, 'M');
+  qr.addData(data);
+  qr.make();
+  return qr;
+}
+
+function paymentQrRaster(data, width) {
+  const qr = makePaymentQr(data);
+  const modules = qr.getModuleCount();
+  const scale = Math.min(4, Math.floor(width / (modules + 8)));
+  if (scale < 3) throw new Error('Payment QR is too large for this printer.');
+  const size = (modules + 8) * scale;
+  const left = Math.floor((width - size) / 2);
+  const widthBytes = width / 8;
+  const chunks = [];
+  for (let y0 = 0; y0 < size; y0 += 24) {
+    const rows = Math.min(24, size - y0);
+    const band = Buffer.alloc(8 + widthBytes * rows);
+    band.set([0x1d, 0x76, 0x30, 0, widthBytes, 0, rows, 0]);
+    for (let y = y0; y < y0 + rows; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const col = Math.floor((x - left) / scale) - 4;
+        const row = Math.floor(y / scale) - 4;
+        if (row >= 0 && row < modules && col >= 0 && col < modules && qr.isDark(row, col)) {
+          band[8 + (y - y0) * widthBytes + Math.floor(x / 8)] |= 0x80 >> (x % 8);
+        }
+      }
+    }
+    chunks.push(band);
+  }
+  return Buffer.concat(chunks);
+}
 
 function formatMoneyThermal(amount) {
   const n = parseFloat(amount);
@@ -185,14 +227,8 @@ function buildReceiptPayload(
   const invoiceTitle = (mr && String(shopSettings.invoiceTitleMr || '').trim()) || shopSettings.invoiceTitle || '';
   const terms = (mr && String(shopSettings.termsMr || '').trim()) || shopSettings.terms || '';
 
-  // Generate UPI payment string if enabled
-  let paymentQrData = '';
-  if (shopSettings.enablePaymentQr === true && shopSettings.paymentQrUpiId) {
-    const upiId = encodeURIComponent(shopSettings.paymentQrUpiId.trim());
-    const amount = Math.round(parseFloat(bill.total_amount) * 100) / 100;
-    const billNo = encodeURIComponent(String(bill.bill_number || 'Bill').substring(0, 80));
-    paymentQrData = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(shopName)}&am=${amount}&tn=${billNo}`;
-  }
+  const upiId = shopSettings.showUpi !== false ? String(shopSettings.upiId || '').trim() : '';
+  const qrData = paymentQrData(upiId, shopName, bill.total_amount);
 
   return {
     shopName,
@@ -212,15 +248,12 @@ function buildReceiptPayload(
     secondaryPhone: shopSettings.secondaryPhone || '',
     email: shopSettings.email || '',
     website: shopSettings.website || '',
-    upiId: (shopSettings.showUpi !== false && shopSettings.upiId) ? shopSettings.upiId : '',
+    upiId,
     terms: shopSettings.showTerms !== false ? terms : '',
     billFooter: footer,
     showLogo: shopSettings.showLogo !== false,
     logoUrl: (shopSettings.showLogo !== false && shopSettings.logoUrl) ? resolveAbsoluteUrl(shopSettings.logoUrl, publicBaseUrl) : null,
-    billQrCodeType: shopSettings.billQrCodeType || 'none',
-    enablePaymentQr: shopSettings.enablePaymentQr === true,
-    paymentQrUpiId: (shopSettings.enablePaymentQr === true && shopSettings.paymentQrUpiId) ? shopSettings.paymentQrUpiId : '',
-    paymentQrData,
+    paymentQrData: qrData,
     billNumber: bill.bill_number,
     date: resolveBillDate(bill),
     customer: bill.customer?.name || (language === 'mr' ? 'काउंटर' : 'Walk-in'),
@@ -581,7 +614,7 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
     const ro = payload.roundOff;
     lines.push(row(copy.round, `${ro > 0 ? '+' : '-'}${formatMoneyThermal(Math.abs(ro))}`));
   }
-  add80mmGap();
+  lines.push('');
   lines.push(`<B>${row(copy.total, formatMoneyThermal(payload.total))}</B>`);
   lines.push(divider('-'));
   for (const p of payload.payments) {
@@ -615,6 +648,7 @@ function renderThermal(payload, charsPerLine = 32, language = 'en') {
     charsPerLine,
     lines,
     raw: lines.join('\n'),
+    paymentQrData: payload.paymentQrData,
   };
 }
 
@@ -657,6 +691,9 @@ function renderA4(payload, language = 'en') {
   const upiHtml = payload.upiId
     ? `<div class="pay-row"><span>UPI</span><span><strong>${escapeHtml(payload.upiId)}</strong></span></div>`
     : '';
+  const paymentQrHtml = payload.paymentQrData
+    ? `<div class="payment-qr">${makePaymentQr(payload.paymentQrData).createSvgTag({ cellSize: 4, margin: 16, scalable: true })}<div>Pay Now</div></div>`
+    : '';
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
@@ -686,10 +723,12 @@ function renderA4(payload, language = 'en') {
       th{background:#f3f4f6;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#4b5563}
       .item-tax{font-size:10px;line-height:1.35;margin-top:2px}
       .totals{margin-top:12px;margin-left:auto;width:280px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
-      .totals .row{display:flex;justify-content:space-between;padding:3px 0}
+      .totals .row{display:flex;justify-content:space-between;gap:16px;padding:5px 0;line-height:1.45}
       .totals .grand{border-top:2px solid #111;margin-top:6px;padding-top:8px;font-size:16px;font-weight:700}
       .pay{margin-top:12px;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px}
       .pay-row{display:flex;justify-content:space-between;max-width:280px;margin-left:auto;padding:2px 0}
+      .payment-qr{text-align:center;margin:12px 0;font:11px Arial,sans-serif;break-inside:avoid}
+      .payment-qr svg{display:block;width:150px;height:150px;margin:0 auto}
       .footer{text-align:center;margin-top:24px;padding-top:10px;border-top:1px solid #d1d5db;color:#374151;font-family:Arial,Helvetica,'Nirmala UI','Noto Sans Devanagari',Mangal,sans-serif;font-size:13px;width:100%}
       .cut-space{height:16mm;width:100%}
       @media print {
@@ -743,6 +782,7 @@ function renderA4(payload, language = 'en') {
       <div class="row grand"><span>${escapeHtml(copy.total)}</span><span>${formatMoneyHtml(payload.total, payload.currency)}</span></div>
     </div>
     ${paymentsHtml ? `<div class="pay">${paymentsHtml}${upiHtml}</div>` : (upiHtml ? `<div class="pay">${upiHtml}</div>` : '')}
+    ${paymentQrHtml}
     <div class="footer">
       ${payload.terms ? `<p style="font-size:11px;color:#4b5563;margin-bottom:6px"><strong>Terms & Conditions:</strong> ${escapeHtml(payload.terms)}</p>` : ''}
       ${payload.billFooter && !/^thank you!?$/i.test(String(payload.billFooter).trim())
@@ -760,7 +800,7 @@ function renderA4(payload, language = 'en') {
  * Convert markup tags in thermal raw text to ESC/POS bytes (for server network print).
  * Tags: <C> <CB> <CD> <CM> <B> <D> <M> <L> <R>
  */
-function thermalMarkupToEscPos(rawText) {
+function thermalMarkupToEscPos(rawText, qrData = '', charsPerLine = 32) {
   const INIT = Buffer.from([0x1b, 0x40]);
   const RESET = Buffer.from([0x1b, 0x61, 0x00, 0x1d, 0x21, 0x00, 0x1b, 0x21, 0x00]);
   const FEED = Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x0a]);
@@ -848,6 +888,9 @@ function thermalMarkupToEscPos(rawText) {
     i += 1;
   }
   flushText();
+  if (qrData) {
+    chunks.push(RESET, paymentQrRaster(qrData, charsPerLine <= 32 ? 384 : 576));
+  }
   chunks.push(FEED, CUT);
   return Buffer.concat(chunks);
 }

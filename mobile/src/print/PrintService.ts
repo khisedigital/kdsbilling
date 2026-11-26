@@ -8,6 +8,7 @@ import {
   toPlainReceipt,
 } from './escpos';
 import { hasDevanagari } from './indicText';
+import { insertPaymentQr } from './qrCodeGenerator';
 
 export { buildEscPosBytes, sanitizeEscPosText, toPlainReceipt } from './escpos';
 export type { ThermalPrintPayload } from './escpos';
@@ -64,7 +65,7 @@ function decodeBase64(value: string): number[] {
 }
 
 /** Native phones have no DOM canvas. Marathi lines use the native receipt raster. */
-async function receiptBytes(plainOrMarkup: string, charsPerLine: number): Promise<number[]> {
+async function receiptBytes(plainOrMarkup: string, charsPerLine: number, qrData = ''): Promise<number[]> {
   const plain = toPlainReceipt(plainOrMarkup, charsPerLine);
   const native = NativeModules.KdsLabelPrinter as
     | { encodeReceipt?: (text: string, cols: number) => Promise<string> }
@@ -76,17 +77,19 @@ async function receiptBytes(plainOrMarkup: string, charsPerLine: number): Promis
   ) {
     const encoded = await native.encodeReceipt(plain, charsPerLine);
     const bytes = decodeBase64(String(encoded || ''));
-    if (bytes.length) return bytes;
+    if (bytes.length) return qrData ? insertPaymentQr(bytes, qrData, charsPerLine) : bytes;
   }
-  return buildEscPosBytes(plainOrMarkup, charsPerLine);
+  const bytes = buildEscPosBytes(plainOrMarkup, charsPerLine);
+  return qrData ? insertPaymentQr(bytes, qrData, charsPerLine) : bytes;
 }
 
 async function printPayload(
   moduleName: 'RNBLEPrinter' | 'RNNetPrinter',
   plainOrMarkup: string,
   charsPerLine = 32,
+  qrData = '',
 ): Promise<void> {
-  const bytes = await receiptBytes(plainOrMarkup, charsPerLine);
+  const bytes = await receiptBytes(plainOrMarkup, charsPerLine, qrData);
   if (!bytes.length) throw new Error('Nothing to print.');
   await printRawBase64(moduleName, bytesToBase64(bytes));
 }
@@ -166,7 +169,9 @@ export async function scanBluetoothPrinters(): Promise<Array<{ name: string; add
 export async function printViaBluetooth(
   address: string,
   text: string,
-  charsPerLine = 32
+  charsPerLine = 32,
+  _paper?: '58' | '80',
+  qrData = '',
 ): Promise<void> {
   if (!address?.trim()) throw new Error('No Bluetooth printer selected.');
 
@@ -178,14 +183,14 @@ export async function printViaBluetooth(
 
   const iosBle = getIosBle();
   if (iosBle) {
-    const bytes = await receiptBytes(payload, charsPerLine);
+    const bytes = await receiptBytes(payload, charsPerLine, qrData);
     if (!bytes.length) throw new Error('Nothing to print.');
     await iosBle.print(address, bytesToBase64(bytes));
     return;
   }
 
   await ensureBleConnected(address);
-  await printPayload('RNBLEPrinter', payload, charsPerLine);
+  await printPayload('RNBLEPrinter', payload, charsPerLine, qrData);
   await delay(estimatePrintFlushMs(payload));
 }
 
@@ -196,7 +201,9 @@ export async function printViaNetwork(
   host: string,
   port: number,
   text: string,
-  charsPerLine = 32
+  charsPerLine = 32,
+  _paper?: '58' | '80',
+  qrData = '',
 ): Promise<void> {
   if (!host?.trim()) throw new Error('No network printer IP configured.');
 
@@ -209,12 +216,12 @@ export async function printViaNetwork(
   const run = async () => {
     const iosNet = getIosNet();
     if (iosNet) {
-      const bytes = await receiptBytes(payload, charsPerLine);
+      const bytes = await receiptBytes(payload, charsPerLine, qrData);
       if (!bytes.length) throw new Error('Nothing to print.');
       await iosNet.printRaw(host.trim(), port, bytesToBase64(bytes));
     } else {
       await ensureNetConnected(host, port);
-      await printPayload('RNNetPrinter', payload, charsPerLine);
+      await printPayload('RNNetPrinter', payload, charsPerLine, qrData);
     }
     // Head needs wall time after the socket write (same as desktop linger).
     await delay(Math.max(estimatePrintFlushMs(payload), 3500));
@@ -295,6 +302,7 @@ export async function printViaSystem(
   _text: string,
   _charsPerLine = 32,
   _paper?: '58' | '80',
+  _qrData?: string,
 ): Promise<void> {
   throw new Error('Installed system printers are only available in the desktop app.');
 }

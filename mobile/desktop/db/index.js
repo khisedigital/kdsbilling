@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { SCHEMA_SQL } = require('./schema');
 const extra = require('./extra');
@@ -195,8 +196,12 @@ function readShopSettings(db) {
 }
 
 /** Upsert catalog snapshot. Pass clearProducts:true on a full replace sync. */
-function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false, syncStock = true } = {}) {
+function replaceCatalog(db, { products = [], categories = [], brands = [], clearProducts = false, syncStock = true, insertOnly = false } = {}) {
+  if (insertOnly && clearProducts) throw new Error('Cannot clear the catalog during an add-only pull');
   const ts = nowIso();
+  let writtenProducts = 0;
+  let writtenCategories = 0;
+  let writtenBrands = 0;
   const allowSyncStock = syncStock !== false ? 1 : 0;
   const upsertCat = db.prepare(
     `INSERT INTO categories (id, name, name_mr, sort_order, status, json, updated_at)
@@ -252,6 +257,7 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
     }
     for (const c of categories) {
       if (!c?.id) continue;
+      if (insertOnly && db.prepare('SELECT 1 FROM categories WHERE id = ?').get(String(c.id))) continue;
       upsertCat.run(
         String(c.id),
         String(c.name || ''),
@@ -261,9 +267,11 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
         JSON.stringify(c),
         ts,
       );
+      writtenCategories += 1;
     }
     for (const b of brands) {
       if (!b?.id) continue;
+      if (insertOnly && db.prepare('SELECT 1 FROM brands WHERE id = ?').get(String(b.id))) continue;
       upsertBrand.run(
         String(b.id),
         String(b.name || ''),
@@ -272,9 +280,52 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
         JSON.stringify(b),
         ts,
       );
+      writtenBrands += 1;
     }
-    for (const p of products) {
-      if (!p?.id) continue;
+    for (const incoming of products) {
+      if (!incoming?.id) continue;
+      let p = incoming;
+      const current = insertOnly ? getProduct(db, String(p.id)) : null;
+      if (current) {
+        const existingIds = new Set((current.variants || []).map((v) => String(v.id)));
+        const additions = (p.variants || []).filter((v) => v?.id && !existingIds.has(String(v.id)));
+        let addedBarcodes = 0;
+        const existingVariants = (current.variants || []).map((variant) => {
+          const remote = (p.variants || []).find((v) => String(v?.id) === String(variant.id));
+          if (!remote) return variant;
+          const codes = normalizeBarcodeRows(variant);
+          const known = new Set(codes.map((row) => row.barcode));
+          for (const row of normalizeBarcodeRows(remote)) {
+            if (known.has(row.barcode)) continue;
+            codes.push({ ...row, is_primary: codes.some((code) => code.is_primary) ? 0 : row.is_primary });
+            known.add(row.barcode);
+            addedBarcodes += 1;
+          }
+          return { ...variant, barcodes: codes };
+        });
+        if (!additions.length && !addedBarcodes) continue;
+        p = { ...current, variants: [...existingVariants, ...additions] };
+      }
+      if (insertOnly) {
+        const incomingCodes = new Map();
+        for (const v of p.variants || []) {
+          const existingVariant = v?.id && db.prepare('SELECT product_id FROM product_variants WHERE id = ?').get(String(v.id));
+          if (existingVariant && String(existingVariant.product_id) !== String(p.id)) {
+            throw new Error('Cannot import live product: its variant belongs to another local product');
+          }
+          for (const row of normalizeBarcodeRows(v)) {
+            const owner = incomingCodes.get(row.barcode);
+            if (owner && owner !== String(v.id)) {
+              throw new Error('Cannot import live product: its barcode belongs to another local variant');
+            }
+            incomingCodes.set(row.barcode, String(v.id));
+            const existing = db.prepare('SELECT variant_id FROM variant_barcodes WHERE barcode = ?').get(row.barcode);
+            if (existing && String(existing.variant_id) !== String(v.id)) {
+              throw new Error('Cannot import live product: its barcode belongs to another local variant');
+            }
+          }
+        }
+      }
       // Preserve local stock on catalog pull — write those qtys into the JSON blob too.
       const variantsIn = Array.isArray(p.variants) ? p.variants : [];
       const variantsOut = variantsIn.map((v) => {
@@ -323,6 +374,7 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
         JSON.stringify(productRow),
         ts,
       );
+      writtenProducts += 1;
       for (const v of variantsOut) {
         if (!v?.id) continue;
         // Prefer plain (non-pack) barcode in the column; pack codes live in variant_barcodes.
@@ -364,7 +416,7 @@ function replaceCatalog(db, { products = [], categories = [], brands = [], clear
     }
     throw err;
   }
-  return { products: products.length, categories: categories.length, brands: brands.length };
+  return { products: writtenProducts, categories: writtenCategories, brands: writtenBrands };
 }
 
 /** Overlay live product_variants.stock_qty onto the denormalized products.json blob. */
@@ -382,6 +434,38 @@ function hydrateProductStock(db, product) {
   });
   const total = variants.reduce((s, v) => s + (Number(v.stockQty ?? v.stock_qty) || 0), 0);
   return { ...product, variants, stockQty: total, stock_qty: total };
+}
+
+function hydrateProductBarcodes(db, product) {
+  if (!product?.id) return product;
+  const rows = db.prepare(
+    `SELECT variant_id, barcode, quantity, is_primary FROM variant_barcodes
+     WHERE product_id = ? ORDER BY is_primary DESC, barcode`,
+  ).all(String(product.id));
+  const byVariant = new Map();
+  for (const row of rows) {
+    const id = String(row.variant_id);
+    if (!byVariant.has(id)) byVariant.set(id, []);
+    byVariant.get(id).push({
+      barcode: row.barcode,
+      quantity: row.quantity,
+      is_primary: !!row.is_primary,
+    });
+  }
+  const variants = (product.variants || []).map((variant) => {
+    const barcodes = byVariant.get(String(variant.id));
+    if (!barcodes) return variant;
+    const plain = barcodes.find((row) => row.quantity == null);
+    return {
+      ...variant,
+      barcode: plain?.barcode || null,
+      barcodes,
+      quantityBarcodes: barcodes
+        .filter((row) => row.quantity != null)
+        .map((row) => ({ barcode: row.barcode, quantity: row.quantity })),
+    };
+  });
+  return { ...product, variants };
 }
 
 /** Re-link product and variant tax groups from the local tax master table. */
@@ -429,7 +513,7 @@ function hydrateProductTax(db, product) {
 }
 
 function hydrateProduct(db, product) {
-  return hydrateProductTax(db, hydrateProductStock(db, product));
+  return hydrateProductTax(db, hydrateProductBarcodes(db, hydrateProductStock(db, product)));
 }
 
 /** Keep products.json variants[].stockQty aligned after column updates. */
@@ -467,11 +551,13 @@ function syncVariantStockIntoProductJson(db, variantId, stockQty) {
   }
 }
 
-function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = null } = {}) {
+function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = null, brandId = null, status = 'active' } = {}) {
   const q = String(search || '').trim();
   const lim = Math.max(1, Math.min(50000, Math.floor(Number(limit) || 100)));
   const off = Math.max(0, Math.floor(Number(offset) || 0));
   const cat = categoryId != null && String(categoryId).trim() ? String(categoryId).trim() : null;
+  const filters = `status = ? AND (? IS NULL OR brand_id = ?)`;
+  const filterParams = [status || 'active', brandId || null, brandId || null];
   let rows;
   if (q) {
     const safe = q.replace(/[%_]/g, '');
@@ -479,16 +565,6 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
     const prefix = `${safe}%`;
     // Exact / prefix matches first so "Sugar" beats "… sugar free …" in long catalogs.
     // Include variant_barcodes so pack/quantity barcodes (250g, 1kg packs) are findable.
-    const orderSql = `ORDER BY
-           CASE
-             WHEN name = ? COLLATE NOCASE THEN 0
-             WHEN IFNULL(name_mr,'') = ? COLLATE NOCASE THEN 0
-             WHEN name LIKE ? COLLATE NOCASE THEN 1
-             WHEN IFNULL(name_mr,'') LIKE ? COLLATE NOCASE THEN 1
-             ELSE 2
-           END,
-           is_favorite DESC,
-           name COLLATE NOCASE`;
     const runSearch = (withPackIndex) => {
       const packClause = withPackIndex
         ? `OR id IN (
@@ -499,11 +575,28 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
       // Also match barcodes embedded in product JSON (pack codes) when index is empty/old.
       const jsonClause = `OR json LIKE ?`;
       const jsonLike = `%"barcode":"${safe}"%`;
+      const orderSql = `ORDER BY
+           CASE
+             WHEN id IN (SELECT product_id FROM product_variants
+               WHERE sku = ? COLLATE NOCASE OR barcode = ? COLLATE NOCASE) THEN 0
+             ${withPackIndex ? `WHEN id IN (SELECT product_id FROM variant_barcodes
+               WHERE barcode = ? COLLATE NOCASE) THEN 0` : ''}
+             WHEN name = ? COLLATE NOCASE THEN 1
+             WHEN IFNULL(name_mr,'') = ? COLLATE NOCASE THEN 1
+             WHEN name LIKE ? COLLATE NOCASE THEN 2
+             WHEN IFNULL(name_mr,'') LIKE ? COLLATE NOCASE THEN 2
+             ELSE 3
+           END,
+           is_favorite DESC,
+           name COLLATE NOCASE`;
+      const orderParams = [
+        safe, safe, ...(withPackIndex ? [safe] : []), safe, safe, prefix, prefix, lim, off,
+      ];
       if (cat) {
         return db
           .prepare(
             `SELECT json FROM products
-             WHERE status = 'active' AND category_id = ? AND (
+             WHERE ${filters} AND category_id = ? AND (
                name LIKE ? COLLATE NOCASE
                OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
                OR id IN (
@@ -518,14 +611,14 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
           )
           .all(
             ...(withPackIndex
-              ? [cat, like, like, like, like, safe, like, jsonLike, safe, safe, prefix, prefix, lim, off]
-              : [cat, like, like, like, like, jsonLike, safe, safe, prefix, prefix, lim, off]),
+              ? [...filterParams, cat, like, like, like, like, safe, like, jsonLike, ...orderParams]
+              : [...filterParams, cat, like, like, like, like, jsonLike, ...orderParams]),
           );
       }
       return db
         .prepare(
           `SELECT json FROM products
-           WHERE status = 'active' AND (
+           WHERE ${filters} AND (
              name LIKE ? COLLATE NOCASE
              OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
              OR id IN (
@@ -540,8 +633,8 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
         )
         .all(
           ...(withPackIndex
-            ? [like, like, like, like, safe, like, jsonLike, safe, safe, prefix, prefix, lim, off]
-            : [like, like, like, like, jsonLike, safe, safe, prefix, prefix, lim, off]),
+            ? [...filterParams, like, like, like, like, safe, like, jsonLike, ...orderParams]
+            : [...filterParams, like, like, like, like, jsonLike, ...orderParams]),
         );
     };
     try {
@@ -554,20 +647,20 @@ function listProducts(db, { search = '', limit = 100, offset = 0, categoryId = n
     rows = db
       .prepare(
         `SELECT json FROM products
-         WHERE status = 'active' AND category_id = ?
+         WHERE ${filters} AND category_id = ?
          ORDER BY is_favorite DESC, name COLLATE NOCASE
          LIMIT ? OFFSET ?`,
       )
-      .all(cat, lim, off);
+      .all(...filterParams, cat, lim, off);
   } else {
     rows = db
       .prepare(
         `SELECT json FROM products
-         WHERE status = 'active'
+         WHERE ${filters}
          ORDER BY is_favorite DESC, name COLLATE NOCASE
          LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...filterParams, lim, off);
   }
   return rows
     .map((r) => {
@@ -593,8 +686,20 @@ function getProduct(db, id) {
   }
 }
 
-function countProducts(db) {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM products WHERE status = 'active'`).get();
+function countProducts(db, { search = '', categoryId = null, brandId = null, status = 'active' } = {}) {
+  const safe = String(search || '').trim().replace(/[%_]/g, '');
+  const like = `%${safe}%`;
+  const row = db.prepare(
+    `SELECT COUNT(*) AS n FROM products
+     WHERE status = ? AND (? IS NULL OR category_id = ?) AND (? IS NULL OR brand_id = ?)
+       AND (? = '' OR name LIKE ? COLLATE NOCASE OR IFNULL(name_mr,'') LIKE ? COLLATE NOCASE
+         OR id IN (SELECT product_id FROM product_variants
+           WHERE sku LIKE ? COLLATE NOCASE OR IFNULL(barcode,'') LIKE ? COLLATE NOCASE)
+         OR id IN (SELECT product_id FROM variant_barcodes
+           WHERE barcode = ? COLLATE NOCASE OR barcode LIKE ? COLLATE NOCASE)
+         OR json LIKE ?)`,
+  ).get(status || 'active', categoryId || null, categoryId || null, brandId || null, brandId || null,
+    safe, like, like, like, like, safe, like, `%"barcode":"${safe}"%`);
   return Number(row?.n) || 0;
 }
 
@@ -626,8 +731,9 @@ function listBrands(db) {
     .filter(Boolean);
 }
 
-function replaceCustomers(db, customers = []) {
+function replaceCustomers(db, customers = [], insertOnly = false) {
   const ts = nowIso();
+  let written = 0;
   const upsert = db.prepare(
     `INSERT INTO customers (id, name, phone, json, updated_at)
      VALUES (?, ?, ?, ?, ?)
@@ -639,6 +745,7 @@ function replaceCustomers(db, customers = []) {
     // Upsert only: update existing customers, insert new ones. Never wipe local rows.
     for (const c of customers) {
       if (!c?.id) continue;
+      if (insertOnly && db.prepare('SELECT 1 FROM customers WHERE id = ?').get(String(c.id))) continue;
       upsert.run(
         String(c.id),
         String(c.name || ''),
@@ -646,6 +753,7 @@ function replaceCustomers(db, customers = []) {
         JSON.stringify(c),
         ts,
       );
+      written += 1;
     }
     setMeta(db, 'customers_updated_at', ts);
     db.exec('COMMIT');
@@ -657,7 +765,7 @@ function replaceCustomers(db, customers = []) {
     }
     throw err;
   }
-  return { customers: customers.length };
+  return { customers: written };
 }
 
 function listCustomers(db, { search = '', limit = 200 } = {}) {
@@ -725,6 +833,9 @@ function adjustVariantStock(db, variantId, deltaQty) {
 function saveSale(db, sale) {
   const clientBillId = String(sale.clientBillId || '').trim();
   if (!clientBillId) throw new Error('clientBillId required');
+  if (sale.insertOnly && db.prepare('SELECT 1 FROM sales WHERE client_bill_id = ?').get(clientBillId)) {
+    return { clientBillId, skipped: true };
+  }
   const bill = sale.bill || {};
   const payload = sale.payload || {};
   const ts = sale.createdAt || nowIso();
@@ -863,6 +974,29 @@ function listPendingSales(db) {
   }));
 }
 
+function retryMissingVariantSales(db) {
+  const rows = db.prepare(
+    `SELECT DISTINCT s.client_bill_id, s.payload_json
+     FROM sales s JOIN sale_items i ON i.client_bill_id = s.client_bill_id
+     WHERE s.sync_status = 'local_only' AND s.server_bill_id IS NULL
+       AND i.variant_id IS NOT NULL
+       AND (
+         s.last_error = 'Variant not found: ' || i.variant_id
+       )`,
+  ).all();
+  const retry = db.prepare(
+    `UPDATE sales SET sync_status = 'pending'
+     WHERE client_bill_id = ? AND sync_status = 'local_only' AND server_bill_id IS NULL`,
+  );
+  let count = 0;
+  for (const row of rows) {
+    const payload = JSON.parse(row.payload_json);
+    if ((payload.clientBillId || payload.client_bill_id) !== row.client_bill_id) continue;
+    count += Number(retry.run(row.client_bill_id).changes);
+  }
+  return count;
+}
+
 function markSaleSynced(db, clientBillId, serverBillId) {
   db.prepare(
     `UPDATE sales
@@ -871,12 +1005,12 @@ function markSaleSynced(db, clientBillId, serverBillId) {
   ).run(serverBillId || null, nowIso(), String(clientBillId));
 }
 
-function markSaleSyncError(db, clientBillId, message, attempts) {
+function markSaleSyncError(db, clientBillId, message, attempts, localOnly = false) {
   db.prepare(
     `UPDATE sales
-     SET sync_attempts = ?, last_error = ?
-     WHERE client_bill_id = ?`,
-  ).run(Number(attempts) || 0, String(message || ''), String(clientBillId));
+     SET sync_attempts = ?, last_error = ?, sync_status = CASE WHEN ? THEN 'local_only' ELSE sync_status END
+     WHERE client_bill_id = ? AND sync_status = 'pending'`,
+  ).run(Number(attempts) || 0, String(message || ''), localOnly ? 1 : 0, String(clientBillId));
 }
 
 function deletePendingSale(db, clientBillId) {
@@ -999,6 +1133,18 @@ function getStatus(db) {
     catalogProductCount: Number(getMeta(db, 'catalog_product_count', '0')) || countProducts(db),
     pendingSales: pendingSaleCount(db),
     pendingQueue: Number(pendingQueue?.n) || 0,
+    localOnlyCount: Number(db.prepare(
+      `SELECT (SELECT COUNT(*) FROM sales WHERE sync_status = 'local_only')
+       + (SELECT COUNT(*) FROM sync_queue WHERE sync_status = 'local_only') AS n`,
+    ).get()?.n) || 0,
+    localOnlyRecords: db.prepare(
+      `SELECT 'sale' AS type, client_bill_id AS id, bill_number AS label, last_error AS error, created_at
+       FROM sales WHERE sync_status = 'local_only'
+       UNION ALL
+       SELECT entity_type AS type, id, entity_id AS label, last_error AS error, created_at
+       FROM sync_queue WHERE sync_status = 'local_only'
+       ORDER BY created_at DESC LIMIT 20`,
+    ).all(),
     heldCount: Number(held?.n) || 0,
   };
 }
@@ -1249,12 +1395,172 @@ function deleteHeldBill(db, id) {
 }
 
 function enqueueSync(db, { entityType, entityId, op, payload }) {
-  const id = `${entityType}:${entityId}:${op}:${Date.now()}`;
+  const id = `${entityType}:${entityId}:${op}:${randomUUID()}`;
   db.prepare(
     `INSERT INTO sync_queue (id, entity_type, entity_id, op, payload_json, sync_status, sync_attempts, created_at)
      VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
   ).run(id, String(entityType), String(entityId), String(op), JSON.stringify(payload || {}), nowIso());
   return { id };
+}
+
+function saveStockMovementsAndQueue(db, entries) {
+  if (!Array.isArray(entries) || !entries.length) throw new Error('Stock movements are required');
+  db.exec('BEGIN');
+  try {
+    const movements = entries.map(({ row, endpoint, item, notes }) => {
+      if (!row?.id || !row.variantId || !Number.isFinite(Number(row.qtyDelta))
+        || Number(row.qtyDelta) === 0 || !item || item.variantId !== row.variantId
+        || !['opening', 'in', 'out', 'adjust', 'damage'].includes(endpoint)) {
+        throw new Error('Invalid local stock movement');
+      }
+      if (!db.prepare('SELECT 1 FROM product_variants WHERE id = ?').get(row.variantId)) {
+        throw new Error(`Local variant not found: ${row.variantId}`);
+      }
+      const saved = extra.saveStockMovement(db, row);
+      enqueueSync(db, {
+        entityType: 'stock_movement',
+        entityId: row.id,
+        op: endpoint,
+        payload: { syncProtocol: 2, endpoint, item, notes },
+      });
+      return saved;
+    });
+    db.exec('COMMIT');
+    return { movements };
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function upsertProductsAndQueue(db, products, entry) {
+  if (!Array.isArray(products) || !products.length) throw new Error('Products are required');
+  if (!entry?.entityType || !entry?.entityId || !entry?.op) throw new Error('Sync entry is required');
+  db.exec('BEGIN');
+  try {
+    for (const product of products) extra.upsertProductLocal(db, product);
+    const queued = enqueueSync(db, entry);
+    db.exec('COMMIT');
+    return queued;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function deleteProductAndQueueInternal(db, id) {
+  const pendingSale = db.prepare(
+    `SELECT 1 FROM sale_items si
+     JOIN sales s ON s.client_bill_id = si.client_bill_id
+     JOIN product_variants v ON v.id = si.variant_id
+     WHERE v.product_id = ? AND s.sync_status IN ('pending', 'local_only') LIMIT 1`,
+  ).get(id);
+  if (pendingSale) throw new Error('Sync pending bills before deleting this product');
+  const referencedIds = new Set([
+    id,
+    ...db.prepare(`SELECT id FROM product_variants WHERE product_id = ?`).all(id).map((row) => String(row.id)),
+  ]);
+  const referencesProduct = (value) => {
+    if (typeof value === 'string') return referencedIds.has(value);
+    if (Array.isArray(value)) return value.some(referencesProduct);
+    return value != null && typeof value === 'object' && Object.values(value).some(referencesProduct);
+  };
+  const otherPending = db.prepare(
+    `SELECT payload_json FROM sync_queue
+     WHERE sync_status IN ('pending', 'local_only') AND NOT (entity_type = 'product' AND entity_id = ?)`,
+  ).all(id);
+  if (otherPending.some((row) => referencesProduct(JSON.parse(row.payload_json || '{}')))) {
+    throw new Error('Sync pending transactions before deleting this product');
+  }
+  const pendingCreate = db.prepare(
+    `SELECT 1 FROM sync_queue WHERE entity_type = 'product' AND entity_id = ?
+     AND op = 'create' AND sync_status = 'pending'`,
+  ).get(id);
+  db.prepare(
+    `DELETE FROM sync_queue WHERE entity_type = 'product' AND entity_id = ? AND sync_status = 'pending'`,
+  ).run(id);
+  const mappedIds = JSON.parse(getMeta(db, 'product_sync_id_map', '{}') || '{}');
+  if (!pendingCreate || mappedIds[id]) {
+    enqueueSync(db, { entityType: 'product', entityId: id, op: 'delete', payload: { id } });
+  }
+  extra.deleteProductLocal(db, id);
+}
+
+function deleteProductAndQueue(db, id) {
+  const productId = String(id || '').trim();
+  if (!productId) throw new Error('Product id is required');
+  db.exec('BEGIN');
+  try {
+    if (!db.prepare(`SELECT id FROM products WHERE id = ?`).get(productId)) {
+      throw new Error('Product not found in local database');
+    }
+    deleteProductAndQueueInternal(db, productId);
+    db.exec('COMMIT');
+    return { deleted: true };
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function deleteAllProductsAndQueue(db) {
+  db.exec('BEGIN');
+  try {
+    const products = db.prepare(`SELECT id FROM products`).all();
+    for (const product of products) {
+      deleteProductAndQueueInternal(db, String(product.id));
+    }
+    db.exec('COMMIT');
+    return { deleted: products.length };
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function generateBarcodesAndQueue(db, items, quantityMode = false) {
+  db.exec('BEGIN');
+  try {
+    const results = quantityMode
+      ? extra.ensureQuantityBarcodesLocal(db, items)
+      : extra.generateBarcodesLocal(db, items);
+    const expected = quantityMode ? items.length : new Set(items.filter(Boolean).map(String)).size;
+    if (results.length !== expected) throw new Error('Some product variants were not found');
+    const changedIds = [...new Set(results.filter((item) => item.generated).map((item) => item.variantId))];
+    const byProduct = new Map();
+    const findVariant = db.prepare(`SELECT product_id FROM product_variants WHERE id = ?`);
+    for (const id of changedIds) {
+      const row = findVariant.get(String(id));
+      if (!row) throw new Error('Product variant not found');
+      const productId = String(row.product_id);
+      if (!byProduct.has(productId)) byProduct.set(productId, new Set());
+      byProduct.get(productId).add(String(id));
+    }
+    const pendingCreate = db.prepare(
+      `SELECT 1 FROM sync_queue WHERE entity_type = 'product' AND entity_id = ?
+       AND op = 'create' AND sync_status = 'pending'`,
+    );
+    for (const [productId, variantIds] of byProduct) {
+      if (pendingCreate.get(productId)) continue;
+      const product = getProduct(db, productId);
+      if (!product) throw new Error('Product not found');
+      const variants = product.variants.filter((variant) => variantIds.has(String(variant.id))).map((variant) => ({
+        id: variant.id,
+        sellingPrice: Number(variant.sellingPrice ?? variant.selling_price) || 0,
+        barcodes: (variant.barcodes || []).filter((row) => row.quantity == null).map((row) => row.barcode),
+        quantityBarcodes: variant.quantityBarcodes || [],
+      }));
+      enqueueSync(db, {
+        entityType: 'product', entityId: productId, op: 'update',
+        payload: { id: productId, variantSyncMode: 'append', variants },
+      });
+    }
+    db.exec('COMMIT');
+    return results;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 function listPendingSyncQueue(db) {
@@ -1274,16 +1580,30 @@ function listPendingSyncQueue(db) {
 }
 
 function markSyncQueueDone(db, id) {
-  db.prepare(`UPDATE sync_queue SET sync_status = 'synced' WHERE id = ?`).run(String(id));
+  db.exec('BEGIN');
+  try {
+    const row = db.prepare(`SELECT entity_type, entity_id FROM sync_queue WHERE id = ?`).get(String(id));
+    db.prepare(`UPDATE sync_queue SET sync_status = 'synced' WHERE id = ?`).run(String(id));
+    if (row?.entity_type === 'stock_movement') {
+      db.prepare(`UPDATE stock_movements SET sync_status = 'synced',
+        json = json_set(json, '$.syncStatus', 'synced') WHERE id = ?`).run(row.entity_id);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
-function markSyncQueueError(db, id, message, attempts) {
+function markSyncQueueError(db, id, message, attempts, localOnly = false) {
   db.prepare(
-    `UPDATE sync_queue SET sync_attempts = ?, last_error = ? WHERE id = ?`,
-  ).run(Number(attempts) || 0, String(message || ''), String(id));
+    `UPDATE sync_queue SET sync_attempts = ?, last_error = ?,
+       sync_status = CASE WHEN ? THEN 'local_only' ELSE sync_status END
+     WHERE id = ? AND sync_status = 'pending'`,
+  ).run(Number(attempts) || 0, String(message || ''), localOnly ? 1 : 0, String(id));
 }
 
-function replaceJsonTable(db, table, rows, idKey = 'id') {
+function replaceJsonTable(db, table, rows, idKey = 'id', insertOnly = false) {
   const ts = nowIso();
   db.exec('BEGIN');
   try {
@@ -1301,6 +1621,7 @@ function replaceJsonTable(db, table, rows, idKey = 'id') {
     for (const row of rows || []) {
       const id = row?.[idKey] || row?.id;
       if (!id) continue;
+      if (insertOnly && db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(String(id))) continue;
       if (hasNameCol) {
         stmt.run(String(id), String(row?.name || ''), JSON.stringify(row), ts);
       } else {
@@ -1336,6 +1657,7 @@ function listJsonTable(db, table) {
 function saveExpense(db, expense) {
   const id = String(expense.id || '').trim();
   if (!id) throw new Error('expense.id required');
+  if (expense.insertOnly && db.prepare('SELECT 1 FROM expenses WHERE id = ?').get(id)) return { id };
   const catId = expense.categoryId || expense.category_id || null;
   const expenseDate = String(expense.expenseDate || expense.expense_date || nowIso().slice(0, 10));
   const fullExpense = {
@@ -1689,6 +2011,7 @@ module.exports = {
   adjustVariantStock,
   saveSale,
   listPendingSales,
+  retryMissingVariantSales,
   markSaleSynced,
   markSaleSyncError,
   deletePendingSale,
@@ -1705,6 +2028,11 @@ module.exports = {
   listHeldBills,
   deleteHeldBill,
   enqueueSync,
+  saveStockMovementsAndQueue,
+  upsertProductsAndQueue,
+  deleteAllProductsAndQueue,
+  deleteProductAndQueue,
+  generateBarcodesAndQueue,
   listPendingSyncQueue,
   markSyncQueueDone,
   markSyncQueueError,

@@ -672,7 +672,7 @@ export default function ShopSettingsScreen({}: Props) {
           style={styles.input}
         />
         <Text style={styles.hint}>
-          {t('When entered, "UPI: yourshop@upi" appears before the footer on printed receipts.')}
+          {t('When set, the UPI ID and a payment QR for the bill total are printed on receipts.')}
         </Text>
       </SectionCard>
 

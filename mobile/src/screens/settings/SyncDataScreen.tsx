@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Switch, Text } from 'react-native-paper';
+import { ActivityIndicator, Button, Text } from 'react-native-paper';
 import SectionCard from '../../components/ui/SectionCard';
 import { useT } from '../../i18n';
 import { isDesktopOfflineCapable } from '../../offline/capability';
 import { useConnectivityStore } from '../../offline/connectivityStore';
-import { sqliteGetMeta, sqlitePendingCount } from '../../offline/sqliteApi';
+import { sqliteGetMeta, sqlitePendingCount, sqliteStatus } from '../../offline/sqliteApi';
 import { syncNow, type SyncResult } from '../../offline/syncEngine';
 import { colors } from '../../theme/colors';
 import { common, spacing, typography } from '../../theme/layout';
@@ -32,8 +32,6 @@ export default function SyncDataScreen() {
   const t = useT();
   const online = useConnectivityStore((s) => s.online);
   const syncing = useConnectivityStore((s) => s.syncing);
-  const autoSync = useConnectivityStore((s) => s.autoSync);
-  const setAutoSync = useConnectivityStore((s) => s.setAutoSync);
   const pendingCount = useConnectivityStore((s) => s.pendingCount);
   const lastSyncError = useConnectivityStore((s) => s.lastSyncError);
   const lastSyncAt = useConnectivityStore((s) => s.lastSyncAt);
@@ -42,6 +40,10 @@ export default function SyncDataScreen() {
 
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [lastResult, setLastResult] = useState<SyncResult | null>(null);
+  const [localOnlyCount, setLocalOnlyCount] = useState(0);
+  const [localOnlyRecords, setLocalOnlyRecords] = useState<Array<{
+    type: string; id: string; label: string | null; error: string | null;
+  }>>([]);
 
   const refreshMeta = useCallback(async () => {
     if (!isDesktopOfflineCapable()) {
@@ -49,20 +51,19 @@ export default function SyncDataScreen() {
       return;
     }
     try {
-      const [at, pending, autoMeta] = await Promise.all([
+      const [at, pending, status] = await Promise.all([
         sqliteGetMeta('last_sync_at'),
         sqlitePendingCount().catch(() => 0),
-        sqliteGetMeta('auto_sync_enabled').catch(() => null),
+        sqliteStatus(),
       ]);
       if (at) setLastSyncAt(at);
       setPendingCount(pending);
-      if (autoMeta != null) {
-        setAutoSync(autoMeta === '1');
-      }
+      setLocalOnlyCount(status?.localOnlyCount || 0);
+      setLocalOnlyRecords(status?.localOnlyRecords || []);
     } finally {
       setLoadingMeta(false);
     }
-  }, [setAutoSync, setLastSyncAt, setPendingCount]);
+  }, [setLastSyncAt, setPendingCount]);
 
   useEffect(() => {
     void refreshMeta();
@@ -106,22 +107,6 @@ export default function SyncDataScreen() {
         </Text>
       </SectionCard>
 
-      <SectionCard title={t('Auto sync')}>
-        <View style={styles.autoSyncRow}>
-          <View style={styles.autoSyncInfo}>
-            <Text style={typography.subtitle}>{t('Auto sync when online')}</Text>
-            <Text style={[typography.caption, styles.muted]}>
-              {t('Automatically sync data from local to live database when switching to online.')}
-            </Text>
-          </View>
-          <Switch
-            value={autoSync}
-            onValueChange={(val) => setAutoSync(val)}
-            color={colors.primary}
-          />
-        </View>
-      </SectionCard>
-
       <SectionCard title={t('Last sync')}>
         {loadingMeta ? (
           <ActivityIndicator />
@@ -131,8 +116,26 @@ export default function SyncDataScreen() {
           </Text>
         )}
         <Text style={[typography.caption, styles.muted, styles.mt]}>
-          {t('Two-way sync: upload this PC’s pending changes, then download live data (including updates made on mobile).')}
+          {localOnlyCount > 0
+            ? t('Upload pending changes, then add missing live records without overwriting existing local data.')
+            : t('Two-way sync: upload this PC’s pending changes, then download live data (including updates made on mobile).')}
         </Text>
+        <Text style={[typography.caption, styles.muted, styles.mt]}>
+          {t('Downloads include the catalog and recent bills, expenses and returns; purchase and stock-movement history is not downloaded.')}
+        </Text>
+        {localOnlyCount > 0 ? (
+          <View style={styles.mt}>
+            <Text style={[typography.caption, styles.warn]}>
+              {t('{{count}} record(s) are local-only. Previously skipped missing-variant bills will be retried; other records stay local. Live stock and balances may differ. Only missing live records are downloaded.', { count: localOnlyCount })}
+            </Text>
+            <Text style={[typography.caption, styles.muted]}>{t('Latest local-only records (up to 20)')}</Text>
+            {localOnlyRecords.map((record) => (
+              <Text key={`${record.type}:${record.id}`} style={[typography.caption, styles.warn]}>
+                {record.type}: {record.label || record.id}{record.error ? ` — ${record.error}` : ''}
+              </Text>
+            ))}
+          </View>
+        ) : null}
         <Text style={[typography.caption, styles.muted, styles.mt]}>
           {t('Tip: log in once online so this PC can unlock offline later.')}
         </Text>
@@ -163,6 +166,9 @@ export default function SyncDataScreen() {
               {lastResult.failed > 0
                 ? ` · ${t('{{failed}} failed', { failed: lastResult.failed })}`
                 : ''}
+              {lastResult.skipped
+                ? ` · ${t('{{count}} local-only', { count: lastResult.skipped })}`
+                : ''}
             </Text>
             {lastResult.pulled ? (
               <Text style={[typography.caption, styles.muted]}>
@@ -189,15 +195,6 @@ const styles = StyleSheet.create({
   pad: { paddingBottom: spacing.xl * 2, gap: spacing.md },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  autoSyncRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-  },
-  autoSyncInfo: {
-    flex: 1,
-  },
   dot: { width: 12, height: 12, borderRadius: 6 },
   muted: { color: colors.textMuted, marginTop: 4 },
   warn: { color: colors.warning },

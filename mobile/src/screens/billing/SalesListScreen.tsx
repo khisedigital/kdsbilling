@@ -196,7 +196,7 @@ export default function SalesListScreen({ navigation }: Props) {
           return (
             <ListRow
               title={item.bill_number}
-              subtitle={formatBillListDate(getCreatedAt(item))}
+              subtitle={`${formatBillListDate(getCreatedAt(item))}${item.sync_status === 'local_only' ? ` · ${t('Local only')}` : ''}`}
               icon={st.icon}
               iconColor={st.color}
               iconBg={st.bg}

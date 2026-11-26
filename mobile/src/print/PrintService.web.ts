@@ -9,6 +9,7 @@ import {
   type ThermalHtmlPaper,
 } from './escpos';
 import { hasDevanagari } from './indicText';
+import { insertPaymentQr } from './qrCodeGenerator';
 
 let indicFontTask: Promise<void> | null = null;
 
@@ -43,10 +44,12 @@ async function thermalBytes(
   text: string,
   charsPerLine: number,
   paper?: ThermalHtmlPaper,
+  qrData = '',
 ): Promise<number[]> {
   await ensureIndicFont(text);
   // Prefer explicit paper from Settings so 58mm cannot encode as 80mm page width.
-  return buildEscPosBytes(text, charsPerLine, paper);
+  const bytes = buildEscPosBytes(text, charsPerLine, paper);
+  return qrData ? insertPaymentQr(bytes, qrData, paper === '58' ? 32 : charsPerLine) : bytes;
 }
 
 export { buildEscPosBytes, sanitizeEscPosText, toPlainReceipt } from './escpos';
@@ -213,6 +216,7 @@ export async function printViaSystem(
   text: string,
   charsPerLine = 32,
   paper?: ThermalHtmlPaper,
+  qrData = '',
 ): Promise<void> {
   const source = String(text || '').trim();
   if (!source) throw new Error('Nothing to print.');
@@ -222,7 +226,7 @@ export async function printViaSystem(
   if (bridge?.printRawSystem) {
     // Do not cupsenable/prime between slips — that was cancelling the *next*
     // job in the OS queue after each success (1 ok, 2 skipped, 3 ok…).
-    const bytes = await thermalBytes(sanitizeEscPosText(source), charsPerLine, paperSize);
+    const bytes = await thermalBytes(sanitizeEscPosText(source), charsPerLine, paperSize, qrData);
     await bridge.printRawSystem({
       printerName: printerName || '',
       base64: bytesToBase64(bytes),
@@ -231,7 +235,7 @@ export async function printViaSystem(
   }
 
   // No raw queue: print HTML at the exact roll width from Paper size.
-  const { html, paperMm, heightMm } = buildThermalHtml(source, charsPerLine, paperSize);
+  const { html, paperMm, heightMm } = buildThermalHtml(source, charsPerLine, paperSize, qrData);
   if (bridge?.printHtml) {
     await bridge.printHtml({
       html,
@@ -253,6 +257,7 @@ export async function printViaNetwork(
   text: string,
   charsPerLine = 32,
   paper?: ThermalHtmlPaper,
+  qrData = '',
 ): Promise<void> {
   if (!host?.trim()) throw new Error('No network printer IP configured.');
   const payload = sanitizeEscPosText(String(text || '').trim());
@@ -261,7 +266,7 @@ export async function printViaNetwork(
   const bridge = getDesktopBridge();
   if (!bridge) throw new Error(DESKTOP_ONLY);
   const roll: ThermalHtmlPaper = paper ?? (charsPerLine <= 32 ? '58' : '80');
-  const bytes = await thermalBytes(payload, charsPerLine, roll);
+  const bytes = await thermalBytes(payload, charsPerLine, roll, qrData);
   await bridge.printRaw({ host: host.trim(), port, base64: bytesToBase64(bytes) });
 }
 
@@ -382,11 +387,12 @@ export async function printViaBluetooth(
   text: string,
   charsPerLine = 32,
   paper?: ThermalHtmlPaper,
+  qrData = '',
 ): Promise<void> {
   if (!address?.trim()) throw new Error('No Bluetooth printer selected.');
   const payload = sanitizeEscPosText(String(text || '').trim());
   if (!payload.trim()) throw new Error('Nothing to print.');
   const roll: ThermalHtmlPaper = paper ?? (charsPerLine <= 32 ? '58' : '80');
-  const bytes = await thermalBytes(payload, charsPerLine, roll);
+  const bytes = await thermalBytes(payload, charsPerLine, roll, qrData);
   await printBytesViaBluetooth(address, bytes);
 }

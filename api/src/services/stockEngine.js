@@ -42,6 +42,7 @@ async function applyStockMovement(
     unitCost,
     notes,
     userId,
+    clientMovementId,
     allowNegative = false,
   },
   transaction
@@ -84,6 +85,7 @@ async function applyStockMovement(
       unit_cost: unitCost ?? null,
       notes: notes || null,
       created_by: userId,
+      client_movement_id: clientMovementId || null,
     },
     { transaction }
   );

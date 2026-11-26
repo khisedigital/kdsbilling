@@ -1,10 +1,6 @@
 import {
   useConnectivityStore,
   isOfflineNow,
-  AUTO_SYNC_STORAGE_KEY,
-  MANUAL_OFFLINE_STORAGE_KEY,
-  triggerAutoSync,
-  registerAutoSyncRunner,
 } from '../src/offline/connectivityStore';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -17,16 +13,12 @@ jest.mock('../src/offline/capability', () => ({
   isDesktopOfflineCapable: jest.fn(() => true),
 }));
 
-const mockSyncNow = jest.fn(() => Promise.resolve({ synced: 2, failed: 0 }));
-registerAutoSyncRunner(mockSyncNow);
-
-describe('Online/Offline and Auto-sync functionality', () => {
+describe('Online/Offline and manual sync', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     useConnectivityStore.setState({
       online: true,
       manualOffline: false,
-      autoSync: false,
       pendingCount: 0,
       syncing: false,
       lastSyncError: '',
@@ -58,53 +50,6 @@ describe('Online/Offline and Auto-sync functionality', () => {
     expect(useConnectivityStore.getState().online).toBe(true);
     expect(useConnectivityStore.getState().manualOffline).toBe(false);
     expect(isOfflineNow()).toBe(false);
-  });
-
-  it('updates autoSync setting correctly', () => {
-    expect(useConnectivityStore.getState().autoSync).toBe(false);
-
-    useConnectivityStore.getState().setAutoSync(true);
-    expect(useConnectivityStore.getState().autoSync).toBe(true);
-
-    useConnectivityStore.getState().setAutoSync(false);
-    expect(useConnectivityStore.getState().autoSync).toBe(false);
-  });
-
-  it('triggers auto-sync when enabled and online', async () => {
-    useConnectivityStore.setState({ online: true, autoSync: true, syncing: false });
-
-    const result = await triggerAutoSync();
-    expect(mockSyncNow).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ synced: 2, failed: 0 });
-  });
-
-  it('does NOT trigger auto-sync when offline', async () => {
-    useConnectivityStore.setState({ online: false, autoSync: true, syncing: false });
-
-    const result = await triggerAutoSync();
-    expect(mockSyncNow).not.toHaveBeenCalled();
-    expect(result).toBeNull();
-  });
-
-  it('does NOT trigger auto-sync when navigator.onLine is false', async () => {
-    Object.defineProperty(global, 'navigator', {
-      value: { onLine: false },
-      writable: true,
-      configurable: true,
-    });
-    useConnectivityStore.setState({ online: true, autoSync: true, syncing: false });
-
-    const result = await triggerAutoSync();
-    expect(mockSyncNow).not.toHaveBeenCalled();
-    expect(result).toBeNull();
-  });
-
-  it('does NOT trigger auto-sync when already syncing', async () => {
-    useConnectivityStore.setState({ online: true, autoSync: true, syncing: true });
-
-    const result = await triggerAutoSync();
-    expect(mockSyncNow).not.toHaveBeenCalled();
-    expect(result).toBeNull();
   });
 
   it('recognizes isOfflineNow when physical network is disconnected', () => {

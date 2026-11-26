@@ -1,5 +1,13 @@
 # Bill Printing Improvements - Implementation Summary
 
+> Historical notes below are superseded for payment QR and spacing. Receipts now use
+> the existing shop UPI ID (`upiId`, subject to `showUpi`) and the bill total.
+> QR codes are generated locally for A4 and thermal printing, without an external
+> QR service or new QR settings. No migration is needed for this feature.
+> Zero, negative, and invalid totals do not produce a payment QR. Wide thermal
+> receipts have spacing around the tax/total rows; 58 mm separates the grand total,
+> and A4 totals have increased padding.
+
 ## Overview
 Implemented comprehensive bill printing enhancements for the KDSPOZ retail billing system including improved tax display, logo handling, QR code support, and optimized spacing.
 

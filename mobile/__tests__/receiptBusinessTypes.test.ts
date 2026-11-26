@@ -2,7 +2,9 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-import { buildThermalReceipt, buildA4Receipt } from '../src/print/buildReceipt';
+import { buildThermalReceipt, buildA4Receipt, buildReceiptPayload } from '../src/print/buildReceipt';
+import { buildEscPosBytes } from '../src/print/escpos';
+import { insertPaymentQr, paymentQrSvg } from '../src/print/qrCodeGenerator';
 import type { ShopSettings } from '../src/services/shopSettingsService';
 import type { BillDetail } from '../src/services/businessService';
 
@@ -63,7 +65,7 @@ describe('Receipt business types & registration fields', () => {
     expect(a4).toMatch(/<div class="billMeta">[\s\S]*Date[\s\S]*Bill No[\s\S]*INV-001/);
   });
 
-  test('adds separation between 80mm bill sections without changing 58mm spacing', () => {
+  test('separates the total on both paper sizes while keeping 58mm compact', () => {
     const shop: ShopSettings = {
       shopName: 'Test Shop',
       shopNameMr: '',
@@ -87,7 +89,50 @@ describe('Receipt business types & registration fields', () => {
     expect(wide).toMatch(/Discount.*\n\nTax/);
     expect(wide).toMatch(/Tax.*\n\nTOTAL/);
     expect(wide).toMatch(/Cotton Shirt L.*\n\nCotton Shirt L/);
-    expect(narrow).not.toContain('\n\n');
+    expect(narrow).toMatch(/Tax.*\n\nTOTAL/);
+    expect(narrow.match(/\n\n/g)).toHaveLength(1);
+  });
+
+  test('uses the existing UPI setting and each bill total for offline QR printing', () => {
+    const shop: ShopSettings = {
+      shopName: 'Test Shop', shopNameMr: '', shopCode: 'test',
+      address: '', addressMr: '', city: '', gstin: '', phone: '',
+      billFooter: '', logoUrl: null, branchId: 'b1', branchName: 'Main',
+      upiId: ' shop@bank ',
+    };
+    for (const format of ['58', '80'] as const) {
+      const payload = buildReceiptPayload({ ...dummyBill, total_amount: 123.45 }, shop, format);
+      expect(payload.paymentQrData).toBe('upi://pay?pa=shop%40bank&pn=Test%20Shop&am=123.45&cu=INR');
+      expect(payload.html).toContain(paymentQrSvg(payload.paymentQrData!));
+      const bytes = buildEscPosBytes(payload.raw!, payload.charsPerLine!, format);
+      const printed = insertPaymentQr(bytes, payload.paymentQrData!, payload.charsPerLine!);
+      const tailLength = format === '58' ? 4 : 9;
+      expect(printed.slice(-tailLength)).toEqual(bytes.slice(-tailLength));
+      expect(printed.slice(bytes.length - tailLength, bytes.length - tailLength + 4))
+        .toEqual([0x1d, 0x76, 0x30, 0]);
+    }
+
+    const changed = buildReceiptPayload({ ...dummyBill, total_amount: 67 }, shop, '58');
+    expect(changed.paymentQrData).toContain('am=67.00');
+    const a4 = buildA4Receipt({ ...dummyBill, total_amount: 123.45 }, shop);
+    expect(a4).toContain(paymentQrSvg(changed.paymentQrData!.replace('am=67.00', 'am=123.45')));
+    expect(a4).not.toContain('api.qrserver.com');
+    for (const disabled of [{ ...shop, upiId: '' }, { ...shop, showUpi: false }]) {
+      expect(buildReceiptPayload(dummyBill, disabled, '58').paymentQrData).toBe('');
+      expect(buildA4Receipt(dummyBill, disabled)).not.toContain('<svg');
+    }
+    for (const total of [0, -1, NaN]) {
+      expect(buildReceiptPayload({ ...dummyBill, total_amount: total }, shop, '80').paymentQrData).toBe('');
+    }
+  });
+
+  test('inserts payment QR before the native receipt feed and cut', () => {
+    const nativeTail = [10, 10, 10, 10, 10, 10, 0x1d, 0x56, 1];
+    const bytes = [0x1b, 0x40, 65, 10, ...nativeTail];
+    const result = insertPaymentQr(bytes, 'upi://pay?pa=shop%40bank&am=1.00&cu=INR', 32);
+    expect(result.slice(0, 4)).toEqual(bytes.slice(0, 4));
+    expect(result.slice(-nativeTail.length)).toEqual(nativeTail);
+    expect(() => insertPaymentQr([1, 2, 3], 'upi://pay', 32)).toThrow('unrecognized receipt feed');
   });
 
   test('prints item tax names, rates, and amounts on thermal and A4 receipts', () => {

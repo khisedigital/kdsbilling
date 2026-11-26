@@ -156,6 +156,67 @@ async function recordDamage(db, branchId, userId, items, notes) {
   );
 }
 
+async function recordSyncedMovement(db, branchId, userId, payload) {
+  const clientMovementId = String(payload?.clientMovementId || '').trim();
+  const variantId = String(payload?.variantId || '').trim();
+  const quantity = Number(payload?.quantity);
+  const operations = {
+    opening: MOVEMENT_TYPES.OPENING,
+    in: MOVEMENT_TYPES.STOCK_IN,
+    out: MOVEMENT_TYPES.STOCK_OUT,
+    adjust: MOVEMENT_TYPES.ADJUSTMENT,
+    damage: MOVEMENT_TYPES.DAMAGE,
+  };
+  const movementType = operations[payload?.operation];
+  if (!clientMovementId || clientMovementId.length > 128 || !variantId || !movementType
+    || !Number.isFinite(quantity) || quantity === 0) {
+    throw new AppError('Invalid offline stock movement', 400, 'VALIDATION_ERROR');
+  }
+  const quantityChange = Number((['out', 'damage'].includes(payload.operation)
+    ? -Math.abs(quantity) : quantity).toFixed(3));
+  if (!quantityChange) throw new AppError('Quantity change cannot be zero', 400, 'VALIDATION_ERROR');
+  const parsedUnitCost = payload.unitCost == null ? null : Number(payload.unitCost);
+  if (parsedUnitCost !== null && (!Number.isFinite(parsedUnitCost) || parsedUnitCost < 0)) {
+    throw new AppError('Invalid unit cost', 400, 'VALIDATION_ERROR');
+  }
+  const unitCost = parsedUnitCost === null ? null : Number(parsedUnitCost.toFixed(4));
+  const notes = payload.notes || null;
+  const indexes = await db.sequelize.getQueryInterface().showIndex('stock_ledger');
+  if (!indexes.some((index) => index.unique && index.fields?.length === 1
+    && (index.fields[0].attribute || index.fields[0].name) === 'client_movement_id')) {
+    throw new AppError('Stock sync requires the client movement ID database migration', 503, 'SYNC_UNAVAILABLE');
+  }
+  const acknowledge = (ledger) => {
+    if (ledger.branch_id !== branchId || ledger.variant_id !== variantId
+      || ledger.movement_type !== movementType || Number(ledger.quantity_change) !== quantityChange
+      || (ledger.unit_cost == null ? null : Number(ledger.unit_cost)) !== unitCost
+      || (ledger.notes || null) !== notes) {
+      throw new AppError('Stock movement ID was already used for different data', 409, 'SYNC_CONFLICT');
+    }
+    return { clientMovementId, movementId: ledger.id, variantId, quantityChange };
+  };
+
+  const existing = await db.StockLedger.findOne({ where: { client_movement_id: clientMovementId } });
+  if (existing) return acknowledge(existing);
+  const transaction = await db.sequelize.transaction();
+  try {
+    const { ledger } = await applyStockMovement(db, {
+      branchId, variantId, quantityChange, movementType, referenceType: 'offline_sync',
+      unitCost, notes, userId, clientMovementId,
+    }, transaction);
+    const result = acknowledge(ledger);
+    await transaction.commit();
+    return result;
+  } catch (err) {
+    await transaction.rollback();
+    if (err?.name === 'SequelizeUniqueConstraintError' || err?.parent?.code === 'ER_DUP_ENTRY') {
+      const winner = await db.StockLedger.findOne({ where: { client_movement_id: clientMovementId } });
+      if (winner) return acknowledge(winner);
+    }
+    throw err;
+  }
+}
+
 async function processBulkMovement(db, branchId, userId, items, movementType, referenceType, notes) {
   if (!items?.length) throw new AppError('At least one item is required', 400, 'VALIDATION_ERROR');
 
@@ -321,6 +382,7 @@ module.exports = {
   recordStockOut,
   recordAdjustment,
   recordDamage,
+  recordSyncedMovement,
   transferStock,
   getTransfer,
   listTransfers,

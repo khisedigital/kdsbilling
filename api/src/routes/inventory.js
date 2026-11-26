@@ -18,6 +18,7 @@ router.post('/stock/in', requirePermission(PERMISSIONS.STOCK_ADJUST), asyncHandl
 router.post('/stock/out', requirePermission(PERMISSIONS.STOCK_ADJUST), asyncHandler(inventory.stockOut));
 router.post('/stock/adjust', requirePermission(PERMISSIONS.STOCK_ADJUST), asyncHandler(inventory.adjustStock));
 router.post('/stock/damage', requirePermission(PERMISSIONS.STOCK_ADJUST), asyncHandler(inventory.damageStock));
+router.post('/stock/sync-movement', requirePermission(PERMISSIONS.STOCK_ADJUST), asyncHandler(inventory.syncStockMovement));
 router.post('/stock/transfer', requirePermission(PERMISSIONS.STOCK_ADJUST), asyncHandler(inventory.transferStock));
 router.get('/stock/transfers', requirePermission(PERMISSIONS.STOCK_VIEW), asyncHandler(inventory.listTransfers));
 router.get('/stock/transfers/:id', requirePermission(PERMISSIONS.STOCK_VIEW), asyncHandler(inventory.getTransfer));

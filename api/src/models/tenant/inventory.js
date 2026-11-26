@@ -39,6 +39,7 @@ function defineStockLedger(sequelize) {
     },
     quantity_change: { type: DataTypes.DECIMAL(15, 3), allowNull: false },
     balance_after: { type: DataTypes.DECIMAL(15, 3), allowNull: false },
+    client_movement_id: { type: DataTypes.STRING(128), allowNull: true, unique: true },
     reference_type: DataTypes.STRING(50),
     reference_id: DataTypes.UUID,
     related_branch_id: DataTypes.UUID,

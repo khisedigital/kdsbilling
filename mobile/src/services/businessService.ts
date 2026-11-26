@@ -3,6 +3,7 @@ import { useLanguageStore } from '../i18n/languageStore';
 import {
   isFullyLocalMode as isBillLocalMode,
   localGetSale as getLocalBill,
+  localSalesReport,
 } from '../offline/localApi';
 import { isOfflineNow as isBillOfflineNow } from '../offline/connectivityStore';
 import { sqliteSaveSale as cacheBillLocally } from '../offline/sqliteApi';
@@ -549,24 +550,18 @@ export async function fetchSalesReport(from?: string, to?: string) {
 }
 
 export async function fetchProductReport(range?: ReportRange) {
-  try {
-    const { isFullyLocalMode, localSalesReport } = await import('../offline/localApi');
-    if (isFullyLocalMode()) {
-      const sales = await localSalesReport(range);
-      if (sales) {
-        const items = sales.topProducts || [];
-        return {
-          items,
-          mostSold: sales.mostSold || items[0] || null,
-          summary: {
-            totalQty: items.reduce((s: number, i: any) => s + (Number(i.total_qty) || 0), 0),
-            totalRevenue: items.reduce((s: number, i: any) => s + (Number(i.revenue) || 0), 0),
-          },
-        };
-      }
-    }
-  } catch {
-    /* fall through */
+  if (isBillLocalMode()) {
+    const sales = await localSalesReport(range);
+    if (!sales) throw new Error('Local product report is unavailable');
+    const items = sales.topProducts || [];
+    return {
+      items,
+      mostSold: sales.mostSold || items[0] || null,
+      summary: {
+        totalQty: items.reduce((s: number, i: any) => s + (Number(i.total_qty) || 0), 0),
+        totalRevenue: items.reduce((s: number, i: any) => s + (Number(i.revenue) || 0), 0),
+      },
+    };
   }
   const { data } = await api.get('/reports/products', { params: range });
   return data.data;

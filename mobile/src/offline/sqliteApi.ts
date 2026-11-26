@@ -40,6 +40,7 @@ export async function sqliteReplaceCatalog(payload: {
   brands?: unknown[];
   clearProducts?: boolean;
   syncStock?: boolean;
+  insertOnly?: boolean;
 }) {
   const bridge = getDesktopBridge();
   if (!bridge?.sqliteReplaceCatalog) return null;
@@ -167,6 +168,7 @@ export async function sqliteReplaceCatalogBatched(payload: {
   brands?: unknown[];
   clearProducts?: boolean;
   syncStock?: boolean;
+  insertOnly?: boolean;
   productChunkSize?: number;
 }): Promise<{ products: number; categories: number; brands: number }> {
   const bridge = getDesktopBridge();
@@ -180,34 +182,36 @@ export async function sqliteReplaceCatalogBatched(payload: {
   const chunkSize = Math.max(25, Math.min(150, payload.productChunkSize || 75));
 
   // Masters first (small). clearProducts only on the first product chunk.
-  await bridge.sqliteReplaceCatalog({
+  const masterResult = await bridge.sqliteReplaceCatalog({
     shopCode: code,
     products: [],
     categories,
     brands,
     clearProducts: false,
     syncStock: payload.syncStock !== false,
+    insertOnly: payload.insertOnly,
   });
 
   let written = 0;
   if (!products.length) {
-    return { products: 0, categories: categories.length, brands: brands.length };
+    return { products: 0, categories: masterResult.categories ?? categories.length, brands: masterResult.brands ?? brands.length };
   }
 
   for (let i = 0; i < products.length; i += chunkSize) {
     const chunk = products.slice(i, i + chunkSize);
     const clear = payload.clearProducts === true && i === 0;
-    await bridge.sqliteReplaceCatalog({
+    const result = await bridge.sqliteReplaceCatalog({
       shopCode: code,
       products: chunk,
       categories: [],
       brands: [],
       clearProducts: clear,
       syncStock: payload.syncStock !== false,
+      insertOnly: payload.insertOnly,
     });
-    written += chunk.length;
+    written += result.products ?? chunk.length;
   }
-  return { products: written, categories: categories.length, brands: brands.length };
+  return { products: written, categories: masterResult.categories ?? categories.length, brands: masterResult.brands ?? brands.length };
 }
 
 export async function sqliteListProducts(opts?: {
@@ -215,16 +219,19 @@ export async function sqliteListProducts(opts?: {
   limit?: number;
   offset?: number;
   categoryId?: string | null;
+  brandId?: string | null;
+  status?: string;
 }) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteListProducts) return { items: [], total: 0 };
+  if (!bridge?.sqliteListProducts) throw new Error('Local product database is unavailable');
   const result = await bridge.sqliteListProducts({ shopCode: shopCode(), ...opts });
   return { items: result?.items || [], total: result?.total || 0 };
 }
 
 export async function sqliteGetProduct(id: string) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteGetProduct || !id) return null;
+  if (!bridge?.sqliteGetProduct) throw new Error('Local product database is unavailable');
+  if (!id) throw new Error('Product id is required');
   const result = await bridge.sqliteGetProduct({ shopCode: shopCode(), id: String(id) });
   return result?.product ?? null;
 }
@@ -243,23 +250,27 @@ export async function sqliteListBrands() {
   return result?.items || [];
 }
 
-export async function sqliteReplaceCustomers(customers: unknown[]) {
+export async function sqliteReplaceCustomers(customers: unknown[], insertOnly = false) {
   const bridge = getDesktopBridge();
   if (!bridge?.sqliteReplaceCustomers) return null;
   const rows = Array.isArray(customers) ? customers : [];
   const code = shopCode();
   const chunkSize = 200;
   if (rows.length <= chunkSize) {
-    return bridge.sqliteReplaceCustomers({ shopCode: code, customers: rows });
+    return bridge.sqliteReplaceCustomers({ shopCode: code, customers: rows, insertOnly });
   }
   let last: unknown = null;
+  let written = 0;
   for (let i = 0; i < rows.length; i += chunkSize) {
-    last = await bridge.sqliteReplaceCustomers({
+    const result = await bridge.sqliteReplaceCustomers({
       shopCode: code,
       customers: rows.slice(i, i + chunkSize),
+      insertOnly,
     });
+    last = result;
+    written += result.customers ?? rows.slice(i, i + chunkSize).length;
   }
-  return last;
+  return last ? { ok: true, customers: written } : null;
 }
 
 export async function sqliteListCustomers(opts?: { search?: string; limit?: number }) {
@@ -277,7 +288,7 @@ export async function sqliteUpsertCustomer(customer: unknown) {
 
 export async function sqliteSetMeta(key: string, value: string) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteSetMeta) return;
+  if (!bridge?.sqliteSetMeta) throw new Error('Local sync metadata is unavailable');
   await bridge.sqliteSetMeta({ shopCode: shopCode(), key, value });
 }
 
@@ -324,16 +335,26 @@ export async function sqliteListPendingSales() {
   return result?.rows || [];
 }
 
+export async function sqliteRetryMissingVariantSales() {
+  const bridge = getDesktopBridge();
+  if (!bridge?.sqliteRetryMissingVariantSales) throw new Error('Restart the desktop app to enable missing product recovery');
+  const result = await bridge.sqliteRetryMissingVariantSales({ shopCode: shopCode() });
+  if (!result?.ok) throw new Error('Could not retry missing-product bills');
+  return result.count;
+}
+
 export async function sqliteMarkSaleSynced(clientBillId: string, serverBillId?: string | null) {
   const bridge = getDesktopBridge();
   if (!bridge?.sqliteMarkSaleSynced) return;
   return bridge.sqliteMarkSaleSynced({ shopCode: shopCode(), clientBillId, serverBillId });
 }
 
-export async function sqliteMarkSaleError(clientBillId: string, message: string, attempts: number) {
+export async function sqliteMarkSaleError(clientBillId: string, message: string, attempts: number, localOnly = false) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteMarkSaleError) return;
-  return bridge.sqliteMarkSaleError({ shopCode: shopCode(), clientBillId, message, attempts });
+  if (!bridge?.sqliteMarkSaleError) throw new Error('Local sale sync is unavailable');
+  const result = await bridge.sqliteMarkSaleError({ shopCode: shopCode(), clientBillId, message, attempts, localOnly });
+  if (!result?.ok) throw new Error('Local sale sync is unavailable');
+  return result;
 }
 
 export async function sqlitePendingCount(): Promise<number> {
@@ -345,21 +366,22 @@ export async function sqlitePendingCount(): Promise<number> {
 
 export async function sqliteGetProductBarcodeStatus(productId: string) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteGetProductBarcodeStatus || !productId) return null;
+  if (!bridge?.sqliteGetProductBarcodeStatus) throw new Error('Local barcode database is unavailable');
+  if (!productId) throw new Error('Product id is required');
   const result = await bridge.sqliteGetProductBarcodeStatus({ shopCode: shopCode(), productId: String(productId) });
   return result?.data ?? null;
 }
 
 export async function sqliteGenerateBarcodes(variantIds: string[]) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteGenerateBarcodes) return [];
+  if (!bridge?.sqliteGenerateBarcodes) throw new Error('Local barcode database is unavailable');
   const result = await bridge.sqliteGenerateBarcodes({ shopCode: shopCode(), variantIds });
   return result?.data ?? [];
 }
 
 export async function sqliteEnsureQuantityBarcodes(items: { variantId: string; quantity: number }[]) {
   const bridge = getDesktopBridge();
-  if (!bridge?.sqliteEnsureQuantityBarcodes) return [];
+  if (!bridge?.sqliteEnsureQuantityBarcodes) throw new Error('Local barcode database is unavailable');
   const result = await bridge.sqliteEnsureQuantityBarcodes({ shopCode: shopCode(), items });
   return result?.data ?? [];
 }

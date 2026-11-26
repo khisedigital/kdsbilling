@@ -1,13 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthStore } from '../store/authStore';
+import { hasSqliteBridge } from '../offline/sqliteApi';
 import type { Category, Product } from '../types/catalog';
 
 /**
- * Persist catalog on all platforms so Billing / lists open from disk
- * instead of re-downloading the full catalog on every visit (critical on 4G).
+ * Cache categories on all platforms and products only outside SQLite desktop mode.
  */
 export function isCatalogCacheEnabled(): boolean {
   return true;
+}
+
+function isProductCacheEnabled(): boolean {
+  return isCatalogCacheEnabled() && !hasSqliteBridge();
 }
 
 const PRODUCTS_CAP = 5000;
@@ -56,7 +60,9 @@ export function bumpCatalogRevision(pricePatches: CatalogPricePatch[] = []): voi
   // Only replace remembered patches when the caller actually has price edits.
   // Empty bumps (favorite toggle, etc.) must not wipe a pending product-edit patch
   // before Billing has applied it — and must not leave old patches forever either.
-  if (pricePatches.length) {
+  if (!isProductCacheEnabled()) {
+    lastPricePatches = [];
+  } else if (pricePatches.length) {
     lastPricePatches = pricePatches;
   }
   catalogListeners.forEach((listener) => {
@@ -149,7 +155,7 @@ export async function writeCachedCategories(items: Category[]): Promise<void> {
 }
 
 export async function readCachedProducts(): Promise<{ items: Product[]; total: number; updatedAt: number } | null> {
-  if (!isCatalogCacheEnabled()) return null;
+  if (!isProductCacheEnabled()) return null;
   // AsyncStorage / memory only. Do NOT return the Billing favorites SQLite page here —
   // that made Price Management + stock patches think a 280-row OOS slice was the catalog.
   // Billing/Price Management load live stock via sqliteListProducts / getProduct.
@@ -173,7 +179,7 @@ export async function writeCachedProducts(
   total: number,
   mode: 'replace' | 'merge' = 'replace',
 ): Promise<void> {
-  if (!isCatalogCacheEnabled()) return;
+  if (!isProductCacheEnabled()) return;
   let next = items || [];
   if (mode === 'merge') {
     const prev = await readCachedProducts();
@@ -200,7 +206,7 @@ export async function patchCachedProductFavorite(
   productId: string,
   isFavorite: boolean,
 ): Promise<void> {
-  if (!isCatalogCacheEnabled()) return;
+  if (!isProductCacheEnabled()) return;
   const prev = await readCachedProducts();
   if (!prev?.items?.length) return;
   let changed = false;
@@ -294,15 +300,7 @@ export async function upsertCachedProduct(product: Product): Promise<void> {
   // Notify first so open Billing screens patch prices immediately (don't wait on AsyncStorage).
   bumpCatalogRevision(patches);
 
-  // Sync to SQLite local DB on desktop so offline/billing searches immediately see the updated product
-  void import('../offline/localApi')
-    .then(({ hasSqliteBridge, localUpsertProduct }) => {
-      if (!hasSqliteBridge()) return;
-      return localUpsertProduct(normalized);
-    })
-    .catch(() => null);
-
-  if (!isCatalogCacheEnabled()) return;
+  if (!isProductCacheEnabled()) return;
   const prev = await readCachedProducts();
   const items = prev?.items?.length ? [...prev.items] : [];
   const idx = items.findIndex((row) => row.id === normalized.id);
@@ -348,25 +346,7 @@ export async function applyCatalogPricePatches(patches: CatalogPricePatch[]): Pr
   // Notify first — Billing applies patches in memory without waiting for disk I/O.
   bumpCatalogRevision(clean);
 
-  // Sync price bulk patches to SQLite on desktop
-  void import('./catalogService')
-    .then(({ syncPriceBulkToSqlite }) => syncPriceBulkToSqlite(clean.map((p) => ({
-      variantId: p.variantId,
-      productId: p.productId,
-      sellingPrice: p.sellingPrice,
-      costPrice: p.costPrice,
-      mrp: p.mrp,
-      name: p.name,
-      nameMr: p.nameMr,
-      stockQty: p.stockQty,
-      barcode: p.barcode,
-      barcodes: p.barcodes,
-      uomId: p.uomId,
-      uom: p.uom,
-    }))))
-    .catch(() => null);
-
-  if (!isCatalogCacheEnabled()) return;
+  if (!isProductCacheEnabled()) return;
   const prev = await readCachedProducts();
   if (!prev?.items?.length) return;
 
@@ -468,7 +448,7 @@ export async function patchCachedProductsFavoriteByCategory(
   categoryId: string,
   isFavorite: boolean,
 ): Promise<void> {
-  if (!isCatalogCacheEnabled()) return;
+  if (!isProductCacheEnabled()) return;
   const prev = await readCachedProducts();
   if (!prev?.items?.length) return;
   const items = prev.items.map((row) => {

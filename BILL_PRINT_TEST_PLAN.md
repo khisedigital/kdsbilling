@@ -1,5 +1,11 @@
 # Bill Print Improvements - Test Plan
 
+> Historical test cases below for QR settings and QR service are obsolete. Set the
+> existing shop UPI ID, print and scan A4, 58 mm, and 80 mm receipts, and verify
+> the ID and exact bill total. Repeat with a different total, no ID, `showUpi`
+> disabled, and zero/invalid totals. QR generation must work offline. Test physical
+> printers as well as print previews.
+
 ## 1. Tax Alignment Below Product Name Test
 
 ### Test Case 1.1: Single Tax Item

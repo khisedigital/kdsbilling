@@ -80,6 +80,11 @@ async function damageStock(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function syncStockMovement(req, res) {
+  const data = await stockService.recordSyncedMovement(req.db, getBranchId(req), req.auth.sub, req.body);
+  res.status(201).json({ success: true, data });
+}
+
 async function transferStock(req, res) {
   const data = await stockService.transferStock(req.db, req.auth.sub, {
     fromBranchId: req.body.fromBranchId || req.auth.branchId,
@@ -187,6 +192,7 @@ module.exports = {
   stockOut,
   adjustStock,
   damageStock,
+  syncStockMovement,
   transferStock,
   listTransfers,
   getTransfer,

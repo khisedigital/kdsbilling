@@ -77,6 +77,11 @@ async function createProduct(req, res) {
   res.status(201).json({ success: true, data });
 }
 
+async function ensureOfflineVariant(req, res) {
+  const data = await productService.ensureOfflineVariant(req.db, req.body);
+  res.json({ success: true, data });
+}
+
 async function updateProduct(req, res) {
   const data = await productService.updateProduct(req.db, req.params.id, req.body, {
     branchId: req.auth?.branchId,
@@ -284,6 +289,7 @@ module.exports = {
   listProducts,
   getProduct,
   createProduct,
+  ensureOfflineVariant,
   updateProduct,
   setProductFavorite,
   setProductsFavoriteBulk,

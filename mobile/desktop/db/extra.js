@@ -63,6 +63,7 @@ function syncVariantStockIntoProductJson(db, variantId, stockQty) {
 function saveReturn(db, row) {
   const id = String(row.id || '').trim();
   if (!id) throw new Error('return.id required');
+  if (row.insertOnly && db.prepare('SELECT 1 FROM returns WHERE id = ?').get(id)) return { id };
   db.prepare(
     `INSERT INTO returns (id, sales_order_id, return_number, total_amount, json, sync_status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -208,7 +209,7 @@ function getPurchase(db, id) {
   }
 }
 
-function replaceSuppliers(db, suppliers = []) {
+function replaceSuppliers(db, suppliers = [], insertOnly = false) {
   const ts = nowIso();
   db.exec('BEGIN');
   try {
@@ -225,6 +226,7 @@ function replaceSuppliers(db, suppliers = []) {
     );
     for (const s of suppliers) {
       if (!s?.id) continue;
+      if (insertOnly && db.prepare('SELECT 1 FROM suppliers WHERE id = ?').get(String(s.id))) continue;
       stmt.run(
         String(s.id),
         String(s.name || ''),
@@ -294,6 +296,9 @@ function saveDailyClosing(db, row) {
   const id = String(row.id || '').trim();
   if (!id) throw new Error('closing.id required');
   const closingDate = String(row.closing_date || row.closingDate || nowIso().slice(0, 10));
+  if (row.insertOnly && db.prepare('SELECT 1 FROM daily_closings WHERE id = ? OR closing_date = ?').get(id, closingDate)) {
+    return { id };
+  }
   try {
     db.prepare(`DELETE FROM daily_closings WHERE closing_date = ? AND id != ?`).run(closingDate, id);
   } catch {

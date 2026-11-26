@@ -8,6 +8,7 @@ import type { MainStackParamList } from '../../navigation/MainNavigator';
 import EmptyState from '../../components/ui/EmptyState';
 import SurfaceCard from '../../components/ui/SurfaceCard';
 import { fetchStockBalances } from '../../services/inventoryService';
+import { useLocalCatalogRevision } from '../../offline/useLocalCatalogRevision';
 import type { StockBalance } from '../../services/inventoryService';
 import { useT } from '../../i18n';
 import { apiError } from '../../utils/apiError';
@@ -26,6 +27,7 @@ const FILTERS: Array<{ id: StockFilter; label: string; icon: string }> = [
 
 export default function StockListScreen({ navigation }: Props) {
   const t = useT();
+  const localCatalogRevision = useLocalCatalogRevision();
   const [items, setItems] = useState<StockBalance[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<StockFilter>('all');
@@ -63,7 +65,7 @@ export default function StockListScreen({ navigation }: Props) {
     }
     const timer = setTimeout(() => load().finally(() => setLoading(false)), 300);
     return () => clearTimeout(timer);
-  }, [load, search]);
+  }, [load, search, localCatalogRevision]);
 
   useFocusEffect(
     useCallback(() => {

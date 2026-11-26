@@ -9,7 +9,8 @@ import {
 import { Searchbar, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useT } from '../i18n';
-import { searchProducts, type SearchProductResult } from '../services/catalogService';
+import { plainBarcodesOf, quantityBarcodesOf, searchProducts, type SearchProductResult } from '../services/catalogService';
+import { useLocalCatalogRevision } from '../offline/useLocalCatalogRevision';
 import type { Product } from '../types/catalog';
 import { colors } from '../theme/colors';
 import { radius, spacing } from '../theme/layout';
@@ -84,17 +85,7 @@ function productToSearchRows(product: Product): SearchProductResult[] {
       stockQty?: number;
       stock_qty?: number;
     };
-    const barcodes: string[] = [];
-    if (vv.barcode) barcodes.push(String(vv.barcode));
-    for (const b of vv.barcodes || []) {
-      const code = typeof b === 'string' ? b : b?.barcode || b?.code;
-      if (code && !barcodes.includes(String(code))) barcodes.push(String(code));
-    }
-    // Include pack/quantity barcodes so stock/purchase search finds Manuka-style packs.
-    for (const b of (vv as { quantityBarcodes?: Array<{ barcode?: string }> }).quantityBarcodes || []) {
-      const code = b?.barcode;
-      if (code && !barcodes.includes(String(code))) barcodes.push(String(code));
-    }
+    const barcodes = plainBarcodesOf(v);
     rows.push({
       variantId: vv.id,
       productId: product.id,
@@ -106,6 +97,7 @@ function productToSearchRows(product: Product): SearchProductResult[] {
       color: vv.color ?? null,
       sellingPrice: Number(vv.sellingPrice ?? vv.selling_price) || 0,
       barcodes,
+      quantityBarcodes: quantityBarcodesOf(v),
       stockQty: Number(vv.stockQty ?? vv.stock_qty) || 0,
       categoryId,
     });
@@ -127,6 +119,7 @@ export default function ProductSearchField({
   autoFocus = false,
 }: Props) {
   const t = useT();
+  const localCatalogRevision = useLocalCatalogRevision();
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<SearchProductResult[]>([]);
   const [browse, setBrowse] = useState<SearchProductResult[]>([]);
@@ -137,6 +130,8 @@ export default function ProductSearchField({
   const [changing, setChanging] = useState(false);
   const [searchKey, setSearchKey] = useState(0);
   const focusAfterChange = useRef(false);
+  const searchRequest = useRef(0);
+  const browseRequest = useRef(0);
 
   // Once a product is chosen, hide the search until Change — cleaner for label printing.
   const showSearchUi = !selectedLabel || changing;
@@ -158,6 +153,7 @@ export default function ProductSearchField({
 
   const loadBrowse = useCallback(async () => {
     if (!browseWhenEmpty) return;
+    const request = ++browseRequest.current;
     setLoadingBrowse(true);
     try {
       const { shouldUseLocalCatalog, readSqliteBillingCatalog } = await import(
@@ -173,28 +169,31 @@ export default function ProductSearchField({
           rows.push(...productToSearchRows(p));
         }
         // Favorites first (billing catalog already orders by favorite)
-        setBrowse(rows.slice(0, 40));
+        if (request === browseRequest.current) setBrowse(rows.slice(0, 40));
         return;
       }
       // Online / phone: light name search fallback — empty browse
-      setBrowse([]);
+      if (request === browseRequest.current) setBrowse([]);
     } catch {
-      setBrowse([]);
+      if (request === browseRequest.current) setBrowse([]);
     } finally {
-      setLoadingBrowse(false);
+      if (request === browseRequest.current) setLoadingBrowse(false);
     }
   }, [browseWhenEmpty, categoryId]);
 
   useEffect(() => {
     if (browseWhenEmpty) void loadBrowse();
-  }, [browseWhenEmpty, loadBrowse]);
+    return () => { browseRequest.current += 1; };
+  }, [browseWhenEmpty, loadBrowse, localCatalogRevision]);
 
   const runSearch = useCallback(
     async (query: string) => {
+      const request = ++searchRequest.current;
       const q = query.trim();
       if (q.length < minChars) {
         setResults([]);
         setSearchError('');
+        setSearching(false);
         return;
       }
 
@@ -202,9 +201,11 @@ export default function ProductSearchField({
       setSearchError('');
       try {
         const found = await searchProducts(q, { categoryId });
+        if (request !== searchRequest.current) return;
         setResults(found);
         if (!found.length) setSearchError(t('No product found for "{{query}}"', { query: q }));
       } catch (err: unknown) {
+        if (request !== searchRequest.current) return;
         setResults([]);
         const axiosErr = err as {
           response?: { data?: { error?: { message?: string } } };
@@ -213,21 +214,26 @@ export default function ProductSearchField({
         const message = axiosErr?.response?.data?.error?.message || axiosErr?.message;
         setSearchError(message ? t(message) : t('Search failed'));
       } finally {
-        setSearching(false);
+        if (request === searchRequest.current) setSearching(false);
       }
     },
     [categoryId, minChars, t],
   );
 
   useEffect(() => {
+    searchRequest.current += 1;
     if (!search.trim()) {
       setResults([]);
       setSearchError('');
+      setSearching(false);
       return;
     }
     const timer = setTimeout(() => runSearch(search), 280);
-    return () => clearTimeout(timer);
-  }, [search, runSearch]);
+    return () => {
+      searchRequest.current += 1;
+      clearTimeout(timer);
+    };
+  }, [search, runSearch, localCatalogRevision]);
 
   useEffect(() => {
     if (!search.trim() || !results.length || searching) return;

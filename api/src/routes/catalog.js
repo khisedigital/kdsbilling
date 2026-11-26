@@ -44,6 +44,7 @@ router.get('/products', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandle
 router.post('/products/price-bulk', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.bulkUpdateVariantPricing));
 router.post('/products/favorites/bulk', requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.setProductsFavoriteBulk));
 router.post('/products/delete-all', requirePermission(PERMISSIONS.PRODUCT_DELETE), asyncHandler(catalog.deleteAllProducts));
+router.post('/products/sync-missing-variant', requirePermission(PERMISSIONS.PRODUCT_CREATE), requirePermission(PERMISSIONS.PRODUCT_EDIT), asyncHandler(catalog.ensureOfflineVariant));
 router.post('/products', requirePermission(PERMISSIONS.PRODUCT_CREATE), asyncHandler(catalog.createProduct));
 router.get('/products/:id/barcode-status', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.productBarcodeStatus));
 router.get('/products/:id', requirePermission(PERMISSIONS.PRODUCT_VIEW), asyncHandler(catalog.getProduct));

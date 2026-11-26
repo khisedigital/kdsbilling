@@ -15,19 +15,7 @@ async function withHealedUnits(products: Product[]): Promise<Product[]> {
     const { attachUnitsToProducts, fetchUnits } = await import('../services/catalogService');
     const units = (await fetchUnits().catch(() => [])) as UnitOfMeasure[];
     if (!units.length) return products;
-    const healed = attachUnitsToProducts(products, units);
-    // Persist a small batch of mismatches so stale pcs/kg embeds get corrected.
-    const dirty = healed.filter((next, i) => {
-      const prev = products[i];
-      return prev?.uom?.code !== next.uom?.code || prev?.uom_id !== next.uom_id;
-    });
-    if (dirty.length) {
-      const { localUpsertProduct } = await import('./localApi');
-      for (const product of dirty.slice(0, 80)) {
-        void localUpsertProduct(product).catch(() => null);
-      }
-    }
-    return healed;
+    return attachUnitsToProducts(products, units);
   } catch {
     return products;
   }

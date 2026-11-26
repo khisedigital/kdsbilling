@@ -89,7 +89,7 @@ function money(n: number) {
   return `₹${round2(n).toFixed(2)}`;
 }
 
-export default function WideBillPanel() {
+export default function WideBillPanel({ fullWidth = false }: { fullWidth?: boolean }) {
   const t = useT();
   const navigation = useNavigation<NativeStackNavigationProp<MainStackParamList>>();
   useLanguageStore((s) => s.ui);
@@ -138,8 +138,16 @@ export default function WideBillPanel() {
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(0);
 
   const requestId = useRef(0);
+  const previewSource = useRef<{
+    items: CartItem[];
+    billDiscountAmount: number;
+    billDiscountPercent: number;
+    offerId: string | null;
+    language: string;
+  } | null>(null);
   const splitExtraRef = useRef(splitExtra);
   splitExtraRef.current = splitExtra;
   const checkoutLock = useRef(false);
@@ -153,6 +161,7 @@ export default function WideBillPanel() {
   const isSplit = splitExtra.length > 0;
   const hasItems = items.length > 0;
   const hasBillDiscount = billDiscountPercent > 0 || billDiscountAmount > 0;
+  const twoColumnFooter = fullWidth && panelWidth >= 600;
 
   const payments = useMemo(
     () => [{ mode: payMode, amount: payAmount }, ...splitExtra],
@@ -204,6 +213,7 @@ export default function WideBillPanel() {
       return;
     }
     const id = ++requestId.current;
+    const language = useLanguageStore.getState().bill;
     setLoadingPreview(true);
     setError('');
     try {
@@ -222,7 +232,7 @@ export default function WideBillPanel() {
           productNameMr: item.productNameMr ?? null,
           uom: item.uom || null,
         })),
-        language: useLanguageStore.getState().bill,
+        language,
         billDiscountAmount,
         billDiscountPercent,
         offerId,
@@ -230,6 +240,13 @@ export default function WideBillPanel() {
       })) as BillPreview;
       if (id !== requestId.current) return;
       const exact = round2(Number(result.exactTotal ?? result.totalAmount ?? 0));
+      previewSource.current = {
+        items,
+        billDiscountAmount,
+        billDiscountPercent,
+        offerId,
+        language,
+      };
       setPreview(result);
       setExactTotal(exact);
       setRoundOffAmount(0);
@@ -245,6 +262,14 @@ export default function WideBillPanel() {
   }, [items, billDiscountAmount, billDiscountPercent, offerId, syncPrimaryAmount]);
 
   const billLanguage = useLanguageStore((s) => s.bill);
+  const currentDesktopPreview = fullWidth &&
+    previewSource.current?.items === items &&
+    previewSource.current.billDiscountAmount === billDiscountAmount &&
+    previewSource.current.billDiscountPercent === billDiscountPercent &&
+    previewSource.current.offerId === offerId &&
+    previewSource.current.language === billLanguage
+    ? preview
+    : null;
 
   useEffect(() => {
     loadPreview();
@@ -737,7 +762,9 @@ export default function WideBillPanel() {
   const renderLine = ({ item }: { item: CartItem }) => {
     const size = variantLabel(item.size, item.color);
     const lineName = screenProductName(item.productName, item.productNameMr);
-    const previewTaxes = preview?.items.find((line) => line.variantId === item.variantId)?.taxes;
+    const previewLine = (fullWidth ? currentDesktopPreview : preview)?.items
+      .find((line) => line.variantId === item.variantId);
+    const previewTaxes = previewLine?.taxes;
     const taxDetails = getBillLineTaxDetails(item, previewTaxes);
     const qtyValue =
       qtyDrafts[item.variantId] !== undefined
@@ -755,7 +782,7 @@ export default function WideBillPanel() {
             {item.isCustom ? t(' · Custom') : size ? ` · ${size}` : ''}
           </Text>
           {item.uom?.code ? <Text style={styles.lineMeta}>{item.uom.code}</Text> : null}
-          {taxDetails.map((tax, index) => (
+          {!fullWidth ? taxDetails.map((tax, index) => (
             <Text key={`${tax.name}:${tax.rate}:${index}`} style={styles.lineMeta}>
               {t('{{name}} {{rate}}%: {{amount}}', {
                 name: tax.name,
@@ -763,7 +790,7 @@ export default function WideBillPanel() {
                 amount: money(tax.amount),
               })}
             </Text>
-          ))}
+          )) : null}
         </View>
         <View style={styles.rateCell}>
           <Text style={styles.ratePrefix}>₹</Text>
@@ -806,7 +833,21 @@ export default function WideBillPanel() {
             </Pressable>
           </View>
         </View>
-        <Text style={styles.colAmount}>{money(item.unitPrice * item.quantity)}</Text>
+        {fullWidth ? (
+          <View style={styles.colTax}>
+            <Text style={styles.taxAmount}>
+              {previewLine ? money(taxDetails.reduce((sum, tax) => sum + tax.amount, 0)) : '—'}
+            </Text>
+            {previewLine ? taxDetails.map((tax, index) => (
+              <Text key={`${tax.name}:${tax.rate}:${index}`} style={styles.taxMeta} numberOfLines={1}>
+                {tax.name} {tax.rate}%
+              </Text>
+            )) : null}
+          </View>
+        ) : null}
+        <Text style={styles.colAmount}>
+          {fullWidth ? (previewLine ? money(previewLine.lineTotal) : '—') : money(item.unitPrice * item.quantity)}
+        </Text>
         <Pressable
           onPress={() => {
             clearQtyDraft(item.variantId);
@@ -828,9 +869,53 @@ export default function WideBillPanel() {
       ? t('{{amount}} off', { amount: money(billDiscountAmount) })
       : t('Discount');
 
+  const billItemsTable = (
+    <View style={styles.fill}>
+      <View style={styles.tableHeader}>
+        <Text style={[styles.th, styles.colProduct]}>{t('Product')}</Text>
+        <View style={styles.colRateHead}>
+          <Text style={[styles.th, styles.thEnd]}>{t('Rate')}</Text>
+        </View>
+        <View style={styles.colQtyHead}>
+          <Text style={[styles.th, styles.thCenter]}>{t('Qty')}</Text>
+        </View>
+        {fullWidth ? (
+          <View style={styles.colTaxHead}>
+            <Text style={[styles.th, styles.thEnd]}>{t('Tax')}</Text>
+          </View>
+        ) : null}
+        <View style={styles.colAmountHead}>
+          <Text style={[styles.th, styles.thEnd]}>{t('Amount')}</Text>
+        </View>
+        <View style={styles.thRemove} />
+      </View>
+      <FlatList
+        data={items}
+        keyExtractor={(item) => item.variantId}
+        renderItem={renderLine}
+        style={styles.fill}
+        contentContainerStyle={styles.listContent}
+        keyboardShouldPersistTaps="handled"
+      />
+    </View>
+  );
+
   return (
-    <View style={styles.pane}>
+    <View
+      style={[styles.pane, fullWidth && styles.fullWidthPane]}
+      onLayout={fullWidth ? (event) => setPanelWidth(event.nativeEvent.layout.width) : undefined}>
       <View style={styles.head}>
+        {fullWidth && view !== 'bill' ? (
+          <Pressable
+            onPress={() => {
+              setError('');
+              setView('bill');
+            }}
+            style={styles.headIconBtn}
+            accessibilityLabel={t('Back to bill')}>
+            <Icon name="arrow-left" size={16} color={colors.primary} />
+          </Pressable>
+        ) : null}
         <View style={styles.summaryIcon}>
           <Icon name="receipt-text-outline" size={20} color={colors.primary} />
         </View>
@@ -857,6 +942,29 @@ export default function WideBillPanel() {
           accessibilityLabel={discountLabel}>
           <Icon name="percent" size={16} color={hasBillDiscount ? colors.secondary : colors.primary} />
         </Pressable>
+        {fullWidth ? (
+          <>
+            <Pressable
+              onPress={() => {
+                setError('');
+                setView((prev) => (prev === 'customer' ? 'bill' : 'customer'));
+              }}
+              style={[styles.headIconBtn, (view === 'customer' || !!customerId) && styles.headIconBtnOn]}
+              accessibilityLabel={t('Customer')}>
+              <Icon name={customerId ? 'account-check' : 'account-outline'} size={16} color={colors.primary} />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setError('');
+                setView((prev) => (prev === 'hold' ? 'bill' : 'hold'));
+              }}
+              disabled={!hasItems}
+              style={[styles.headIconBtn, view === 'hold' && styles.headIconBtnOn, !hasItems && styles.actionOff]}
+              accessibilityLabel={t('Hold bill')}>
+              <Icon name="pause-circle-outline" size={16} color={colors.primary} />
+            </Pressable>
+          </>
+        ) : null}
         <Pressable
           onPress={clearBill}
           disabled={!hasItems}
@@ -874,7 +982,7 @@ export default function WideBillPanel() {
         </View>
       ) : null}
 
-      <View style={styles.tabRow}>
+      {!fullWidth ? <View style={styles.tabRow}>
         <Pressable
           onPress={() => {
             setError('');
@@ -920,7 +1028,7 @@ export default function WideBillPanel() {
           />
           <Text style={[styles.tabText, view === 'hold' && styles.tabTextOn]}>{t('Hold')}</Text>
         </Pressable>
-      </View>
+      </View> : null}
 
       {view === 'customer' ? (
         <View style={styles.subView}>
@@ -1105,50 +1213,43 @@ export default function WideBillPanel() {
           ) : null}
 
           {hasItems ? (
-            <View style={styles.fill}>
-              <View style={styles.tableHeader}>
-                <Text style={[styles.th, styles.colProduct]}>{t('Product')}</Text>
-                <View style={styles.colRateHead}>
-                  <Text style={[styles.th, styles.thEnd]}>{t('Rate')}</Text>
-                </View>
-                <View style={styles.colQtyHead}>
-                  <Text style={[styles.th, styles.thCenter]}>{t('Qty')}</Text>
-                </View>
-                <View style={styles.colAmountHead}>
-                  <Text style={[styles.th, styles.thEnd]}>{t('Amount')}</Text>
-                </View>
-                <View style={styles.thRemove} />
-              </View>
-              <FlatList
-                data={items}
-                keyExtractor={(item) => item.variantId}
-                renderItem={renderLine}
-                style={styles.fill}
-                contentContainerStyle={styles.listContent}
-                keyboardShouldPersistTaps="handled"
-              />
-            </View>
+            fullWidth && panelWidth > 0 && panelWidth < 560 ? (
+              <ScrollView horizontal style={[styles.fill, { width: panelWidth }]} contentContainerStyle={styles.tableScrollContent}>
+                <View style={styles.narrowTable}>{billItemsTable}</View>
+              </ScrollView>
+            ) : billItemsTable
           ) : (
             <View style={styles.empty}>
               <Icon name="cart-outline" size={36} color={colors.primary} />
               <Text style={styles.emptyTitle}>{t('No items yet')}</Text>
               <Text style={styles.emptyHint}>
-                {t('Tap a product on the left to add it here. Edit quantity in the Qty column, then take payment.')}
+                {fullWidth
+                  ? t('Search for a product above to add it here. Edit quantity in the Qty column, then take payment.')
+                  : t('Tap a product on the left to add it here. Edit quantity in the Qty column, then take payment.')}
               </Text>
             </View>
           )}
 
           {hasItems ? (
             <View style={styles.footer}>
-              <View style={styles.totalBlock}>
+              <View style={twoColumnFooter ? styles.footerColumns : undefined}>
+              <View style={[styles.totalBlock, twoColumnFooter && styles.footerColumn]}>
                 <View style={styles.sumRow}>
                   <Text style={styles.sumLbl}>{t('Subtotal')}</Text>
-                  <Text style={styles.sumVal}>{money(Number(preview?.subtotal) || items.reduce((s, i) => s + i.unitPrice * i.quantity, 0))}</Text>
+                  <Text style={styles.sumVal}>
+                    {fullWidth
+                      ? (currentDesktopPreview ? money(currentDesktopPreview.subtotal) : '—')
+                      : money(Number(preview?.subtotal) || items.reduce((s, i) => s + i.unitPrice * i.quantity, 0))}
+                  </Text>
                 </View>
-                {Number(preview?.taxAmount) > 0 ? (
+                {fullWidth || Number(preview?.taxAmount) > 0 ? (
                   <View style={styles.sumRow}>
-                    <Text style={styles.sumLbl}>{t('Tax')}</Text>
-                    <Text style={styles.sumVal}>{money(Number(preview?.taxAmount))}</Text>
+                    <Text style={styles.sumLbl}>{fullWidth ? t('Total tax') : t('Tax')}</Text>
+                    <Text style={styles.sumVal}>
+                      {fullWidth
+                        ? (currentDesktopPreview ? money(currentDesktopPreview.taxAmount) : '—')
+                        : money(Number(preview?.taxAmount))}
+                    </Text>
                   </View>
                 ) : null}
                 {discountApplied > 0 ? (
@@ -1181,7 +1282,7 @@ export default function WideBillPanel() {
               </View>
 
               <ScrollView
-                style={styles.payScroll}
+                style={twoColumnFooter ? styles.desktopPayScroll : styles.payScroll}
                 contentContainerStyle={styles.payScrollContent}
                 keyboardShouldPersistTaps="handled"
                 nestedScrollEnabled>
@@ -1273,6 +1374,7 @@ export default function WideBillPanel() {
                 )}
 
               </ScrollView>
+              </View>
               {change > 0.01 ? (
                 <Text style={styles.changeText}>{t('Return change {{amount}}', { amount: money(change) })}</Text>
               ) : balance > 0.01 ? (
@@ -1325,6 +1427,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
+  fullWidthPane: { flex: 1, minWidth: 0, borderLeftWidth: 0 },
   fill: { flex: 1, minHeight: 0 },
   head: {
     flexDirection: 'row',
@@ -1430,6 +1533,8 @@ const styles = StyleSheet.create({
   secondaryBtnText: { fontSize: 13, fontWeight: '700', color: colors.text },
   inlinePrimary: { flex: 1.4, marginTop: 0 },
   listContent: { paddingHorizontal: spacing.sm, paddingBottom: spacing.xs },
+  tableScrollContent: { flexGrow: 1 },
+  narrowTable: { width: 560, flexGrow: 1 },
   tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1463,6 +1568,7 @@ const styles = StyleSheet.create({
   colProduct: { flex: 1.4, minWidth: 0 },
   colRateHead: { width: 96, alignItems: 'flex-end', justifyContent: 'center' },
   colQtyHead: { width: 132, alignItems: 'center', justifyContent: 'center' },
+  colTaxHead: { width: 84, alignItems: 'flex-end', justifyContent: 'center' },
   colAmountHead: { width: 74, alignItems: 'flex-end', justifyContent: 'center' },
   thEnd: { textAlign: 'right', width: '100%' },
   thCenter: { textAlign: 'center', width: '100%' },
@@ -1489,6 +1595,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   colQty: { width: 132, alignItems: 'center' },
+  colTax: { width: 84, alignItems: 'flex-end' },
+  taxAmount: { fontSize: 12, fontWeight: '700', color: colors.text, textAlign: 'right' },
+  taxMeta: { fontSize: 10, color: colors.textMuted, textAlign: 'right' },
   colAmount: {
     width: 74,
     fontSize: 13,
@@ -1558,6 +1667,8 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     backgroundColor: colors.surface,
   },
+  footerColumns: { flexDirection: 'row', alignItems: 'flex-start' },
+  footerColumn: { flex: 1, minWidth: 0 },
   totalBlock: {
     margin: spacing.sm,
     padding: spacing.md,
@@ -1637,6 +1748,7 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   payScroll: { maxHeight: 160, flexGrow: 0 },
+  desktopPayScroll: { maxHeight: 160, flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
   payScrollContent: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, paddingBottom: 2 },
   sectionLbl: {
     marginTop: spacing.xs,

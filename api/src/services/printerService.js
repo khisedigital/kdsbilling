@@ -50,10 +50,10 @@ async function deletePrinter(db, branchId, id) {
   return { deleted: true };
 }
 
-function sendEscPosToNetwork(host, port, rawText, timeoutMs = 5000) {
+function sendEscPosToNetwork(host, port, rawText, qrData, charsPerLine, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
-    const escpos = thermalMarkupToEscPos(rawText);
+    const escpos = thermalMarkupToEscPos(rawText, qrData, charsPerLine);
 
     socket.setTimeout(timeoutMs);
     socket.connect(port, host, () => {
@@ -111,7 +111,7 @@ async function printBillNetwork(
     throw new AppError('A4 network print not supported. Use mobile share.', 400, 'UNSUPPORTED');
   }
 
-  await sendEscPosToNetwork(host, port, printData.raw);
+  await sendEscPosToNetwork(host, port, printData.raw, printData.paymentQrData, printData.charsPerLine);
   return { printed: true, printer: printer.name, format };
 }
 
